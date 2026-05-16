@@ -52,3 +52,5 @@ The shared library and CLI-facing logic should strive for 100% coverage. The UI 
 - [MANIFESTO.md](MANIFESTO.md) explains the project vision and principles.
 - [ARCHITECTURE.md](ARCHITECTURE.md) records the planned compressed document store design.
 - [AGENTS.md](AGENTS.md) defines repository rules for coding agents and contributors.
+- [ORCHESTRATOR.md](ORCHESTRATOR.md) defines the supervising agent role for implementation.
+- [IMPLEMENTATION_AGENTS.md](IMPLEMENTATION_AGENTS.md) defines the serial subagent milestones and launch prompt.

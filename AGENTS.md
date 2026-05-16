@@ -39,3 +39,9 @@ Deep testing is a cornerstone of this project's stability.
 - Keep formatting-only changes separate from behavior changes.
 - Preserve user work already present in the tree.
 - Prefer explicit project documentation over hidden assumptions.
+
+## Multi-Agent Implementation
+
+- Use `ORCHESTRATOR.md` when supervising implementation progress.
+- Use `IMPLEMENTATION_AGENTS.md` for the serial milestone sequence and launch prompt.
+- Do not run milestone agents in parallel unless the project owner explicitly changes the orchestration plan.
