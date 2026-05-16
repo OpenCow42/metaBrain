@@ -12,7 +12,20 @@ swift run metabrain init --store "$STORE" | rg 'Initialized metaBrain store'
 swift run metabrain put --store "$STORE" /notes/today 'alpha beta searchable memory' --title Today --tag search --meta status=active | rg '^version: 1$'
 swift run metabrain get --store "$STORE" --path /notes/today | rg 'alpha beta searchable memory'
 swift run metabrain search --store "$STORE" 'alpha beta' --tag search --meta status=active | rg '/notes/today'
+swift run metabrain search --store "$STORE" 'alpha beta' --tag missing | rg '^No results\.$'
 swift run metabrain put --store "$STORE" /notes/today 'alpha beta updated memory' --keep-last 2 | rg '^version: 2$'
 swift run metabrain versions --store "$STORE" --path /notes/today | rg '^2 '
 swift run metabrain prune --store "$STORE" --path /notes/today --keep-last 1 | rg '^retained: 1$'
 swift run metabrain versions --store "$STORE" --path /notes/today | rg '^2 '
+
+if swift run metabrain put --store "$STORE" /notes/bad body --meta invalid 2>"$TMP_DIR/invalid-meta.err"; then
+    echo "Expected invalid metadata syntax to fail" >&2
+    exit 1
+fi
+rg 'Metadata must use key=value syntax' "$TMP_DIR/invalid-meta.err"
+
+if swift run metabrain get --store "$STORE" 2>"$TMP_DIR/missing-reference.err"; then
+    echo "Expected missing reference options to fail" >&2
+    exit 1
+fi
+rg 'Provide either --id or --path' "$TMP_DIR/missing-reference.err"

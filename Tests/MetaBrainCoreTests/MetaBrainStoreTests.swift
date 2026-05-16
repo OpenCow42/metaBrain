@@ -167,6 +167,38 @@ private struct StoredNote: Codable, Equatable, Sendable {
     }
 }
 
+@Test func updatingDocumentToOccupiedPathThrowsAndPreservesAliases() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let firstPath = try DocumentPath("/notes/first")
+        let secondPath = try DocumentPath("/notes/second")
+        let first = try await store.putDocument(DocumentInput(
+            path: firstPath,
+            body: "first"
+        ))
+        let second = try await store.putDocument(DocumentInput(
+            path: secondPath,
+            body: "second"
+        ))
+
+        do {
+            _ = try await store.updateDocument(
+                .documentID(first.id),
+                with: DocumentInput(path: secondPath, body: "conflict")
+            )
+            Issue.record("Expected occupied path update to fail.")
+        } catch let error as MetaBrainStoreError {
+            #expect(error == .pathAlreadyExists(secondPath, existingID: second.id))
+        } catch {
+            Issue.record("Expected MetaBrainStoreError.pathAlreadyExists, got \(error).")
+        }
+
+        #expect(try await store.getDocument(.path(firstPath)) == first)
+        #expect(try await store.getDocument(.path(secondPath)) == second)
+        #expect(try await store.listVersions(of: .documentID(first.id)).map(\.sequence) == [1])
+    }
+}
+
 @Test func keepAllRetentionPreservesEveryFullSnapshotVersion() async throws {
     try await withTemporaryStoreFixture { fixture in
         let store = try MetaBrainStore(url: fixture.storeURL)
@@ -245,6 +277,20 @@ private struct StoredNote: Codable, Equatable, Sendable {
     }
 }
 
+@Test func explicitPruneOfMissingDocumentReportsZeroCounts() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+
+        let result = try await store.prune(PruneRequest(
+            reference: .path(try DocumentPath("/missing")),
+            policy: .keepMostRecent(1)
+        ))
+
+        #expect(result == PruneResult(prunedVersionCount: 0, retainedVersionCount: 0))
+        #expect(try await store.listVersions(of: .path(try DocumentPath("/missing"))) == [])
+    }
+}
+
 @Test func currentVersionChunksIncludeConfiguredOverlap() async throws {
     try await withTemporaryStoreFixture { fixture in
         let store = try MetaBrainStore(url: fixture.storeURL)
@@ -265,6 +311,25 @@ private struct StoredNote: Codable, Equatable, Sendable {
         #expect(chunks[1].startOffset == 3_600)
         #expect(chunks[1].endOffset == 4_200)
         #expect(chunks[0].text.suffix(400) == chunks[1].text.prefix(400))
+    }
+}
+
+@Test func emptyDocumentBodyStoresCurrentEmptyChunkButNoTermIndexes() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let document = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/index/empty"),
+            body: ""
+        ))
+
+        let chunks = try await store.currentChunks(for: document.id)
+
+        #expect(chunks.count == 1)
+        #expect(chunks.first?.ordinal == 0)
+        #expect(chunks.first?.text == "")
+        #expect(chunks.first?.startOffset == 0)
+        #expect(chunks.first?.endOffset == 0)
+        #expect(try await store.search(SearchQuery(text: "anything")) == [])
     }
 }
 
@@ -298,6 +363,31 @@ private struct StoredNote: Codable, Equatable, Sendable {
         #expect(updated.id == created.id)
         #expect(try await store.documentIDs(matchingTerm: "legacy") == [])
         #expect(try await store.documentIDs(matchingTerm: "fresh") == [created.id])
+    }
+}
+
+@Test func editingDocumentRemovesStaleTagAndMetadataIndexes() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let path = try DocumentPath("/index/filter-edits")
+        let created = try await store.putDocument(DocumentInput(
+            path: path,
+            body: "filterable content",
+            tags: ["Legacy"],
+            metadata: ["status": "draft"]
+        ))
+
+        _ = try await store.putDocument(DocumentInput(
+            path: path,
+            body: "filterable content",
+            tags: ["Fresh"],
+            metadata: ["status": "published"]
+        ))
+
+        #expect(try await store.documentIDs(tagged: "legacy") == [])
+        #expect(try await store.documentIDs(tagged: "fresh") == [created.id])
+        #expect(try await store.documentIDs(metadataKey: "status", value: "draft") == [])
+        #expect(try await store.documentIDs(metadataKey: "status", value: "published") == [created.id])
     }
 }
 
@@ -355,6 +445,30 @@ private struct StoredNote: Codable, Equatable, Sendable {
     }
 }
 
+@Test func unresolvedAndExternalReferencesDoNotCreateEdges() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let source = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/refs/unresolved-source"),
+            body: "source",
+            references: [
+                .path(try DocumentPath("/refs/missing-target")),
+                .externalURL(try #require(URL(string: "https://example.com/missing")))
+            ]
+        ))
+
+        #expect(try await store.outboundReferences(from: source.id) == [])
+
+        let target = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/refs/missing-target"),
+            body: "target"
+        ))
+
+        #expect(try await store.outboundReferences(from: source.id) == [])
+        #expect(try await store.inboundReferences(to: target.id) == [])
+    }
+}
+
 @Test func searchRanksMultiTermMatchesByCoverageFrequencyAndLocality() async throws {
     try await withTemporaryStoreFixture { fixture in
         let store = try MetaBrainStore(url: fixture.storeURL)
@@ -375,6 +489,31 @@ private struct StoredNote: Codable, Equatable, Sendable {
         #expect(results.map(\.documentID).contains(weak.id))
         #expect(results.first?.documentID == strong.id)
         #expect((results.first?.score ?? 0) > (results.last?.score ?? 0))
+    }
+}
+
+@Test func searchPathPrefixMatchesExactPathAndDescendantsOnly() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let exact = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/projects/meta"),
+            body: "prefix needle"
+        ))
+        let child = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/projects/meta/child"),
+            body: "prefix needle"
+        ))
+        _ = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/projects/metabrain"),
+            body: "prefix needle"
+        ))
+
+        let results = try await store.search(SearchQuery(
+            text: "needle",
+            pathPrefix: try DocumentPath("/projects/meta")
+        ))
+
+        #expect(results.map(\.documentID).sorted() == [exact.id, child.id].sorted())
     }
 }
 
