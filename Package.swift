@@ -50,6 +50,12 @@ let package = Package(
             dependencies: [
                 "MetaBrainCore"
             ]
+        ),
+        .testTarget(
+            name: "MetaBrainCoreTests",
+            dependencies: [
+                "MetaBrainCore"
+            ]
         )
     ],
     swiftLanguageModes: [.v6]
