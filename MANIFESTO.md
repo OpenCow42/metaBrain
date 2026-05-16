@@ -17,7 +17,15 @@ The goal is not to hide knowledge inside an opaque database. The goal is to make
 - Preserve enough structure and metadata to make retrieval meaningful.
 - Prefer durable, compressed storage for large collections of content.
 - Build interfaces that let the CLI, app, and future tools share the same core behavior.
+- Keep the storage engine embedded and explicit before introducing any daemon or service layer.
+- Expose async APIs that feel natural to tools while preserving clear control over the store lifecycle.
 - Treat correctness, migration safety, and retrieval quality as first-class project concerns.
+
+## Operating Model
+
+`metaBrain` should begin as an embedded Swift library, not as a daemon. A CLI command can open a store, perform one operation, and exit. A UI app can keep one store instance alive and call it through `async` APIs. A daemon may become useful later for coordinating many processes, but it should be a separate layer over the same core library.
+
+The public store API should behave like a resource handle, not like plain value data. It should expose an async `final class` facade, use LevelDB's safe concurrent reads where appropriate, and serialize higher-level document mutations internally so records, versions, indexes, references, and pruning stay consistent.
 
 ## Stability
 

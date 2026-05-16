@@ -14,6 +14,8 @@ This repository is a Swift package with three products:
 
 The CLI and app should stay thin. Shared behavior belongs in `MetaBrainCore` so every interface uses the same underlying model.
 
+The planned storage API is an async `MetaBrainStore` final class: one explicit store handle with internally coordinated writes and concurrent read/search paths where LevelDB supports them. The project will start embedded in the CLI and app; a daemon can come later if multi-process coordination becomes necessary.
+
 ## Requirements
 
 - Swift 6.3 or newer
@@ -48,4 +50,5 @@ The shared library and CLI-facing logic should strive for 100% coverage. The UI 
 ## Project Documents
 
 - [MANIFESTO.md](MANIFESTO.md) explains the project vision and principles.
+- [ARCHITECTURE.md](ARCHITECTURE.md) records the planned compressed document store design.
 - [AGENTS.md](AGENTS.md) defines repository rules for coding agents and contributors.
