@@ -33,7 +33,7 @@ This file records orchestrator handoff notes for the serial milestone plan in `I
 
 ## Milestone 5: Chunking, Indexing, Metadata, And References
 
-- Status: completed locally on 2026-05-17.
+- Status: completed in commit `c2785da`.
 - Handoff: current-version chunks are stored under `chunk/current/<id>/<ordinal>` with target size `4000` characters and overlap `400` characters. Empty documents still get one empty current chunk.
 - Tokenization: lowercase Unicode alphanumeric runs; punctuation and whitespace split terms. Term index keys de-duplicate duplicate terms per chunk through set-based key generation.
 - Indexes: lexical postings use `idx/term/<term>/<id>/<ordinal>`; tag lookups use `idx/tag/<tag>/<id>`; metadata lookups use `idx/meta/<key>/<value>/<id>`.
@@ -41,8 +41,17 @@ This file records orchestrator handoff notes for the serial milestone plan in `I
 - Mutation model: document writes atomically delete stale current chunks, stale term/tag/metadata indexes, and stale reference edges before writing fresh records in the same LevelDB batch.
 - Verification: `git diff --check` passed; `swift build` passed; `swift test` passed with 24 tests and 0 failures.
 
+## Milestone 6: Contextual Lexical Search
+
+- Status: completed locally on 2026-05-17.
+- Handoff: `MetaBrainStore.search(_:)` uses lexical `idx/term` postings, OR-merges matching chunks, and ranks results by query-term coverage, matched-term frequency, and term locality within the chunk.
+- Filters: path-prefix filtering is segment-aware; tag and metadata filters intersect the existing `idx/tag` and `idx/meta` document ID sets before result scoring.
+- Results: matching chunk text is returned as `snippet`; neighboring current chunks are returned in `context`. Optional linked-document and backlink hints are returned as stable `.documentID(...)` references from `idx/ref/out` and `idx/ref/in`.
+- Limits: empty queries, normalized queries with no terms, and non-positive limits return no results. Search reads multiple keys without explicit snapshot wiring, matching current store read patterns.
+- Verification: `git diff --check` passed; `swift build` passed; `swift test` passed with 29 tests and 0 failures.
+
 ## Next Milestone
 
-- Milestone 6: Contextual Lexical Search.
-- Scope: implement `search`, lexical scoring, filters, context chunk retrieval, and optional link/backlink context over the existing index families.
-- Guardrails: keep embeddings, vectors, daemon behavior, CLI commands, and UI search screens out of this milestone.
+- Milestone 7: CLI Commands.
+- Scope: expose the core store through thin `metabrain` commands for init, put, get, search, versions, and prune, with tests or smoke scripts and README examples if syntax changes.
+- Guardrails: keep UI changes, daemon/service behavior, embeddings, vectors, and core storage redesign out of this milestone.

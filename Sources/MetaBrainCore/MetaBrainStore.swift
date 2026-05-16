@@ -131,6 +131,91 @@ public final class MetaBrainStore: Sendable {
         return try await versionRecords(for: id)
     }
 
+    public func search(_ query: SearchQuery) async throws -> [SearchResult] {
+        let queryTerms = Array(Set(Self.tokenize(query.text))).sorted()
+        guard !queryTerms.isEmpty, query.limit > 0 else {
+            return []
+        }
+
+        let allowedIDs = try await filteredDocumentIDs(for: query)
+        var matches: [MetaBrainSearchCandidate: Set<String>] = [:]
+
+        for term in queryTerms {
+            for posting in try await termPostings(for: term) {
+                if let allowedIDs, !allowedIDs.contains(posting.documentID) {
+                    continue
+                }
+
+                matches[posting, default: []].insert(term)
+            }
+        }
+
+        var results: [SearchResult] = []
+        for (candidate, matchedTerms) in matches {
+            guard let record = try await documentRecord(id: candidate.documentID) else {
+                continue
+            }
+
+            let document = record.document
+            guard Self.path(document.path, matchesPrefix: query.pathPrefix) else {
+                continue
+            }
+
+            let chunks = try await currentChunkRecords(for: candidate.documentID)
+            guard let chunk = chunks.first(where: { $0.ordinal == candidate.chunkOrdinal }) else {
+                continue
+            }
+
+            let chunkTerms = Self.tokenize(chunk.text)
+            let score = Self.searchScore(
+                queryTerms: queryTerms,
+                matchedTerms: matchedTerms,
+                chunkTerms: chunkTerms
+            )
+            let context = Self.contextChunks(around: candidate.chunkOrdinal, in: chunks)
+            let linkedDocuments: [DocumentReference]
+            if query.includeLinkedDocuments {
+                linkedDocuments = try await outboundReferences(from: candidate.documentID)
+                    .map(DocumentReference.documentID)
+            } else {
+                linkedDocuments = []
+            }
+
+            let backlinks: [DocumentReference]
+            if query.includeBacklinks {
+                backlinks = try await inboundReferences(to: candidate.documentID)
+                    .map(DocumentReference.documentID)
+            } else {
+                backlinks = []
+            }
+
+            results.append(SearchResult(
+                documentID: document.id,
+                path: document.path,
+                title: document.title,
+                chunkOrdinal: chunk.ordinal,
+                snippet: chunk.text,
+                score: score,
+                context: context,
+                linkedDocuments: linkedDocuments,
+                backlinks: backlinks
+            ))
+        }
+
+        return results
+            .sorted {
+                if $0.score != $1.score {
+                    return $0.score > $1.score
+                }
+                if $0.documentID != $1.documentID {
+                    return $0.documentID < $1.documentID
+                }
+                return $0.chunkOrdinal < $1.chunkOrdinal
+            }
+            .prefix(query.limit)
+            .map { $0 }
+    }
+
     @discardableResult
     public func prune(_ request: PruneRequest) async throws -> PruneResult {
         try await writes.run {
@@ -622,6 +707,38 @@ public final class MetaBrainStore: Sendable {
         return Array(Set(ids)).sorted()
     }
 
+    private func filteredDocumentIDs(for query: SearchQuery) async throws -> Set<DocumentID>? {
+        var filteredIDs: Set<DocumentID>?
+
+        for tag in query.tags {
+            let ids = Set(try await documentIDs(tagged: tag))
+            filteredIDs = filteredIDs.map { $0.intersection(ids) } ?? ids
+        }
+
+        for (key, value) in query.metadata {
+            let ids = Set(try await documentIDs(metadataKey: key, value: value))
+            filteredIDs = filteredIDs.map { $0.intersection(ids) } ?? ids
+        }
+
+        return filteredIDs
+    }
+
+    private func termPostings(for term: String) async throws -> [MetaBrainSearchCandidate] {
+        let normalized = Self.normalizedTerm(term)
+        guard !normalized.isEmpty else {
+            return []
+        }
+
+        let prefix = MetaBrainKeyspace.termPrefix(normalized)
+        return try await scanKeys(withPrefix: prefix).map { key in
+            let suffix = key.dropFirst(prefix.count)
+            let parts = suffix.split(separator: "/", maxSplits: 1).map(String.init)
+            let id = try DocumentID(rawValue: parts.first ?? "")
+            let ordinal = UInt32(parts.dropFirst().first ?? "") ?? 0
+            return MetaBrainSearchCandidate(documentID: id, chunkOrdinal: ordinal)
+        }
+    }
+
     private func scanKeys(withPrefix prefix: String) async throws -> [String] {
         do {
             return try await records
@@ -655,6 +772,81 @@ public final class MetaBrainStore: Sendable {
 
     private static func normalizedTerm(_ term: String) -> String {
         tokenize(term).first ?? ""
+    }
+
+    private static func path(_ path: DocumentPath, matchesPrefix prefix: DocumentPath?) -> Bool {
+        guard let prefix else {
+            return true
+        }
+
+        if prefix.rawValue == "/" || path == prefix {
+            return true
+        }
+
+        return path.rawValue.hasPrefix(prefix.rawValue + "/")
+    }
+
+    private static func searchScore(
+        queryTerms: [String],
+        matchedTerms: Set<String>,
+        chunkTerms: [String]
+    ) -> Double {
+        let coverage = Double(matchedTerms.count) / Double(queryTerms.count)
+        let frequency = chunkTerms.reduce(into: 0) { count, term in
+            if matchedTerms.contains(term) {
+                count += 1
+            }
+        }
+        let locality = localityScore(for: queryTerms, in: chunkTerms)
+
+        return coverage * 100 + Double(frequency) * 5 + locality * 25
+    }
+
+    private static func localityScore(for queryTerms: [String], in chunkTerms: [String]) -> Double {
+        guard queryTerms.count > 1 else {
+            return 1
+        }
+
+        let requiredTerms = Set(queryTerms)
+        var bestSpan: Int?
+
+        for start in chunkTerms.indices {
+            guard requiredTerms.contains(chunkTerms[start]) else {
+                continue
+            }
+
+            var seen: Set<String> = []
+            for end in start..<chunkTerms.count {
+                if requiredTerms.contains(chunkTerms[end]) {
+                    seen.insert(chunkTerms[end])
+                }
+
+                if seen.count == requiredTerms.count {
+                    let span = end - start + 1
+                    bestSpan = min(bestSpan ?? span, span)
+                    break
+                }
+            }
+        }
+
+        guard let bestSpan else {
+            return 0
+        }
+
+        return 1 / Double(bestSpan)
+    }
+
+    private static func contextChunks(
+        around ordinal: UInt32,
+        in chunks: [MetaBrainChunkRecord]
+    ) -> [SearchContextChunk] {
+        chunks
+            .filter { chunk in
+                let distance = Int64(chunk.ordinal) - Int64(ordinal)
+                return distance != 0 && abs(distance) <= 1
+            }
+            .sorted { $0.ordinal < $1.ordinal }
+            .map { SearchContextChunk(ordinal: $0.ordinal, text: $0.text) }
     }
 
     private static func chunkRecords(for document: StoredDocument) -> [MetaBrainChunkRecord] {
@@ -769,4 +961,9 @@ struct MetaBrainChunkRecord: Codable, Equatable, Sendable {
     var text: String
     var startOffset: Int
     var endOffset: Int
+}
+
+private struct MetaBrainSearchCandidate: Hashable, Sendable {
+    var documentID: DocumentID
+    var chunkOrdinal: UInt32
 }

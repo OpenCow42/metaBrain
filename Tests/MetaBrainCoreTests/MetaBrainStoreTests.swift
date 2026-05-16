@@ -354,3 +354,129 @@ private struct StoredNote: Codable, Equatable, Sendable {
         #expect(try await store.inboundReferences(to: target.id) == [])
     }
 }
+
+@Test func searchRanksMultiTermMatchesByCoverageFrequencyAndLocality() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let strong = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/search/strong"),
+            title: "Strong",
+            body: "alpha beta alpha beta alpha"
+        ))
+        let weak = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/search/weak"),
+            title: "Weak",
+            body: "alpha alpha scattered"
+        ))
+
+        let results = try await store.search(SearchQuery(text: "alpha beta"))
+
+        #expect(results.map(\.documentID).contains(strong.id))
+        #expect(results.map(\.documentID).contains(weak.id))
+        #expect(results.first?.documentID == strong.id)
+        #expect((results.first?.score ?? 0) > (results.last?.score ?? 0))
+    }
+}
+
+@Test func searchAppliesPathTagAndMetadataFilters() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let matching = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/projects/metabrain/search"),
+            body: "lexical context retrieval",
+            tags: ["Search"],
+            metadata: ["status": "active", "kind": "design"]
+        ))
+        _ = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/projects/other/search"),
+            body: "lexical context retrieval",
+            tags: ["Search"],
+            metadata: ["status": "active", "kind": "design"]
+        ))
+        _ = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/projects/metabrain/draft"),
+            body: "lexical context retrieval",
+            tags: ["Draft"],
+            metadata: ["status": "active", "kind": "design"]
+        ))
+        _ = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/projects/metabrain/archived"),
+            body: "lexical context retrieval",
+            tags: ["Search"],
+            metadata: ["status": "archived", "kind": "design"]
+        ))
+
+        let results = try await store.search(SearchQuery(
+            text: "lexical retrieval",
+            pathPrefix: try DocumentPath("/projects/metabrain"),
+            tags: ["search"],
+            metadata: ["status": "active", "kind": "design"]
+        ))
+
+        #expect(results.map(\.documentID) == [matching.id])
+        #expect(results.first?.path == matching.path)
+    }
+}
+
+@Test func searchReturnsNeighboringContextChunks() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let firstChunkText = String(repeating: "first context ", count: 340)
+        let secondChunkText = "needle second context"
+        let document = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/search/context"),
+            body: firstChunkText + secondChunkText
+        ))
+
+        let result = try #require(try await store.search(SearchQuery(text: "needle")).first)
+
+        #expect(result.documentID == document.id)
+        #expect(result.chunkOrdinal == 1)
+        #expect(result.snippet.contains("needle"))
+        #expect(result.context.map(\.ordinal) == [0])
+        #expect(result.context[0].text.contains("first context"))
+    }
+}
+
+@Test func searchCanIncludeLinkedDocumentAndBacklinkHints() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let target = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/search/target"),
+            body: "target clue"
+        ))
+        let source = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/search/source"),
+            body: "source clue",
+            references: [.documentID(target.id)]
+        ))
+
+        let outbound = try #require(try await store.search(SearchQuery(
+            text: "source",
+            includeLinkedDocuments: true
+        )).first)
+        let inbound = try #require(try await store.search(SearchQuery(
+            text: "target",
+            includeBacklinks: true
+        )).first)
+
+        #expect(outbound.documentID == source.id)
+        #expect(outbound.linkedDocuments == [.documentID(target.id)])
+        #expect(inbound.documentID == target.id)
+        #expect(inbound.backlinks == [.documentID(source.id)])
+    }
+}
+
+@Test func searchReturnsNoResultsForMissingTermsAndEmptyQueries() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        _ = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/search/no-results"),
+            body: "indexed content"
+        ))
+
+        #expect(try await store.search(SearchQuery(text: "absent")) == [])
+        #expect(try await store.search(SearchQuery(text: "   ")) == [])
+        #expect(try await store.search(SearchQuery(text: "indexed", limit: 0)) == [])
+    }
+}
