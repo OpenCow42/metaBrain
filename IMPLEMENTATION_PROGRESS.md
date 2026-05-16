@@ -52,15 +52,23 @@ This file records orchestrator handoff notes for the serial milestone plan in `I
 
 ## Milestone 7: CLI Commands
 
-- Status: completed locally on 2026-05-17.
+- Status: completed in commit `a25c467`.
 - Handoff: `metabrain` now exposes thin commands over `MetaBrainCore`: `init`, `put`, `get`, `search`, `versions`, and `prune`.
 - Syntax: commands accept `--store` with a default of `.metabrain/store.leveldb`; `get`, `versions`, and `prune` accept exactly one of `--path` or `--id`; `put` accepts a body argument or `--body-file`, repeated `--tag`, repeated `--meta key=value`, and retention flags.
 - Smoke coverage: `Tests/MetaBrainCLITests/cli-smoke.sh` runs a temporary-store round trip through all required commands.
 - Limitations: CLI output is human-readable only. JSON output mode, CLI reference editing, and SwiftPM-integrated CLI tests remain follow-up hardening candidates.
 - Verification: `git diff --check` passed; `swift build` passed; `swift test` passed with 29 tests and 0 failures; `Tests/MetaBrainCLITests/cli-smoke.sh` passed.
 
-## Next Milestone
+## Milestone 8: Hardening, Coverage, And Documentation
 
-- Milestone 8: Hardening, Coverage, And Documentation.
-- Scope: tighten edge cases, document implemented behavior, formalize verification expectations, and make small correctness fixes found during hardening.
-- Guardrails: avoid new major features, daemon implementation, UI implementation, embeddings, vectors, and broad rewrites.
+- Status: completed on 2026-05-17.
+- Handoff: added targeted hardening tests for path collision safety, missing-document pruning, empty-body chunk behavior, stale tag/metadata index removal, unresolved/external reference indexing, and segment-aware path-prefix search boundaries.
+- CLI smoke: extended `Tests/MetaBrainCLITests/cli-smoke.sh` to verify filtered no-result output plus invalid metadata and missing-reference validation failures against a temporary store.
+- Documentation: `README.md` now records implemented store behavior, current CLI validation behavior, the verification workflow, and the native SwiftPM coverage command.
+- Coverage: `swift test --enable-code-coverage` is the available coverage command; no repo-specific coverage wrapper exists. Current generated JSON summary reported line coverage at about 76.0%.
+- Commit: hardening tests and CLI smoke checks are in `a562fed`.
+- Verification: `git diff --check` passed; `swift build` passed; `swift test` passed with 35 tests and 0 failures; `swift test --enable-code-coverage` passed with 35 tests and 0 failures; `Tests/MetaBrainCLITests/cli-smoke.sh` passed.
+
+## Final Status
+
+- Recommended follow-up: add SwiftPM-integrated CLI tests or a dedicated CLI test target, decide whether coverage should have a repo wrapper/report command, and add JSON CLI output if downstream tools need stable machine-readable responses.
