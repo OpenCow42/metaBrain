@@ -1,5 +1,5 @@
 {
-  "originHash" : "06e94cf04f0f3c38f685f5415836a4c0f6f6e088309bc9af3100e75b832bc1e4",
+  "originHash" : "1c065adeaa18b2d5dae5778a85c41a14c88f071bd96fad0b4e0471a5a70f5384",
   "pins" : [
     {
       "identity" : "swift-argument-parser",
@@ -8,6 +8,24 @@
       "state" : {
         "revision" : "626b5b7b2f45e1b0b1c6f4a309296d1d21d7311b",
         "version" : "1.7.1"
+      }
+    },
+    {
+      "identity" : "swift-leveldb",
+      "kind" : "remoteSourceControl",
+      "location" : "git@github.com:OpenCow42/swift-leveldb.git",
+      "state" : {
+        "branch" : "main",
+        "revision" : "05589e9e9e559bfd222b54a242b5b88e9f61135c"
+      }
+    },
+    {
+      "identity" : "zstd",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/facebook/zstd.git",
+      "state" : {
+        "revision" : "f8745da6ff1ad1e7bab384bd1f9d742439278e99",
+        "version" : "1.5.7"
       }
     }
   ],
