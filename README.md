@@ -30,8 +30,17 @@ swift build
 ## Run The CLI
 
 ```bash
-swift run metabrain "hello"
+swift run metabrain init --store .metabrain/store.leveldb
+swift run metabrain put --store .metabrain/store.leveldb /notes/today "Remember the lexical store."
+swift run metabrain get --store .metabrain/store.leveldb --path /notes/today
+swift run metabrain search --store .metabrain/store.leveldb "lexical store"
+swift run metabrain versions --store .metabrain/store.leveldb --path /notes/today
+swift run metabrain prune --store .metabrain/store.leveldb --path /notes/today --keep-last 3
 ```
+
+`put` accepts repeated `--tag` and `--meta key=value` options, plus `--body-file`
+for larger UTF-8 text. `get`, `versions`, and `prune` accept either `--path` or
+`--id`.
 
 ## Run The App
 

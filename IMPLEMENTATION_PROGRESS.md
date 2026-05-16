@@ -43,15 +43,24 @@ This file records orchestrator handoff notes for the serial milestone plan in `I
 
 ## Milestone 6: Contextual Lexical Search
 
-- Status: completed locally on 2026-05-17.
+- Status: completed in commit `f3c24ca`.
 - Handoff: `MetaBrainStore.search(_:)` uses lexical `idx/term` postings, OR-merges matching chunks, and ranks results by query-term coverage, matched-term frequency, and term locality within the chunk.
 - Filters: path-prefix filtering is segment-aware; tag and metadata filters intersect the existing `idx/tag` and `idx/meta` document ID sets before result scoring.
 - Results: matching chunk text is returned as `snippet`; neighboring current chunks are returned in `context`. Optional linked-document and backlink hints are returned as stable `.documentID(...)` references from `idx/ref/out` and `idx/ref/in`.
 - Limits: empty queries, normalized queries with no terms, and non-positive limits return no results. Search reads multiple keys without explicit snapshot wiring, matching current store read patterns.
 - Verification: `git diff --check` passed; `swift build` passed; `swift test` passed with 29 tests and 0 failures.
 
+## Milestone 7: CLI Commands
+
+- Status: completed locally on 2026-05-17.
+- Handoff: `metabrain` now exposes thin commands over `MetaBrainCore`: `init`, `put`, `get`, `search`, `versions`, and `prune`.
+- Syntax: commands accept `--store` with a default of `.metabrain/store.leveldb`; `get`, `versions`, and `prune` accept exactly one of `--path` or `--id`; `put` accepts a body argument or `--body-file`, repeated `--tag`, repeated `--meta key=value`, and retention flags.
+- Smoke coverage: `Tests/MetaBrainCLITests/cli-smoke.sh` runs a temporary-store round trip through all required commands.
+- Limitations: CLI output is human-readable only. JSON output mode, CLI reference editing, and SwiftPM-integrated CLI tests remain follow-up hardening candidates.
+- Verification: `git diff --check` passed; `swift build` passed; `swift test` passed with 29 tests and 0 failures; `Tests/MetaBrainCLITests/cli-smoke.sh` passed.
+
 ## Next Milestone
 
-- Milestone 7: CLI Commands.
-- Scope: expose the core store through thin `metabrain` commands for init, put, get, search, versions, and prune, with tests or smoke scripts and README examples if syntax changes.
-- Guardrails: keep UI changes, daemon/service behavior, embeddings, vectors, and core storage redesign out of this milestone.
+- Milestone 8: Hardening, Coverage, And Documentation.
+- Scope: tighten edge cases, document implemented behavior, formalize verification expectations, and make small correctness fixes found during hardening.
+- Guardrails: avoid new major features, daemon implementation, UI implementation, embeddings, vectors, and broad rewrites.
