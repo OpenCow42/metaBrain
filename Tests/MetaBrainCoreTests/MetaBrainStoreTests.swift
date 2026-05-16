@@ -244,3 +244,113 @@ private struct StoredNote: Codable, Equatable, Sendable {
         #expect(versions.map(\.snapshot.body) == ["v3"])
     }
 }
+
+@Test func currentVersionChunksIncludeConfiguredOverlap() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let body = String(repeating: "a", count: 3_600)
+            + String(repeating: "b", count: 400)
+            + String(repeating: "c", count: 200)
+        let document = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/index/chunks"),
+            body: body
+        ))
+
+        let chunks = try await store.currentChunks(for: document.id)
+
+        #expect(chunks.count == 2)
+        #expect(chunks.map(\.ordinal) == [0, 1])
+        #expect(chunks[0].startOffset == 0)
+        #expect(chunks[0].endOffset == 4_000)
+        #expect(chunks[1].startOffset == 3_600)
+        #expect(chunks[1].endOffset == 4_200)
+        #expect(chunks[0].text.suffix(400) == chunks[1].text.prefix(400))
+    }
+}
+
+@Test func tokenizationLowercasesTermsAndSplitsOnPunctuation() {
+    #expect(MetaBrainStore.tokenize("Swift, SWIFT! café-42/path") == [
+        "swift",
+        "swift",
+        "café",
+        "42",
+        "path"
+    ])
+}
+
+@Test func editingDocumentReplacesCurrentTermIndexes() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let path = try DocumentPath("/index/terms")
+        let created = try await store.putDocument(DocumentInput(
+            path: path,
+            body: "legacy-only term survives nowhere"
+        ))
+
+        #expect(try await store.documentIDs(matchingTerm: "legacy") == [created.id])
+        #expect(try await store.documentIDs(matchingTerm: "fresh") == [])
+
+        let updated = try await store.putDocument(DocumentInput(
+            path: path,
+            body: "fresh searchable term"
+        ))
+
+        #expect(updated.id == created.id)
+        #expect(try await store.documentIDs(matchingTerm: "legacy") == [])
+        #expect(try await store.documentIDs(matchingTerm: "fresh") == [created.id])
+    }
+}
+
+@Test func tagAndMetadataIndexesCanBeScanned() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let first = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/index/first"),
+            body: "first",
+            tags: ["Swift Notes", "Daily"],
+            metadata: ["source/type": "Daily Note", "status": "draft"]
+        ))
+        let second = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/index/second"),
+            body: "second",
+            tags: ["Daily"],
+            metadata: ["status": "draft"]
+        ))
+
+        #expect(try await store.documentIDs(tagged: "swift notes") == [first.id])
+        #expect(try await store.documentIDs(tagged: "daily") == [first.id, second.id].sorted())
+        #expect(try await store.documentIDs(metadataKey: "source/type", value: "daily note") == [first.id])
+        #expect(try await store.documentIDs(metadataKey: "status", value: "draft") == [first.id, second.id].sorted())
+    }
+}
+
+@Test func referencesCreateOutboundAndInboundIndexRecords() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let targetPath = try DocumentPath("/refs/target")
+        let target = try await store.putDocument(DocumentInput(
+            path: targetPath,
+            body: "target"
+        ))
+        let source = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/refs/source"),
+            body: "source",
+            references: [
+                .documentID(target.id),
+                .path(targetPath),
+                .externalURL(try #require(URL(string: "https://example.com/reference")))
+            ]
+        ))
+
+        #expect(try await store.outboundReferences(from: source.id) == [target.id])
+        #expect(try await store.inboundReferences(to: target.id) == [source.id])
+
+        _ = try await store.putDocument(DocumentInput(
+            path: source.path,
+            body: "source without refs"
+        ))
+
+        #expect(try await store.outboundReferences(from: source.id) == [])
+        #expect(try await store.inboundReferences(to: target.id) == [])
+    }
+}

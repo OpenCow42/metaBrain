@@ -66,6 +66,9 @@ public final class MetaBrainStore: Sendable {
 
     private let records: LevelDBStore<StringCodec, DataCodec>
     private let writes = MetaBrainWriteCoordinator()
+    private static let chunkTargetCharacterCount = 4_000
+    private static let chunkOverlapCharacterCount = 400
+    private static let emptyIndexValue = Data()
 
     public convenience init(path: String, options: MetaBrainStoreOptions = .default) throws {
         try self.init(url: URL(fileURLWithPath: path, isDirectory: true), options: options)
@@ -181,6 +184,40 @@ public final class MetaBrainStore: Sendable {
         }
     }
 
+    func currentChunks(for id: DocumentID) async throws -> [MetaBrainChunkRecord] {
+        try await currentChunkRecords(for: id)
+    }
+
+    func documentIDs(matchingTerm term: String) async throws -> [DocumentID] {
+        try await documentIDs(forIndexPrefix: MetaBrainKeyspace.termPrefix(Self.normalizedTerm(term)))
+    }
+
+    func documentIDs(tagged tag: String) async throws -> [DocumentID] {
+        try await documentIDs(forIndexPrefix: MetaBrainKeyspace.tagPrefix(tag))
+    }
+
+    func documentIDs(metadataKey key: String, value: String) async throws -> [DocumentID] {
+        try await documentIDs(forIndexPrefix: MetaBrainKeyspace.metadataPrefix(key: key, value: value))
+    }
+
+    func outboundReferences(from sourceID: DocumentID) async throws -> [DocumentID] {
+        let prefix = MetaBrainKeyspace.outboundReferencePrefix(sourceID: sourceID)
+        return try await scanKeys(withPrefix: prefix)
+            .compactMap { key in
+                try DocumentID(rawValue: String(key.dropFirst(prefix.count)))
+            }
+            .sorted()
+    }
+
+    func inboundReferences(to targetID: DocumentID) async throws -> [DocumentID] {
+        let prefix = MetaBrainKeyspace.inboundReferencePrefix(targetID: targetID)
+        return try await scanKeys(withPrefix: prefix)
+            .compactMap { key in
+                try DocumentID(rawValue: String(key.dropFirst(prefix.count)))
+            }
+            .sorted()
+    }
+
     private func writeNewDocument(_ input: DocumentInput) async throws -> StoredDocument {
         let now = Date()
         let id = DocumentID.generate()
@@ -210,6 +247,7 @@ public final class MetaBrainStore: Sendable {
         try await writeDocumentBatch(
             record: record,
             version: version,
+            previousRecord: nil,
             removedPath: nil,
             prunedVersions: []
         )
@@ -264,6 +302,7 @@ public final class MetaBrainStore: Sendable {
         try await writeDocumentBatch(
             record: record,
             version: version,
+            previousRecord: existingRecord,
             removedPath: removedPath,
             prunedVersions: prunedVersions
         )
@@ -274,6 +313,7 @@ public final class MetaBrainStore: Sendable {
     private func writeDocumentBatch(
         record: MetaBrainDocumentRecord,
         version: DocumentVersion,
+        previousRecord: MetaBrainDocumentRecord?,
         removedPath: DocumentPath?,
         prunedVersions: [DocumentVersion]
     ) async throws {
@@ -287,12 +327,38 @@ public final class MetaBrainStore: Sendable {
         let encodedRecord = try compressedData(record)
         let encodedVersion = try compressedData(version)
         let encodedID = Data(document.id.rawValue.utf8)
+        let staleChunkKeys = try await currentChunkKeys(for: document.id)
+        let staleIndexKeys = try await staleIndexKeys(
+            for: previousRecord?.document,
+            staleChunkKeys: staleChunkKeys
+        )
+        let staleReferenceKeys = try await staleReferenceKeys(sourceID: document.id)
+        let chunks = Self.chunkRecords(for: document)
+        let encodedChunks = try chunks.map { chunk in
+            (
+                key: MetaBrainKeyspace.currentChunk(id: document.id, ordinal: chunk.ordinal),
+                value: try compressedData(chunk)
+            )
+        }
+        let indexKeys = try await currentIndexKeys(for: document, chunks: chunks)
 
         do {
             try await records.write { batch in
+                for key in staleChunkKeys + staleIndexKeys + staleReferenceKeys {
+                    try batch.deleteValue(forKey: key)
+                }
+
                 try batch.put(encodedRecord, forKey: documentKey)
                 try batch.put(encodedID, forKey: pathKey)
                 try batch.put(encodedVersion, forKey: versionKey)
+
+                for chunk in encodedChunks {
+                    try batch.put(chunk.value, forKey: chunk.key)
+                }
+
+                for key in indexKeys {
+                    try batch.put(Self.emptyIndexValue, forKey: key)
+                }
 
                 if let removedPath {
                     try batch.deleteValue(forKey: MetaBrainKeyspace.documentPath(removedPath))
@@ -441,6 +507,200 @@ public final class MetaBrainStore: Sendable {
         }
     }
 
+    private func currentChunkRecords(for id: DocumentID) async throws -> [MetaBrainChunkRecord] {
+        do {
+            return try await records
+                .scanEncodedPrefix(Data(MetaBrainKeyspace.currentChunkPrefix(id: id).utf8))
+                .map { try decodeCompressedData($0.value, as: MetaBrainChunkRecord.self) }
+                .sorted { $0.ordinal < $1.ordinal }
+        } catch let error as LevelDBError {
+            throw Self.storeError(from: error, path: url.path)
+        }
+    }
+
+    private func currentChunkKeys(for id: DocumentID) async throws -> [String] {
+        try await scanKeys(withPrefix: MetaBrainKeyspace.currentChunkPrefix(id: id))
+    }
+
+    private func staleIndexKeys(
+        for document: StoredDocument?,
+        staleChunkKeys: [String]
+    ) async throws -> [String] {
+        guard let document else {
+            return []
+        }
+
+        var chunks: [MetaBrainChunkRecord] = []
+        for key in staleChunkKeys {
+            if let chunk = try await compressedRecord(forKey: key, as: MetaBrainChunkRecord.self) {
+                chunks.append(chunk)
+            }
+        }
+
+        var keys = Set<String>()
+        for chunk in chunks {
+            for term in Self.tokenize(chunk.text) {
+                keys.insert(MetaBrainKeyspace.term(term, id: document.id, ordinal: chunk.ordinal))
+            }
+        }
+        for tag in document.tags {
+            keys.insert(MetaBrainKeyspace.tag(tag, id: document.id))
+        }
+        for (key, value) in document.metadata {
+            keys.insert(MetaBrainKeyspace.metadata(key: key, value: value, id: document.id))
+        }
+
+        return keys.sorted()
+    }
+
+    private func staleReferenceKeys(sourceID: DocumentID) async throws -> [String] {
+        let outboundPrefix = MetaBrainKeyspace.outboundReferencePrefix(sourceID: sourceID)
+        let outboundKeys = try await scanKeys(withPrefix: outboundPrefix)
+        var keys = Set(outboundKeys)
+
+        for key in outboundKeys {
+            let rawTargetID = String(key.dropFirst(outboundPrefix.count))
+            let targetID = try DocumentID(rawValue: rawTargetID)
+            keys.insert(MetaBrainKeyspace.inboundReference(targetID: targetID, sourceID: sourceID))
+        }
+
+        return keys.sorted()
+    }
+
+    private func currentIndexKeys(
+        for document: StoredDocument,
+        chunks: [MetaBrainChunkRecord]
+    ) async throws -> [String] {
+        var keys = Set<String>()
+
+        for chunk in chunks {
+            for term in Self.tokenize(chunk.text) {
+                keys.insert(MetaBrainKeyspace.term(term, id: document.id, ordinal: chunk.ordinal))
+            }
+        }
+        for tag in document.tags {
+            keys.insert(MetaBrainKeyspace.tag(tag, id: document.id))
+        }
+        for (key, value) in document.metadata {
+            keys.insert(MetaBrainKeyspace.metadata(key: key, value: value, id: document.id))
+        }
+        for targetID in try await resolvedReferenceIDs(from: document.references) {
+            keys.insert(MetaBrainKeyspace.outboundReference(sourceID: document.id, targetID: targetID))
+            keys.insert(MetaBrainKeyspace.inboundReference(targetID: targetID, sourceID: document.id))
+        }
+
+        return keys.sorted()
+    }
+
+    private func resolvedReferenceIDs(from references: [DocumentReference]) async throws -> Set<DocumentID> {
+        var ids = Set<DocumentID>()
+
+        for reference in references {
+            switch reference {
+            case .documentID(let id):
+                ids.insert(id)
+            case .path(let path):
+                if let id = try await documentID(forPath: path) {
+                    ids.insert(id)
+                }
+            case .externalURL:
+                continue
+            }
+        }
+
+        return ids
+    }
+
+    private func documentIDs(forIndexPrefix prefix: String) async throws -> [DocumentID] {
+        let keys = try await scanKeys(withPrefix: prefix)
+        let ids = try keys.map { key in
+            let suffix = key.dropFirst(prefix.count)
+            let rawID = String(suffix.split(separator: "/").first ?? "")
+            return try DocumentID(rawValue: rawID)
+        }
+
+        return Array(Set(ids)).sorted()
+    }
+
+    private func scanKeys(withPrefix prefix: String) async throws -> [String] {
+        do {
+            return try await records
+                .scanEncodedPrefix(Data(prefix.utf8))
+                .map(\.key)
+                .sorted()
+        } catch let error as LevelDBError {
+            throw Self.storeError(from: error, path: url.path)
+        }
+    }
+
+    static func tokenize(_ text: String) -> [String] {
+        var terms: [String] = []
+        var current = ""
+
+        for scalar in text.lowercased().unicodeScalars {
+            if CharacterSet.alphanumerics.contains(scalar) {
+                current.unicodeScalars.append(scalar)
+            } else if !current.isEmpty {
+                terms.append(current)
+                current = ""
+            }
+        }
+
+        if !current.isEmpty {
+            terms.append(current)
+        }
+
+        return terms
+    }
+
+    private static func normalizedTerm(_ term: String) -> String {
+        tokenize(term).first ?? ""
+    }
+
+    private static func chunkRecords(for document: StoredDocument) -> [MetaBrainChunkRecord] {
+        let text = document.body
+        guard !text.isEmpty else {
+            return [
+                MetaBrainChunkRecord(
+                    documentID: document.id,
+                    versionSequence: document.currentVersion,
+                    ordinal: 0,
+                    text: "",
+                    startOffset: 0,
+                    endOffset: 0
+                )
+            ]
+        }
+
+        let count = text.count
+        var chunks: [MetaBrainChunkRecord] = []
+        var startOffset = 0
+        var ordinal: UInt32 = 0
+
+        while startOffset < count {
+            let endOffset = min(startOffset + chunkTargetCharacterCount, count)
+            let startIndex = text.index(text.startIndex, offsetBy: startOffset)
+            let endIndex = text.index(text.startIndex, offsetBy: endOffset)
+            chunks.append(MetaBrainChunkRecord(
+                documentID: document.id,
+                versionSequence: document.currentVersion,
+                ordinal: ordinal,
+                text: String(text[startIndex..<endIndex]),
+                startOffset: startOffset,
+                endOffset: endOffset
+            ))
+
+            guard endOffset < count else {
+                break
+            }
+
+            startOffset = max(startOffset + 1, endOffset - chunkOverlapCharacterCount)
+            ordinal += 1
+        }
+
+        return chunks
+    }
+
     private func codec<Value: Codable & Sendable>(
         for type: Value.Type
     ) -> ZstdCodec<JSONCodec<MetaBrainRecordEnvelope<Value>>> {
@@ -500,4 +760,13 @@ private actor MetaBrainWriteCoordinator {
 private struct MetaBrainDocumentRecord: Codable, Equatable, Sendable {
     var document: StoredDocument
     var retention: VersionRetentionPolicy
+}
+
+struct MetaBrainChunkRecord: Codable, Equatable, Sendable {
+    var documentID: DocumentID
+    var versionSequence: UInt64
+    var ordinal: UInt32
+    var text: String
+    var startOffset: Int
+    var endOffset: Int
 }

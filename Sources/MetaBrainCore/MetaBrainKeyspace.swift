@@ -20,24 +20,48 @@ enum MetaBrainKeyspace {
         "chunk/current/\(id.rawValue)/\(padded(UInt64(ordinal), width: ordinalWidth))"
     }
 
+    static func currentChunkPrefix(id: DocumentID) -> String {
+        "chunk/current/\(id.rawValue)/"
+    }
+
     static func term(_ term: String, id: DocumentID, ordinal: UInt32) -> String {
         "idx/term/\(component(term))/\(id.rawValue)/\(padded(UInt64(ordinal), width: ordinalWidth))"
+    }
+
+    static func termPrefix(_ term: String) -> String {
+        "idx/term/\(component(term))/"
     }
 
     static func tag(_ tag: String, id: DocumentID) -> String {
         "idx/tag/\(component(tag))/\(id.rawValue)"
     }
 
+    static func tagPrefix(_ tag: String) -> String {
+        "idx/tag/\(component(tag))/"
+    }
+
     static func metadata(key: String, value: String, id: DocumentID) -> String {
         "idx/meta/\(component(key))/\(component(value))/\(id.rawValue)"
+    }
+
+    static func metadataPrefix(key: String, value: String) -> String {
+        "idx/meta/\(component(key))/\(component(value))/"
     }
 
     static func outboundReference(sourceID: DocumentID, targetID: DocumentID) -> String {
         "idx/ref/out/\(sourceID.rawValue)/\(targetID.rawValue)"
     }
 
+    static func outboundReferencePrefix(sourceID: DocumentID) -> String {
+        "idx/ref/out/\(sourceID.rawValue)/"
+    }
+
     static func inboundReference(targetID: DocumentID, sourceID: DocumentID) -> String {
         "idx/ref/in/\(targetID.rawValue)/\(sourceID.rawValue)"
+    }
+
+    static func inboundReferencePrefix(targetID: DocumentID) -> String {
+        "idx/ref/in/\(targetID.rawValue)/"
     }
 
     static func tree(parentPath: DocumentPath, name: String) -> String {
