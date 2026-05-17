@@ -15,10 +15,6 @@ let package = Package(
         .executable(
             name: "metabrain",
             targets: ["MetaBrainCLI"]
-        ),
-        .executable(
-            name: "MetaBrainApp",
-            targets: ["MetaBrainApp"]
         )
     ],
     dependencies: [
@@ -38,10 +34,6 @@ let package = Package(
         .package(
             url: "git@github.com:OpenCow42/swift-leveldb.git",
             branch: "main"
-        ),
-        .package(
-            url: "https://github.com/gonzalezreal/textual",
-            from: "0.3.1"
         )
     ],
     targets: [
@@ -56,20 +48,6 @@ let package = Package(
             dependencies: [
                 "MetaBrainCore",
                 .product(name: "ArgumentParser", package: "swift-argument-parser")
-            ]
-        ),
-        .executableTarget(
-            name: "MetaBrainApp",
-            dependencies: [
-                "MetaBrainAppSupport",
-                "MetaBrainCore",
-                .product(name: "Textual", package: "textual")
-            ]
-        ),
-        .target(
-            name: "MetaBrainAppSupport",
-            dependencies: [
-                "MetaBrainCore"
             ]
         ),
         .executableTarget(
@@ -103,13 +81,6 @@ let package = Package(
                 .product(name: "PropertyBased", package: "swift-property-based")
             ]
         ),
-        .testTarget(
-            name: "MetaBrainAppTests",
-            dependencies: [
-                "MetaBrainAppSupport",
-                "MetaBrainCore"
-            ]
-        )
     ],
     swiftLanguageModes: [.v6]
 )

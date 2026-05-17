@@ -15,8 +15,9 @@ These rules apply to the whole `metaBrain` repository. They are here to keep age
 ## Architecture
 
 - Keep shared behavior in `MetaBrainCore`.
-- Keep `MetaBrainCLI` and `MetaBrainApp` as thin frontends over the shared core.
-- Do not duplicate business logic between the CLI and UI app.
+- Keep `MetaBrainCLI` thin over the shared core.
+- Keep Apple platform UI work in the sibling `metaBrainExplorer` repository.
+- Do not duplicate business logic between the CLI, core package, and Explorer app.
 - Prefer clear, boring interfaces in the shared library before adding frontend-specific behavior.
 - Keep public APIs intentional and documented when they become part of the project surface.
 - Keep [COMPLEXITY.md](COMPLEXITY.md) current when changing CLI command flows or core store scan patterns.

@@ -6,13 +6,14 @@ The goal is to help AI tools store, retrieve, discover, and navigate large bodie
 
 ## Project Shape
 
-This repository is a Swift package with three products:
+This repository is a Swift package with two products:
 
 - `MetaBrainCore`: the shared library where storage, indexing, retrieval, and domain behavior should live.
 - `metabrain`: the command-line tool.
-- `MetaBrainApp`: a SwiftUI app target for a graphical interface.
 
-The CLI and app should stay thin. Shared behavior belongs in `MetaBrainCore` so every interface uses the same underlying model.
+The CLI should stay thin. Shared behavior belongs in `MetaBrainCore` so every interface uses the same underlying model.
+
+The native Apple platform GUI now lives in the separate [`metaBrainExplorer`](../metaBrainExplorer) repository. It depends on `MetaBrainCore` and owns app-specific state, presentation, and Apple UI integration.
 
 The planned storage API is an async `MetaBrainStore` final class: one explicit store handle with internally coordinated writes and concurrent read/search paths where LevelDB supports them. The project will start embedded in the CLI and app; a daemon can come later if multi-process coordination becomes necessary.
 
@@ -115,11 +116,13 @@ syntax.
 
 ## Run The App
 
-```bash
-swift run MetaBrainApp
+The native Apple platform app lives in:
+
+```text
+/Users/opencow/Software/metaBrainExplorer
 ```
 
-The SwiftUI app target is useful for local development. A polished distributable app may later move to an Xcode app project that depends on `MetaBrainCore`.
+Open that Xcode project and run the `MetaBrainExplorer` scheme to build a real `.app` bundle that depends on `MetaBrainCore`.
 
 ## Testing Philosophy
 
