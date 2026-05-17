@@ -193,7 +193,7 @@ public final class MetaBrainStore: Sendable {
             element.key.documentID
         }
 
-        var results: [SearchResult] = []
+        var topCandidates = MetaBrainSearchTopCandidates(limit: query.limit)
         let groupedCandidates = candidatesByDocument.sorted { lhs, rhs in
             lhs.key < rhs.key
         }
@@ -209,21 +209,6 @@ public final class MetaBrainStore: Sendable {
 
             let chunks = try await currentChunkRecords(for: documentID)
             let chunksByOrdinal = Dictionary(uniqueKeysWithValues: chunks.map { ($0.ordinal, $0) })
-            let linkedDocuments: [DocumentReference]
-            if query.includeLinkedDocuments {
-                linkedDocuments = try await outboundReferences(from: documentID)
-                    .map(DocumentReference.documentID)
-            } else {
-                linkedDocuments = []
-            }
-
-            let backlinks: [DocumentReference]
-            if query.includeBacklinks {
-                backlinks = try await inboundReferences(to: documentID)
-                    .map(DocumentReference.documentID)
-            } else {
-                backlinks = []
-            }
 
             for (candidate, matchedTerms) in documentCandidates {
                 guard let chunk = chunksByOrdinal[candidate.chunkOrdinal] else {
@@ -236,34 +221,21 @@ public final class MetaBrainStore: Sendable {
                     matchedTerms: matchedTerms,
                     chunkTerms: chunkTerms
                 )
-                let context = Self.contextChunks(around: candidate.chunkOrdinal, in: chunks)
 
-                results.append(SearchResult(
+                topCandidates.insert(MetaBrainRankedSearchCandidate(
                     documentID: document.id,
                     path: document.path,
                     title: document.title,
                     chunkOrdinal: chunk.ordinal,
-                    snippet: chunk.text,
-                    score: score,
-                    context: context,
-                    linkedDocuments: linkedDocuments,
-                    backlinks: backlinks
+                    score: score
                 ))
             }
         }
 
-        return results
-            .sorted {
-                if $0.score != $1.score {
-                    return $0.score > $1.score
-                }
-                if $0.documentID != $1.documentID {
-                    return $0.documentID < $1.documentID
-                }
-                return $0.chunkOrdinal < $1.chunkOrdinal
-            }
-            .prefix(query.limit)
-            .map { $0 }
+        return try await searchResults(
+            from: topCandidates.sortedCandidates(),
+            query: query
+        )
     }
 
     @discardableResult
@@ -968,6 +940,73 @@ public final class MetaBrainStore: Sendable {
         }
     }
 
+    private func searchResults(
+        from candidates: [MetaBrainRankedSearchCandidate],
+        query: SearchQuery
+    ) async throws -> [SearchResult] {
+        var chunksByDocument: [DocumentID: [MetaBrainChunkRecord]] = [:]
+        var linkedDocumentsByDocument: [DocumentID: [DocumentReference]] = [:]
+        var backlinksByDocument: [DocumentID: [DocumentReference]] = [:]
+        var results: [SearchResult] = []
+
+        for candidate in candidates {
+            let chunks: [MetaBrainChunkRecord]
+            if let cachedChunks = chunksByDocument[candidate.documentID] {
+                chunks = cachedChunks
+            } else {
+                let currentChunks = try await currentChunkRecords(for: candidate.documentID)
+                chunksByDocument[candidate.documentID] = currentChunks
+                chunks = currentChunks
+            }
+
+            guard let chunk = chunks.first(where: { $0.ordinal == candidate.chunkOrdinal }) else {
+                continue
+            }
+
+            let linkedDocuments: [DocumentReference]
+            if query.includeLinkedDocuments {
+                if let cachedReferences = linkedDocumentsByDocument[candidate.documentID] {
+                    linkedDocuments = cachedReferences
+                } else {
+                    let references = try await outboundReferences(from: candidate.documentID)
+                        .map(DocumentReference.documentID)
+                    linkedDocumentsByDocument[candidate.documentID] = references
+                    linkedDocuments = references
+                }
+            } else {
+                linkedDocuments = []
+            }
+
+            let backlinks: [DocumentReference]
+            if query.includeBacklinks {
+                if let cachedReferences = backlinksByDocument[candidate.documentID] {
+                    backlinks = cachedReferences
+                } else {
+                    let references = try await inboundReferences(to: candidate.documentID)
+                        .map(DocumentReference.documentID)
+                    backlinksByDocument[candidate.documentID] = references
+                    backlinks = references
+                }
+            } else {
+                backlinks = []
+            }
+
+            results.append(SearchResult(
+                documentID: candidate.documentID,
+                path: candidate.path,
+                title: candidate.title,
+                chunkOrdinal: candidate.chunkOrdinal,
+                snippet: chunk.text,
+                score: candidate.score,
+                context: Self.contextChunks(around: candidate.chunkOrdinal, in: chunks),
+                linkedDocuments: linkedDocuments,
+                backlinks: backlinks
+            ))
+        }
+
+        return results
+    }
+
     private func scanKeys(withPrefix prefix: String) async throws -> [String] {
         return try await Self.mapLevelDBErrors(path: url.path) {
             try await records
@@ -1246,4 +1285,53 @@ struct MetaBrainChunkRecord: Codable, Equatable, Sendable {
 private struct MetaBrainSearchCandidate: Hashable, Sendable {
     var documentID: DocumentID
     var chunkOrdinal: UInt32
+}
+
+private struct MetaBrainRankedSearchCandidate: Sendable {
+    var documentID: DocumentID
+    var path: DocumentPath
+    var title: String?
+    var chunkOrdinal: UInt32
+    var score: Double
+}
+
+private struct MetaBrainSearchTopCandidates: Sendable {
+    private let limit: Int
+    private var candidates: [MetaBrainRankedSearchCandidate] = []
+
+    init(limit: Int) {
+        self.limit = limit
+    }
+
+    mutating func insert(_ candidate: MetaBrainRankedSearchCandidate) {
+        guard limit > 0 else {
+            return
+        }
+
+        if let insertionIndex = candidates.firstIndex(where: { Self.ranksBefore(candidate, $0) }) {
+            candidates.insert(candidate, at: insertionIndex)
+            if candidates.count > limit {
+                candidates.removeLast()
+            }
+        } else if candidates.count < limit {
+            candidates.append(candidate)
+        }
+    }
+
+    func sortedCandidates() -> [MetaBrainRankedSearchCandidate] {
+        candidates
+    }
+
+    private static func ranksBefore(
+        _ lhs: MetaBrainRankedSearchCandidate,
+        _ rhs: MetaBrainRankedSearchCandidate
+    ) -> Bool {
+        if lhs.score != rhs.score {
+            return lhs.score > rhs.score
+        }
+        if lhs.documentID != rhs.documentID {
+            return lhs.documentID < rhs.documentID
+        }
+        return lhs.chunkOrdinal < rhs.chunkOrdinal
+    }
 }

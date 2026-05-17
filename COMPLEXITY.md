@@ -186,14 +186,19 @@ The main work is:
 - scan term posting prefixes for every query term: `O(Q * seek(S) + P log P)`;
 - OR-merge postings into unique document/chunk candidates: `O(P)`;
 - for every matched document, decode the document record once, scan current
-  chunks once in key order, fetch optional reference edges once, and score each
-  matched chunk:
-  `O(M * seek(S) + B_match + C_match + M * (W^2 + E))`;
-- sort all candidates before applying the result limit: `O(M log M)`.
+  chunks once in key order, and score each matched chunk:
+  `O(M * seek(S) + B_match + C_match + M * W^2)`;
+- keep only the best `L` scored candidates during traversal, where `L` is
+  `--limit`, using bounded insertion cost `O(M * L)` instead of a full
+  `O(M log M)` result sort;
+- materialize snippets, neighboring context, and optional reference edges only
+  for the retained top `L` results: `O(L * seek(S) + B_limit + L * E)`.
 
 The scoring locality helper can be `O(W^2)` for a chunk with many repeated query
 terms. This is usually hidden by small chunk sizes, but broad common-term
-queries can still create many candidates.
+queries can still create many candidates. Search remains exact, so broad
+queries still score every candidate before `--limit` is final; the limit now
+primarily bounds retained result records and reference/context enrichment.
 
 ### `versions`
 
@@ -217,5 +222,6 @@ when a core storage method changes its scan pattern, or when an optimization
 removes one of the warnings above. Any benchmark or profiling work should record
 the data shape alongside timings so the variables in this document stay useful.
 Good candidates to revisit next are streaming prefix scans with early result
-limits, version-summary indexes for prune/list operations, and search paths that
-can apply `--limit` before scoring every common-term candidate.
+limits, version-summary indexes for prune/list operations, and an explicit
+approximate search mode that can apply `--limit` before scoring every
+common-term candidate.

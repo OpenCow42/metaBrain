@@ -774,6 +774,110 @@ private func storeTestCodec<Value: Codable & Sendable>(
     }
 }
 
+@Test func searchLimitMatchesFullSearchPrefix() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        _ = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/search/limit-strong"),
+            body: "alpha beta alpha beta alpha"
+        ))
+        _ = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/search/limit-medium"),
+            body: "alpha beta"
+        ))
+        _ = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/search/limit-weak"),
+            body: "alpha only"
+        ))
+
+        let full = try await store.search(SearchQuery(text: "alpha beta", limit: 10))
+        let limited = try await store.search(SearchQuery(text: "alpha beta", limit: 2))
+
+        #expect(limited == Array(full.prefix(2)))
+    }
+}
+
+@Test func searchLimitPreservesTieOrdering() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        _ = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/search/limit-tie-a"),
+            body: "needle"
+        ))
+        _ = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/search/limit-tie-b"),
+            body: "needle"
+        ))
+        _ = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/search/limit-tie-c"),
+            body: "needle"
+        ))
+
+        let full = try await store.search(SearchQuery(text: "needle", limit: 10))
+        let limited = try await store.search(SearchQuery(text: "needle", limit: 2))
+
+        #expect(limited == Array(full.prefix(2)))
+        #expect(limited.map(\.documentID) == Array(full.map(\.documentID).prefix(2)))
+    }
+}
+
+@Test func searchLimitKeepsLaterHigherScoringChunk() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let body = "alpha "
+            + String(repeating: "filler ", count: 700)
+            + "alpha beta beta beta"
+        let document = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/search/limit-later-stronger"),
+            body: body
+        ))
+
+        let results = try await store.search(SearchQuery(text: "alpha beta", limit: 1))
+
+        #expect(results.map(\.documentID) == [document.id])
+        #expect(results.map(\.chunkOrdinal) == [1])
+    }
+}
+
+@Test func searchLimitPreservesReferenceHintsOnRetainedResults() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let target = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/search/limit-target"),
+            body: "target target target"
+        ))
+        let source = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/search/limit-source"),
+            body: "source source source",
+            references: [.documentID(target.id)]
+        ))
+        _ = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/search/limit-source-loser"),
+            body: "source"
+        ))
+        _ = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/search/limit-target-loser"),
+            body: "target"
+        ))
+
+        let outbound = try #require(try await store.search(SearchQuery(
+            text: "source",
+            includeLinkedDocuments: true,
+            limit: 1
+        )).first)
+        let inbound = try #require(try await store.search(SearchQuery(
+            text: "target",
+            includeBacklinks: true,
+            limit: 1
+        )).first)
+
+        #expect(outbound.documentID == source.id)
+        #expect(outbound.linkedDocuments == [.documentID(target.id)])
+        #expect(inbound.documentID == target.id)
+        #expect(inbound.backlinks == [.documentID(source.id)])
+    }
+}
+
 @Test func searchSkipsDanglingDocumentAndChunkPostings() async throws {
     try await withTemporaryStoreFixture { fixture in
         let store = try MetaBrainStore(url: fixture.storeURL)
