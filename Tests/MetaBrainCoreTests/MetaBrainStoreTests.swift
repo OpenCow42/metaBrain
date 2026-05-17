@@ -531,6 +531,29 @@ private func storeTestCodec<Value: Codable & Sendable>(
     }
 }
 
+@Test func currentVersionChunksPreserveUnicodeOffsetsAndOverlap() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let body = String(repeating: "é", count: 3_600)
+            + String(repeating: "界", count: 400)
+            + String(repeating: "🙂", count: 200)
+        let document = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/index/unicode-chunks"),
+            body: body
+        ))
+
+        let chunks = try await store.currentChunks(for: document.id)
+
+        #expect(chunks.count == 2)
+        #expect(chunks.map(\.ordinal) == [0, 1])
+        #expect(chunks.map(\.startOffset) == [0, 3_600])
+        #expect(chunks.map(\.endOffset) == [4_000, 4_200])
+        #expect(chunks[0].text.count == 4_000)
+        #expect(chunks[1].text.count == 600)
+        #expect(chunks[0].text.suffix(400) == chunks[1].text.prefix(400))
+    }
+}
+
 @Test func emptyDocumentBodyStoresCurrentEmptyChunkButNoTermIndexes() async throws {
     try await withTemporaryStoreFixture { fixture in
         let store = try MetaBrainStore(url: fixture.storeURL)
@@ -982,6 +1005,47 @@ private func storeTestCodec<Value: Codable & Sendable>(
     }
 }
 
+@Test func searchPreservesMultiChunkResultsFiltersAndReferenceHints() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let target = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/grouped/target"),
+            body: "target clue"
+        ))
+        let sourceBody = "needle first "
+            + String(repeating: "context ", count: 650)
+            + "needle second"
+        let source = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/grouped/source"),
+            body: sourceBody,
+            tags: ["grouped"],
+            metadata: ["kind": "search"],
+            references: [.documentID(target.id)]
+        ))
+        _ = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/grouped/other"),
+            body: "needle filtered out",
+            tags: ["grouped"],
+            metadata: ["kind": "other"]
+        ))
+
+        let results = try await store.search(SearchQuery(
+            text: "needle",
+            pathPrefix: try DocumentPath("/grouped"),
+            tags: ["grouped"],
+            metadata: ["kind": "search"],
+            includeLinkedDocuments: true,
+            limit: 10
+        ))
+
+        #expect(results.map(\.documentID) == [source.id, source.id])
+        #expect(results.map(\.chunkOrdinal) == [0, 1])
+        #expect(results.allSatisfy { $0.linkedDocuments == [.documentID(target.id)] })
+        #expect(results.first?.context.map(\.ordinal) == [1])
+        #expect(results.last?.context.map(\.ordinal) == [0])
+    }
+}
+
 @Test func searchReturnsNoResultsForMissingTermsAndEmptyQueries() async throws {
     try await withTemporaryStoreFixture { fixture in
         let store = try MetaBrainStore(url: fixture.storeURL)
@@ -1105,6 +1169,116 @@ private func storeTestCodec<Value: Codable & Sendable>(
         #expect(oldEntries == [])
         #expect(newEntries.map(\.path.rawValue) == ["/new/path/doc"])
         #expect(newEntries.first?.documentID == created.id)
+    }
+}
+
+@Test func treeIndexPreservesSharedOldAncestorsAfterRename() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let moved = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/old/path/moved"),
+            body: "move me"
+        ))
+        let sibling = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/old/path/sibling"),
+            body: "stay here"
+        ))
+
+        _ = try await store.updateDocument(
+            .documentID(moved.id),
+            with: DocumentInput(
+                path: try DocumentPath("/new/path/moved"),
+                body: "moved"
+            )
+        )
+
+        let rootEntries = try await store.listDirectory()
+        let oldPathEntries = try await store.listDirectory(path: try DocumentPath("/old/path"))
+        let newPathEntries = try await store.listDirectory(path: try DocumentPath("/new/path"))
+
+        #expect(rootEntries.map(\.path.rawValue) == ["/new", "/old"])
+        #expect(oldPathEntries.map(\.path.rawValue) == ["/old/path/sibling"])
+        #expect(oldPathEntries.first?.documentID == sibling.id)
+        #expect(newPathEntries.map(\.path.rawValue) == ["/new/path/moved"])
+        #expect(newPathEntries.first?.documentID == moved.id)
+    }
+}
+
+@Test func treeIndexPreservesDocumentThatIsAlsoDirectoryAfterChildRename() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let parent = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/topic"),
+            body: "parent document"
+        ))
+        let child = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/topic/child"),
+            body: "child document"
+        ))
+
+        _ = try await store.updateDocument(
+            .documentID(child.id),
+            with: DocumentInput(
+                path: try DocumentPath("/other/child"),
+                body: "moved child"
+            )
+        )
+
+        let rootEntries = try await store.listDirectory()
+        let topicEntries = try await store.listDirectory(path: try DocumentPath("/topic"))
+        let topicEntry = try #require(rootEntries.first { $0.path == parent.path })
+
+        #expect(rootEntries.map(\.path.rawValue) == ["/other", "/topic"])
+        #expect(topicEntry.documentID == parent.id)
+        #expect(!topicEntry.hasChildren)
+        #expect(topicEntries == [])
+    }
+}
+
+@Test func treeIndexUpdatesDocumentEntryInPlaceWithoutChangingBranches() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let original = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/same/path/doc"),
+            body: "before"
+        ))
+
+        let updated = try await store.putDocument(DocumentInput(
+            path: original.path,
+            body: "after"
+        ))
+        let entries = try await store.listDirectory(path: try DocumentPath("/same/path"))
+
+        #expect(entries.map(\.path) == [original.path])
+        #expect(entries.first?.documentID == original.id)
+        #expect(entries.first?.updatedAt == updated.updatedAt)
+    }
+}
+
+@Test func treeIndexIgnoresMalformedDescendantPathKeys() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let path = try DocumentPath("/corrupt")
+
+        try await store.writeRawValue(
+            Data("bad-id".utf8),
+            forKey: MetaBrainKeyspace.documentPathDescendantPrefix(path) + "\u{0}"
+        )
+        let document = try await store.putDocument(DocumentInput(
+            path: path,
+            body: "before"
+        ))
+
+        let updated = try await store.putDocument(DocumentInput(
+            path: document.path,
+            body: "after"
+        ))
+        let entries = try await store.listDirectory()
+
+        #expect(updated.id == document.id)
+        #expect(entries.map(\.path) == [path])
+        #expect(entries.first?.documentID == document.id)
+        #expect(entries.first?.hasChildren == false)
     }
 }
 

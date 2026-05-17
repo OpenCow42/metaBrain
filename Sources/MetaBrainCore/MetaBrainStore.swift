@@ -69,6 +69,7 @@ public final class MetaBrainStore: Sendable {
     private static let chunkTargetCharacterCount = 4_000
     private static let chunkOverlapCharacterCount = 400
     private static let emptyIndexValue = Data()
+    private static let bulkReadOptions = Database.ReadOptions(fillCache: false)
 
     public convenience init(path: String, options: MetaBrainStoreOptions = .default) throws {
         try self.init(url: URL(fileURLWithPath: path, isDirectory: true), options: options)
@@ -137,8 +138,16 @@ public final class MetaBrainStore: Sendable {
         directoriesOnly: Bool = false
     ) async throws -> [DocumentTreeEntry] {
         guard recursive else {
-            return try await childTreeEntries(of: path)
-                .filter { !directoriesOnly || $0.hasChildren }
+            let children = try await childTreeEntries(of: path)
+            var entries: [DocumentTreeEntry] = []
+            for child in children {
+                if !directoriesOnly {
+                    entries.append(child)
+                } else if child.hasChildren {
+                    entries.append(child)
+                }
+            }
+            return entries
         }
 
         return try await flattenedTreeEntries(
@@ -168,18 +177,28 @@ public final class MetaBrainStore: Sendable {
         var matches: [MetaBrainSearchCandidate: Set<String>] = [:]
 
         for term in queryTerms {
-            for posting in try await termPostings(for: term) {
+            let postings = try await termPostings(for: term)
+            for posting in postings {
                 if let allowedIDs, !allowedIDs.contains(posting.documentID) {
                     continue
                 }
 
-                matches[posting, default: []].insert(term)
+                var matchedTerms = matches[posting] ?? []
+                matchedTerms.insert(term)
+                matches[posting] = matchedTerms
             }
         }
 
+        let candidatesByDocument = Dictionary(grouping: matches) { element in
+            element.key.documentID
+        }
+
         var results: [SearchResult] = []
-        for (candidate, matchedTerms) in matches {
-            guard let record = try await documentRecord(id: candidate.documentID) else {
+        let groupedCandidates = candidatesByDocument.sorted { lhs, rhs in
+            lhs.key < rhs.key
+        }
+        for (documentID, documentCandidates) in groupedCandidates {
+            guard let record = try await documentRecord(id: documentID) else {
                 continue
             }
 
@@ -188,21 +207,11 @@ public final class MetaBrainStore: Sendable {
                 continue
             }
 
-            let chunks = try await currentChunkRecords(for: candidate.documentID)
-            guard let chunk = chunks.first(where: { $0.ordinal == candidate.chunkOrdinal }) else {
-                continue
-            }
-
-            let chunkTerms = Self.tokenize(chunk.text)
-            let score = Self.searchScore(
-                queryTerms: queryTerms,
-                matchedTerms: matchedTerms,
-                chunkTerms: chunkTerms
-            )
-            let context = Self.contextChunks(around: candidate.chunkOrdinal, in: chunks)
+            let chunks = try await currentChunkRecords(for: documentID)
+            let chunksByOrdinal = Dictionary(uniqueKeysWithValues: chunks.map { ($0.ordinal, $0) })
             let linkedDocuments: [DocumentReference]
             if query.includeLinkedDocuments {
-                linkedDocuments = try await outboundReferences(from: candidate.documentID)
+                linkedDocuments = try await outboundReferences(from: documentID)
                     .map(DocumentReference.documentID)
             } else {
                 linkedDocuments = []
@@ -210,23 +219,37 @@ public final class MetaBrainStore: Sendable {
 
             let backlinks: [DocumentReference]
             if query.includeBacklinks {
-                backlinks = try await inboundReferences(to: candidate.documentID)
+                backlinks = try await inboundReferences(to: documentID)
                     .map(DocumentReference.documentID)
             } else {
                 backlinks = []
             }
 
-            results.append(SearchResult(
-                documentID: document.id,
-                path: document.path,
-                title: document.title,
-                chunkOrdinal: chunk.ordinal,
-                snippet: chunk.text,
-                score: score,
-                context: context,
-                linkedDocuments: linkedDocuments,
-                backlinks: backlinks
-            ))
+            for (candidate, matchedTerms) in documentCandidates {
+                guard let chunk = chunksByOrdinal[candidate.chunkOrdinal] else {
+                    continue
+                }
+
+                let chunkTerms = Self.tokenize(chunk.text)
+                let score = Self.searchScore(
+                    queryTerms: queryTerms,
+                    matchedTerms: matchedTerms,
+                    chunkTerms: chunkTerms
+                )
+                let context = Self.contextChunks(around: candidate.chunkOrdinal, in: chunks)
+
+                results.append(SearchResult(
+                    documentID: document.id,
+                    path: document.path,
+                    title: document.title,
+                    chunkOrdinal: chunk.ordinal,
+                    snippet: chunk.text,
+                    score: score,
+                    context: context,
+                    linkedDocuments: linkedDocuments,
+                    backlinks: backlinks
+                ))
+            }
         }
 
         return results
@@ -341,9 +364,15 @@ public final class MetaBrainStore: Sendable {
             createdAt: now,
             updatedAt: now
         )
+        let retentionPolicy: VersionRetentionPolicy
+        if let inputRetention = input.retention {
+            retentionPolicy = inputRetention
+        } else {
+            retentionPolicy = .keepAll
+        }
         let record = MetaBrainDocumentRecord(
             document: document,
-            retention: input.retention ?? .keepAll
+            retention: retentionPolicy
         )
         let version = DocumentVersion(
             documentID: id,
@@ -390,9 +419,15 @@ public final class MetaBrainStore: Sendable {
             createdAt: existing.createdAt,
             updatedAt: now
         )
+        let retentionPolicy: VersionRetentionPolicy
+        if let inputRetention = input.retention {
+            retentionPolicy = inputRetention
+        } else {
+            retentionPolicy = existingRecord.retention
+        }
         let record = MetaBrainDocumentRecord(
             document: document,
-            retention: input.retention ?? existingRecord.retention
+            retention: retentionPolicy
         )
         let version = DocumentVersion(
             documentID: id,
@@ -400,7 +435,12 @@ public final class MetaBrainStore: Sendable {
             snapshot: input,
             createdAt: now
         )
-        let removedPath = existing.path == input.path ? nil : existing.path
+        let removedPath: DocumentPath?
+        if existing.path == input.path {
+            removedPath = nil
+        } else {
+            removedPath = existing.path
+        }
         let prunedVersions = try await prunedVersionRecords(
             id: id,
             appending: version,
@@ -441,7 +481,10 @@ public final class MetaBrainStore: Sendable {
             staleChunkKeys: staleChunkKeys
         )
         let staleReferenceKeys = try await staleReferenceKeys(sourceID: document.id)
-        let treeUpdate = try await replacementTreeUpdate(replacing: document)
+        let treeUpdate = try await incrementalTreeUpdate(
+            replacing: document,
+            removedPath: removedPath
+        )
         let chunks = Self.chunkRecords(for: document)
         let encodedChunks = try chunks.map { chunk in
             (
@@ -612,18 +655,19 @@ public final class MetaBrainStore: Sendable {
 
         return try await Self.mapLevelDBErrors(path: url.path) {
             try await records
-                .scanEncodedPrefix(Data(prefix.utf8))
+                .scanEncodedPrefix(Data(prefix.utf8), readOptions: Self.bulkReadOptions)
                 .map { try decodeCompressedData($0.value, as: DocumentVersion.self) }
-                .sorted { $0.sequence < $1.sequence }
         }
     }
 
     private func currentChunkRecords(for id: DocumentID) async throws -> [MetaBrainChunkRecord] {
         return try await Self.mapLevelDBErrors(path: url.path) {
             try await records
-                .scanEncodedPrefix(Data(MetaBrainKeyspace.currentChunkPrefix(id: id).utf8))
+                .scanEncodedPrefix(
+                    Data(MetaBrainKeyspace.currentChunkPrefix(id: id).utf8),
+                    readOptions: Self.bulkReadOptions
+                )
                 .map { try decodeCompressedData($0.value, as: MetaBrainChunkRecord.self) }
-                .sorted { $0.ordinal < $1.ordinal }
         }
     }
 
@@ -636,7 +680,7 @@ public final class MetaBrainStore: Sendable {
 
         return try await Self.mapLevelDBErrors(path: url.path) {
             try await records
-                .scanEncodedPrefix(Data(prefix.utf8))
+                .scanEncodedPrefix(Data(prefix.utf8), readOptions: Self.bulkReadOptions)
                 .map { try decodeCompressedData($0.value, as: MetaBrainTreeRecord.self).entry }
                 .sorted { $0.path.rawValue < $1.path.rawValue }
         }
@@ -673,42 +717,100 @@ public final class MetaBrainStore: Sendable {
         return entries
     }
 
-    private func replacementTreeUpdate(
-        replacing document: StoredDocument
+    private func incrementalTreeUpdate(
+        replacing document: StoredDocument,
+        removedPath: DocumentPath?
     ) async throws -> (removedKeys: [String], records: [(key: String, value: Data)]) {
-        let removedKeys = try await scanKeys(withPrefix: MetaBrainKeyspace.prefix(.tree))
-        let documents = try await documentsForTreeRebuild(replacing: document)
-        let records = try Self.treeRecords(for: documents).map { record in
-            (
-                key: MetaBrainKeyspace.tree(parentPath: record.parentPath, name: record.entry.name),
-                value: try compressedData(record)
-            )
+        let affectedPaths = Self.treeAffectedPaths(
+            newPath: document.path,
+            removedPath: removedPath
+        )
+        var removedKeys: [String] = []
+        var records: [(key: String, value: Data)] = []
+
+        for path in affectedPaths {
+            let key = MetaBrainKeyspace.tree(parentPath: path.parent!, name: path.name)
+            guard let record = try await treeRecordAfterWrite(
+                for: path,
+                replacing: document,
+                removedPath: removedPath
+            ) else {
+                removedKeys.append(key)
+                continue
+            }
+
+            records.append((key: key, value: try compressedData(record)))
         }
 
         return (removedKeys, records)
     }
 
-    private func documentsForTreeRebuild(
-        replacing document: StoredDocument
-    ) async throws -> [StoredDocument] {
-        let pathPrefix = MetaBrainKeyspace.prefix(.documentPath)
-        let pathKeys = try await scanKeys(withPrefix: pathPrefix)
-        var documents: [StoredDocument] = []
+    private func treeRecordAfterWrite(
+        for path: DocumentPath,
+        replacing document: StoredDocument,
+        removedPath: DocumentPath?
+    ) async throws -> MetaBrainTreeRecord? {
+        let documentAtPath: StoredDocument?
+        if path == document.path {
+            documentAtPath = document
+        } else if path == removedPath {
+            documentAtPath = nil
+        } else if let id = try await documentID(forPath: path),
+                  let record = try await documentRecord(id: id) {
+            documentAtPath = record.document
+        } else {
+            documentAtPath = nil
+        }
 
-        for key in pathKeys {
-            let rawPath = String(key.dropFirst(pathPrefix.count))
-            let path = try DocumentPath(rawPath)
-            guard let id = try await documentID(forPath: path),
-                  id != document.id,
-                  let record = try await documentRecord(id: id) else {
+        let hasChildren = try await pathHasChildrenAfterWrite(
+            path,
+            replacing: document,
+            removedPath: removedPath
+        )
+
+        guard documentAtPath != nil || hasChildren else {
+            return nil
+        }
+
+        return MetaBrainTreeRecord(
+            parentPath: path.parent!,
+            entry: DocumentTreeEntry(
+                path: path,
+                name: path.name,
+                hasChildren: hasChildren,
+                documentID: documentAtPath?.id,
+                createdAt: documentAtPath?.createdAt,
+                updatedAt: documentAtPath?.updatedAt
+            )
+        )
+    }
+
+    private func pathHasChildrenAfterWrite(
+        _ path: DocumentPath,
+        replacing document: StoredDocument,
+        removedPath: DocumentPath?
+    ) async throws -> Bool {
+        if Self.path(document.path, isDescendantOf: path) {
+            return true
+        }
+
+        let prefix = MetaBrainKeyspace.documentPathDescendantPrefix(path)
+        for key in try await scanKeys(withPrefix: prefix) {
+            let rawPath = String(key.dropFirst(MetaBrainKeyspace.prefix(.documentPath).count))
+            guard let existingPath = try? DocumentPath(rawPath) else {
                 continue
             }
 
-            documents.append(record.document)
+            if existingPath == removedPath {
+                continue
+            }
+
+            if existingPath != document.path {
+                return true
+            }
         }
 
-        documents.append(document)
-        return documents
+        return false
     }
 
     private func staleIndexKeys(
@@ -804,7 +906,13 @@ public final class MetaBrainStore: Sendable {
         let keys = try await scanKeys(withPrefix: prefix)
         let ids = try keys.map { key in
             let suffix = key.dropFirst(prefix.count)
-            let rawID = String(suffix.split(separator: "/").first ?? "")
+            let parts = suffix.split(separator: "/")
+            let rawID: String
+            if let first = parts.first {
+                rawID = String(first)
+            } else {
+                rawID = ""
+            }
             return try DocumentID(rawValue: rawID)
         }
 
@@ -841,8 +949,21 @@ public final class MetaBrainStore: Sendable {
         return try await scanKeys(withPrefix: prefix).map { key in
             let suffix = key.dropFirst(prefix.count)
             let parts = suffix.split(separator: "/", maxSplits: 1).map(String.init)
-            let id = try DocumentID(rawValue: parts.first ?? "")
-            let ordinal = UInt32(parts.dropFirst().first ?? "") ?? 0
+            let rawID: String
+            if let first = parts.first {
+                rawID = first
+            } else {
+                rawID = ""
+            }
+            let id = try DocumentID(rawValue: rawID)
+
+            let ordinal: UInt32
+            if let rawOrdinal = parts.dropFirst().first,
+               let parsedOrdinal = UInt32(rawOrdinal) {
+                ordinal = parsedOrdinal
+            } else {
+                ordinal = 0
+            }
             return MetaBrainSearchCandidate(documentID: id, chunkOrdinal: ordinal)
         }
     }
@@ -850,9 +971,7 @@ public final class MetaBrainStore: Sendable {
     private func scanKeys(withPrefix prefix: String) async throws -> [String] {
         return try await Self.mapLevelDBErrors(path: url.path) {
             try await records
-                .scanEncodedPrefix(Data(prefix.utf8))
-                .map(\.key)
-                .sorted()
+                .scanEncodedPrefixKeys(Data(prefix.utf8), readOptions: Self.bulkReadOptions)
         }
     }
 
@@ -863,9 +982,11 @@ public final class MetaBrainStore: Sendable {
         for scalar in text.lowercased().unicodeScalars {
             if CharacterSet.alphanumerics.contains(scalar) {
                 current.unicodeScalars.append(scalar)
-            } else if !current.isEmpty {
-                terms.append(current)
-                current = ""
+            } else {
+                if !current.isEmpty {
+                    terms.append(current)
+                    current = ""
+                }
             }
         }
 
@@ -877,7 +998,11 @@ public final class MetaBrainStore: Sendable {
     }
 
     private static func normalizedTerm(_ term: String) -> String {
-        tokenize(term).first ?? ""
+        let terms = tokenize(term)
+        guard let first = terms.first else {
+            return ""
+        }
+        return first
     }
 
     private static func path(_ path: DocumentPath, matchesPrefix prefix: DocumentPath?) -> Bool {
@@ -892,51 +1017,28 @@ public final class MetaBrainStore: Sendable {
         return path.rawValue.hasPrefix(prefix.rawValue + "/")
     }
 
-    private static func treeRecords(for documents: [StoredDocument]) throws -> [MetaBrainTreeRecord] {
-        var records: [String: MetaBrainTreeRecord] = [:]
+    private static func path(_ path: DocumentPath, isDescendantOf ancestor: DocumentPath) -> Bool {
+        ancestor.rawValue != "/" && path.rawValue.hasPrefix(ancestor.rawValue + "/")
+    }
 
-        for document in documents.sorted(by: { $0.path.rawValue < $1.path.rawValue }) {
-            let segments = document.path.rawValue
-                .split(separator: "/", omittingEmptySubsequences: true)
-                .map(String.init)
-
-            guard !segments.isEmpty else {
-                continue
-            }
-
-            for index in segments.indices {
-                let childPath = try DocumentPath("/" + segments[...index].joined(separator: "/"))
-                let parentPath: DocumentPath
-                if index == segments.startIndex {
-                    parentPath = try DocumentPath("/")
-                } else {
-                    parentPath = try DocumentPath("/" + segments[..<index].joined(separator: "/"))
-                }
-                let hasChildren = index < segments.index(before: segments.endIndex)
-                var record = records[childPath.rawValue] ?? MetaBrainTreeRecord(
-                    parentPath: parentPath,
-                    entry: DocumentTreeEntry(
-                        path: childPath,
-                        name: segments[index],
-                        hasChildren: false
-                    )
-                )
-
-                record.entry.hasChildren = record.entry.hasChildren || hasChildren
-                if childPath == document.path {
-                    record.entry.documentID = document.id
-                    record.entry.createdAt = document.createdAt
-                    record.entry.updatedAt = document.updatedAt
-                }
-                records[childPath.rawValue] = record
-            }
+    private static func treeAffectedPaths(
+        newPath: DocumentPath,
+        removedPath: DocumentPath?
+    ) -> [DocumentPath] {
+        var paths = Set(treeBranchPaths(for: newPath))
+        if let removedPath {
+            paths.formUnion(treeBranchPaths(for: removedPath))
         }
 
-        return records.values.sorted { lhs, rhs in
-            if lhs.parentPath.rawValue != rhs.parentPath.rawValue {
-                return lhs.parentPath.rawValue < rhs.parentPath.rawValue
-            }
-            return lhs.entry.path.rawValue < rhs.entry.path.rawValue
+        return paths.sorted { lhs, rhs in
+            lhs.rawValue.count > rhs.rawValue.count
+        }
+    }
+
+    private static func treeBranchPaths(for path: DocumentPath) -> [DocumentPath] {
+        let segments = path.rawValue.split(separator: "/", omittingEmptySubsequences: true)
+        return segments.indices.compactMap { index in
+            try? DocumentPath("/" + segments.prefix(through: index).joined(separator: "/"))
         }
     }
 
@@ -977,7 +1079,11 @@ public final class MetaBrainStore: Sendable {
 
                 if seen.count == requiredTerms.count {
                     let span = end - start + 1
-                    bestSpan = min(bestSpan ?? span, span)
+                    if let currentBest = bestSpan {
+                        bestSpan = min(currentBest, span)
+                    } else {
+                        bestSpan = span
+                    }
                     break
                 }
             }
@@ -994,13 +1100,15 @@ public final class MetaBrainStore: Sendable {
         around ordinal: UInt32,
         in chunks: [MetaBrainChunkRecord]
     ) -> [SearchContextChunk] {
-        chunks
-            .filter { chunk in
-                let distance = Int64(chunk.ordinal) - Int64(ordinal)
-                return distance != 0 && abs(distance) <= 1
+        var context: [SearchContextChunk] = []
+        for chunk in chunks {
+            let distance = Int64(chunk.ordinal) - Int64(ordinal)
+            if distance != 0 && abs(distance) <= 1 {
+                context.append(SearchContextChunk(ordinal: chunk.ordinal, text: chunk.text))
             }
-            .sorted { $0.ordinal < $1.ordinal }
-            .map { SearchContextChunk(ordinal: $0.ordinal, text: $0.text) }
+        }
+
+        return context
     }
 
     private static func chunkRecords(for document: StoredDocument) -> [MetaBrainChunkRecord] {
@@ -1021,12 +1129,12 @@ public final class MetaBrainStore: Sendable {
         let count = text.count
         var chunks: [MetaBrainChunkRecord] = []
         var startOffset = 0
+        var startIndex = text.startIndex
         var ordinal: UInt32 = 0
 
         while startOffset < count {
             let endOffset = min(startOffset + chunkTargetCharacterCount, count)
-            let startIndex = text.index(text.startIndex, offsetBy: startOffset)
-            let endIndex = text.index(text.startIndex, offsetBy: endOffset)
+            let endIndex = text.index(startIndex, offsetBy: endOffset - startOffset)
             chunks.append(MetaBrainChunkRecord(
                 documentID: document.id,
                 versionSequence: document.currentVersion,
@@ -1040,7 +1148,9 @@ public final class MetaBrainStore: Sendable {
                 break
             }
 
-            startOffset = max(startOffset + 1, endOffset - chunkOverlapCharacterCount)
+            let nextStartOffset = max(startOffset + 1, endOffset - chunkOverlapCharacterCount)
+            startIndex = text.index(startIndex, offsetBy: nextStartOffset - startOffset)
+            startOffset = nextStartOffset
             ordinal += 1
         }
 

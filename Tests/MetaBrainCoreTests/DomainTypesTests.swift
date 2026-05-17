@@ -137,6 +137,7 @@ import Testing
     #expect(MetaBrainKeyspace.metadata(key: "source/type", value: "Daily Note", id: id) == "idx/meta/source%2Ftype/daily%20note/doc-a")
     #expect(MetaBrainKeyspace.outboundReference(sourceID: id, targetID: otherID) == "idx/ref/out/doc-a/doc-b")
     #expect(MetaBrainKeyspace.inboundReference(targetID: otherID, sourceID: id) == "idx/ref/in/doc-b/doc-a")
+    #expect(MetaBrainKeyspace.documentPathDescendantPrefix(try DocumentPath("/notes")) == "doc/path//notes/")
     #expect(MetaBrainKeyspace.tree(parentPath: try DocumentPath("/notes"), name: "today") == "tree/%2Fnotes/today")
     #expect(MetaBrainKeyspace.treePrefix(parentPath: try DocumentPath("/notes")) == "tree/%2Fnotes/")
     #expect(MetaBrainKeyspace.prefix(.documentID) == "doc/id/")

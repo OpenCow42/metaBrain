@@ -24,10 +24,14 @@ contributors toward the calls that can become expensive as a store grows.
 - `E`: number of reference edges scanned for linked-document or backlink output.
 - `V`: number of versions for one document.
 - `H`: total encoded body/snapshot bytes across one document's versions.
-- `D`: total path segments processed while rebuilding or traversing tree records.
+- `L`: number of virtual tree entries on the new and old path branches touched
+  by one write.
+- `D`: total path segments processed while maintaining or traversing tree records.
 - `K`: number of direct children listed for one virtual directory.
 - `S`: total number of LevelDB keys in the store.
 - `X`: number of keys matched by one LevelDB prefix scan.
+- `X_tree`: total `doc/path` descendant keys scanned while maintaining affected
+  tree branch entries.
 - `P_delete`: number of version keys deleted by a prune operation.
 
 LevelDB stores keys in sorted order and exposes efficient seek/iterator scans.
@@ -44,6 +48,7 @@ LevelDB docs:
 
 - `LevelDBStore.scanEncodedPrefix` creates an iterator, seeks to the prefix,
   copies every matching key and value into an array, and then returns it.
+  `scanEncodedPrefixKeys` avoids value reads when callers only need keys.
 - LevelDB documents `WriteBatch` as atomic and useful for bulk updates, but the
   batch itself still stores every edit before the write is submitted.
 - LevelDB block cache stores uncompressed blocks, and bulk reads should consider
@@ -64,22 +69,18 @@ and [LevelDB options](https://github.com/google/leveldb/blob/main/include/leveld
 | --- | --- | --- | --- |
 | `metabrain` / `help` | ArgumentParser help generation, `commandHelpMessage` | `O(1)` relative to store size | Does not open or scan the store. |
 | `init` | `StoreOptions.openStore`, `MetaBrainStore.init` | `O(1)` relative to documents, plus LevelDB open/recovery work | Creates the parent directory and opens LevelDB. Recovery can replay logs and clean stale files. |
-| `put` new document | `putDocument`, `writeNewDocument`, `writeDocumentBatch` | `O(B^2 + T + R + N * seek(S) + A log A + D)` | Body chunking currently uses repeated Swift `String` offsets from the start. Every write also scans path keys, reads document records, scans all tree keys, and rewrites the whole tree index. |
-| `put` existing document | `putDocument`, `writeDocumentUpdate`, `writeDocumentBatch`, retention helpers | `O(B^2 + B_old + T + T_old + R + R_old + V log V + H + N * seek(S) + A log A + D)` | Updates scan stale chunk/index/reference prefixes, may scan all versions for retention, and rebuild the whole tree index. |
+| `put` new document | `putDocument`, `writeNewDocument`, `writeDocumentBatch` | `O(B + T + R + L * seek(S) + X_tree + D)` | Body chunking now advances indices incrementally. Tree maintenance touches only the new path branch instead of rebuilding the whole tree index. |
+| `put` existing document | `putDocument`, `writeDocumentUpdate`, `writeDocumentBatch`, retention helpers | `O(B + B_old + T + T_old + R + R_old + V log V + H + L * seek(S) + X_tree + D)` | Updates delete stale chunks/indexes/references, may scan all versions for retention, and update only old/new tree branches. |
 | `get` | `getDocument`, `documentID(for:)`, `documentRecord(id:)`, `printDocument` | `O(seek(S) + B)` | Decoding and printing the stored document body dominate once the point lookup succeeds. |
-| `list` non-recursive | `listDirectory`, `childTreeEntries`, `formatListEntry` | `O(seek(S) + K log K)` | The LevelDB iterator is already ordered, but the store sorts the materialized child entries again. |
+| `list` non-recursive | `listDirectory`, `childTreeEntries`, `formatListEntry` | `O(seek(S) + K log K)` | Scans one tree prefix, decodes child records, sorts by display path, and prints them. |
 | `list --recursive` | `listDirectory`, `flattenedTreeEntries`, `childTreeEntries` | `O(A * seek(S) + A log A)` typical, with extra recursive array-copy overhead | Walks directories with many separate prefix scans and materializes the whole subtree. `--directories-only` filters output but still traverses descendants. |
 | `tree` | `tree`, `flattenedTreeEntries`, `printTree` | `O(A * seek(S) + A log A)` typical for an unbounded tree | `--max-depth 0` is `O(1)`. Larger depths scan and materialize the requested subtree, then group and sort for printing. |
-| `search` | `search`, `filteredDocumentIDs`, `termPostings`, `currentChunkRecords`, scoring, optional edge scans | `O((Q + G + M) * seek(S) + F log F + P log P + B_match + C_match log C_match + M * (W^2 + E) + M log M)` | `W` is terms in a scored chunk. `--limit` is applied after collecting, scoring, and sorting all candidates, so it does not cap the initial scan. |
+| `search` | `search`, `filteredDocumentIDs`, `termPostings`, `currentChunkRecords`, scoring, optional edge scans | `O((Q + G + M) * seek(S) + F log F + P log P + B_match + C_match + M * (W^2 + E) + M log M)` | `W` is terms in a scored chunk. `--limit` is applied after collecting, scoring, and sorting all candidates, so it does not cap the initial scan. |
 | `versions` | `listVersions`, `versionRecords` | `O(seek(S) + V log V + H)` | Scans, decodes, sorts, and prints every full-snapshot version for the document. |
 | `prune` | `prune`, `pruneVersions`, `versionRecords`, retention helpers | `O(seek(S) + V log V + H + P_delete)` | Scans and decodes all versions before deciding which version keys to delete. |
 
 ## Current Complex Calls To Treat Carefully
 
-- `put` is the most surprising expensive call. The current implementation
-  rebuilds the entire `tree/` index on every document write by scanning all
-  paths and reading all document records. That makes writes grow with `N` and
-  `A`, not only with the document being written.
 - `put` builds one large in-memory `WriteBatch` for document, version, chunk,
   term, metadata, reference, tree, and prune edits. LevelDB applies it
   atomically, but the batch size, WAL write, memtable pressure, and later
@@ -90,24 +91,18 @@ and [LevelDB options](https://github.com/google/leveldb/blob/main/include/leveld
 - `put` with retention on a long-lived document scans and decodes the document's
   full version history. Because versions are full snapshots, large historical
   bodies make this cost closer to `O(H)` than just `O(V)`.
-- Very large bodies can make chunking expensive because `chunkRecords(for:)`
-  repeatedly seeks Swift `String` indices from `text.startIndex`. With variable
-  width strings, those offsets are not constant-time.
+- Tree updates are branch-local now, but each affected branch entry still checks
+  descendant document paths. Very deep paths or broad descendant sets can still
+  make writes more expensive than the document body alone.
 - `search` scans all postings for every distinct query term and scores every
   unique matched chunk before applying `--limit`. Queries for common terms can
   therefore be expensive even with a small limit.
-- Prefix scans currently materialize arrays and use default `fillCache = true`.
-  Broad `search`, recursive `list`, `tree`, `versions`, and tree-rebuild scans
-  can evict useful LevelDB block-cache contents.
-- `scanKeys(withPrefix:)` still calls `scanEncodedPrefix`, so it copies values
-  even for callers that only need keys. This is particularly wasteful for
-  current chunk key scans and whole-tree key scans.
-- Many scan results are sorted again in Swift even though LevelDB iteration
-  already returns keys in comparator order. This adds `O(X log X)` CPU and
-  memory traffic to prefix scans.
+- Prefix scans still materialize arrays. Key-only scans no longer copy values,
+  and bulk scans use `fillCache = false`, but very broad scans still allocate
+  memory proportional to the scan result.
 - `search --include-linked-documents` and `search --include-backlinks` add
-  reference prefix scans per returned candidate. This is useful context, but it
-  can compound the cost of broad searches.
+  reference prefix scans per matched document. This is useful context, but it
+  can compound the cost of broad searches with many matched documents.
 - `tree` and `list --recursive` materialize entire subtrees in memory. They are
   fine for small stores, but large or deeply nested stores should prefer bounded
   paths or `tree --max-depth`.
@@ -133,12 +128,11 @@ then calls `MetaBrainStore.putDocument(_:)`.
 For a new document, the main work is:
 
 - build and encode the document record and full-snapshot version: `O(B)`;
-- chunk the body: intended `O(B)`, currently potentially `O(B^2)` because
-  `String.index(_:offsetBy:)` starts from the beginning for each chunk boundary;
+- chunk the body by advancing from the previous `String.Index`: `O(B)`;
 - tokenize chunks and create term/tag/metadata/reference index keys:
   `O(B + T + R)`;
-- rebuild the complete virtual tree index:
-  `O(N * seek(S) + A log A + D)`;
+- update affected virtual tree branch records:
+  `O(L * seek(S) + X_tree + D)`;
 - write all records in one LevelDB batch. The foreground batch write is linear
   in encoded edit bytes, then LevelDB may later rewrite those bytes during
   flushes and compactions.
@@ -191,10 +185,10 @@ The main work is:
   `O(G * seek(S) + F log F)`;
 - scan term posting prefixes for every query term: `O(Q * seek(S) + P log P)`;
 - OR-merge postings into unique document/chunk candidates: `O(P)`;
-- for every candidate, decode the document record, scan all current chunks for
-  that document, find the matching chunk, tokenize it, compute score/context,
-  and optionally scan reference edges:
-  `O(M * seek(S) + B_match + C_match log C_match + M * (W^2 + E))`;
+- for every matched document, decode the document record once, scan current
+  chunks once in key order, fetch optional reference edges once, and score each
+  matched chunk:
+  `O(M * seek(S) + B_match + C_match + M * (W^2 + E))`;
 - sort all candidates before applying the result limit: `O(M log M)`.
 
 The scoring locality helper can be `O(W^2)` for a chunk with many repeated query
@@ -222,7 +216,6 @@ Update this file whenever a CLI command starts calling a different core method,
 when a core storage method changes its scan pattern, or when an optimization
 removes one of the warnings above. Any benchmark or profiling work should record
 the data shape alongside timings so the variables in this document stay useful.
-Good candidates to revisit first are a key-only scan API, streaming prefix
-scans with early result limits, `fillCache: false` for bulk scans, incremental
-tree-index maintenance, and avoiding redundant Swift sorts on already ordered
-LevelDB iterator output.
+Good candidates to revisit next are streaming prefix scans with early result
+limits, version-summary indexes for prune/list operations, and search paths that
+can apply `--limit` before scoring every common-term candidate.

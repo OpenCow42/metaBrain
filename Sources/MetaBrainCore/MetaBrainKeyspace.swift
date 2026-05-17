@@ -12,6 +12,10 @@ enum MetaBrainKeyspace {
         "doc/path/\(path.rawValue)"
     }
 
+    static func documentPathDescendantPrefix(_ path: DocumentPath) -> String {
+        documentPath(path) + "/"
+    }
+
     static func version(id: DocumentID, sequence: UInt64) -> String {
         "ver/\(id.rawValue)/\(padded(sequence, width: sequenceWidth))"
     }
