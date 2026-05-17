@@ -533,6 +533,8 @@ extension MetaBrainCommand {
         @Flag(help: "Include backlink hints.")
         var includeBacklinks = false
 
+        @OptionGroup var output: ListOutputFormatOptions
+
         func validate() throws {
             if limit <= 0 {
                 throw ValidationError("--limit must be greater than zero.")
@@ -551,29 +553,15 @@ extension MetaBrainCommand {
                 includeBacklinks: includeBacklinks,
                 limit: limit
             ))
+            let outputResults = results.map(SearchOutput.init)
 
-            if results.isEmpty {
-                print("No results.")
-                return
-            }
-
-            for result in results {
-                print("\(result.path.rawValue) [\(result.documentID.rawValue)] score=\(formatScore(result.score)) chunk=\(result.chunkOrdinal)")
-                if let title = result.title {
-                    print("title: \(title)")
-                }
-                print(trimmedSingleLine(result.snippet))
-                if !result.context.isEmpty {
-                    let ordinals = result.context.map { String($0.ordinal) }.joined(separator: ",")
-                    print("context: \(ordinals)")
-                }
-                if !result.linkedDocuments.isEmpty {
-                    print("linked: \(result.linkedDocuments.map(formatReference).joined(separator: ", "))")
-                }
-                if !result.backlinks.isEmpty {
-                    print("backlinks: \(result.backlinks.map(formatReference).joined(separator: ", "))")
-                }
-                print("")
+            switch output.format {
+            case .text:
+                printSearchResults(results)
+            case .json:
+                try printJSON(outputResults)
+            case .jsonl:
+                try printJSONLines(outputResults)
             }
         }
     }
@@ -819,6 +807,55 @@ private struct TreeOutput: Encodable {
     }
 }
 
+private struct SearchOutput: Encodable {
+    let backlinks: [DocumentDumpReference]
+    let chunkOrdinal: UInt32
+    let context: [SearchContextChunk]
+    let documentID: String
+    let linkedDocuments: [DocumentDumpReference]
+    let path: String
+    let score: Double
+    let snippet: String
+    let title: String?
+
+    init(_ result: SearchResult) {
+        backlinks = result.backlinks.map(DocumentDumpReference.init)
+        chunkOrdinal = result.chunkOrdinal
+        context = result.context
+        documentID = result.documentID.rawValue
+        linkedDocuments = result.linkedDocuments.map(DocumentDumpReference.init)
+        path = result.path.rawValue
+        score = result.score
+        snippet = result.snippet
+        title = result.title
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case backlinks
+        case chunkOrdinal
+        case context
+        case documentID
+        case linkedDocuments
+        case path
+        case score
+        case snippet
+        case title
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(backlinks, forKey: .backlinks)
+        try container.encode(chunkOrdinal, forKey: .chunkOrdinal)
+        try container.encode(context, forKey: .context)
+        try container.encode(documentID, forKey: .documentID)
+        try container.encode(linkedDocuments, forKey: .linkedDocuments)
+        try container.encode(path, forKey: .path)
+        try container.encode(score, forKey: .score)
+        try container.encode(snippet, forKey: .snippet)
+        try container.encode(title, forKey: .title)
+    }
+}
+
 private func readBody(argument: String?, filePath: String?) throws -> String {
     try validateBodyInputs(argument: argument, filePath: filePath)
 
@@ -915,6 +952,32 @@ private func printDocument(_ document: StoredDocument) {
     }
     print("")
     print(document.body)
+}
+
+private func printSearchResults(_ results: [SearchResult]) {
+    if results.isEmpty {
+        print("No results.")
+        return
+    }
+
+    for result in results {
+        print("\(result.path.rawValue) [\(result.documentID.rawValue)] score=\(formatScore(result.score)) chunk=\(result.chunkOrdinal)")
+        if let title = result.title {
+            print("title: \(title)")
+        }
+        print(trimmedSingleLine(result.snippet))
+        if !result.context.isEmpty {
+            let ordinals = result.context.map { String($0.ordinal) }.joined(separator: ",")
+            print("context: \(ordinals)")
+        }
+        if !result.linkedDocuments.isEmpty {
+            print("linked: \(result.linkedDocuments.map(formatReference).joined(separator: ", "))")
+        }
+        if !result.backlinks.isEmpty {
+            print("backlinks: \(result.backlinks.map(formatReference).joined(separator: ", "))")
+        }
+        print("")
+    }
 }
 
 private func formatListEntry(
