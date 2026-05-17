@@ -5,7 +5,7 @@ import PackageDescription
 let package = Package(
     name: "metaBrain",
     platforms: [
-        .macOS(.v14)
+        .macOS(.v15)
     ],
     products: [
         .library(
@@ -38,6 +38,10 @@ let package = Package(
         .package(
             url: "git@github.com:OpenCow42/swift-leveldb.git",
             branch: "main"
+        ),
+        .package(
+            url: "https://github.com/gonzalezreal/textual",
+            from: "0.3.1"
         )
     ],
     targets: [
@@ -56,6 +60,14 @@ let package = Package(
         ),
         .executableTarget(
             name: "MetaBrainApp",
+            dependencies: [
+                "MetaBrainAppSupport",
+                "MetaBrainCore",
+                .product(name: "Textual", package: "textual")
+            ]
+        ),
+        .target(
+            name: "MetaBrainAppSupport",
             dependencies: [
                 "MetaBrainCore"
             ]
@@ -89,6 +101,13 @@ let package = Package(
             dependencies: [
                 "MetaBrainCore",
                 .product(name: "PropertyBased", package: "swift-property-based")
+            ]
+        ),
+        .testTarget(
+            name: "MetaBrainAppTests",
+            dependencies: [
+                "MetaBrainAppSupport",
+                "MetaBrainCore"
             ]
         )
     ],
