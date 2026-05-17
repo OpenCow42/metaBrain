@@ -71,4 +71,5 @@ This file records orchestrator handoff notes for the serial milestone plan in `I
 
 ## Final Status
 
-- Recommended follow-up: add SwiftPM-integrated CLI tests or a dedicated CLI test target, decide whether coverage should have a repo wrapper/report command, and add JSON CLI output if downstream tools need stable machine-readable responses.
+- Current coverage goal: `MetaBrainCore` and `MetaBrainCLI` should reach and maintain 100.00% line coverage. Use `Scripts/check-coverage.sh` as the combined SwiftPM + CLI coverage gate.
+- Recommended follow-up: add SwiftPM-integrated CLI tests or a dedicated CLI test target, and add JSON CLI output if downstream tools need stable machine-readable responses.

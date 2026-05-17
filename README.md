@@ -89,22 +89,34 @@ The SwiftUI app target is useful for local development. A polished distributable
 
 Deep automated testing is a cornerstone of the project.
 
-The shared library and CLI-facing logic should strive for 100% coverage. The UI app should strive for 80-90% coverage. As the storage layer grows, tests should make subtle failures visible: missed content, broken indexes, corrupted migrations, incomplete retrieval, and misleading metadata.
+The shared library and CLI-facing logic should reach and maintain 100% line coverage. The UI app should strive for 80-90% coverage. As the storage layer grows, tests should make subtle failures visible: missed content, broken indexes, corrupted migrations, incomplete retrieval, and misleading metadata.
 
 ## Verification
+
+Coverage verification uses the Rust CLI tool `rg` from
+[`ripgrep`](https://github.com/BurntSushi/ripgrep) for smoke-test assertions.
+Install it before running the full coverage gate:
+
+```bash
+brew install ripgrep
+# or, if you prefer Cargo:
+cargo install ripgrep
+```
 
 Run these commands before handing off implementation work:
 
 ```bash
 swift build
 swift test
-swift test --enable-code-coverage
+Scripts/check-coverage.sh
 Tests/MetaBrainCLITests/cli-smoke.sh
 git diff --check
 ```
 
-`swift test --enable-code-coverage` is the current SwiftPM coverage command. No
-repo-specific coverage wrapper exists yet.
+`Scripts/check-coverage.sh` runs SwiftPM test coverage, runs the CLI smoke test
+against a coverage-instrumented `metabrain` binary, merges the profiles, prints a
+combined `MetaBrainCore`/`MetaBrainCLI` LLVM coverage report, and fails unless
+both targets report 100.00% line coverage.
 
 ## Project Documents
 

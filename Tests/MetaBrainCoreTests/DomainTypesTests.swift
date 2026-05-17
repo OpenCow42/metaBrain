@@ -7,8 +7,13 @@ import Testing
     #expect(try DocumentPath.normalized(" /notes//./today/ ") == "/notes/today")
     #expect(try DocumentPath.normalized("/notes/archive/../today") == "/notes/today")
     #expect(try DocumentPath.normalized("\\notes\\today\\") == "/notes/today")
+    #expect(try DocumentPath("/").parent == nil)
+    #expect(try DocumentPath("/").name == "/")
+    #expect(try DocumentPath("/notes").parent?.rawValue == "/")
     #expect(try DocumentPath("/notes/today").parent?.rawValue == "/notes")
     #expect(try DocumentPath("/notes/today").name == "today")
+    #expect(try DocumentPath("/notes/today").description == "/notes/today")
+    #expect(try DocumentPath("/") < DocumentPath("/notes"))
 }
 
 @Test func documentPathsRejectEmptyAndEscapingParentReferences() {
@@ -18,6 +23,10 @@ import Testing
 
     #expect(throws: MetaBrainDomainError.invalidDocumentPath("../outside")) {
         try DocumentPath.normalized("../outside")
+    }
+
+    #expect(throws: MetaBrainDomainError.invalidDocumentPath("/bad\u{0000}path")) {
+        try DocumentPath.normalized("/bad\u{0000}path")
     }
 }
 
@@ -31,6 +40,10 @@ import Testing
     #expect(id.description == "abc-123_def")
     #expect(try DocumentID(rawValue: "abc-000") < DocumentID(rawValue: "abc-001"))
 
+    #expect(throws: MetaBrainDomainError.invalidDocumentID("")) {
+        try DocumentID(rawValue: "")
+    }
+
     #expect(throws: MetaBrainDomainError.invalidDocumentID("has/slash")) {
         try DocumentID(rawValue: "has/slash")
     }
@@ -38,6 +51,27 @@ import Testing
     #expect(throws: MetaBrainDomainError.invalidDocumentID("cafe\u{0301}")) {
         try DocumentID(rawValue: "cafe\u{0301}")
     }
+}
+
+@Test func searchModelsExposeStableIdentities() throws {
+    let id = try DocumentID(rawValue: "doc-1")
+    let path = try DocumentPath("/notes/search")
+    let result = SearchResult(
+        documentID: id,
+        path: path,
+        chunkOrdinal: 7,
+        snippet: "snippet",
+        score: 42
+    )
+    let version = DocumentVersion(
+        documentID: id,
+        sequence: 3,
+        snapshot: DocumentInput(path: path, body: "body"),
+        createdAt: Date(timeIntervalSince1970: 0)
+    )
+
+    #expect(result.id == "doc-1:7")
+    #expect(version.id == "doc-1:3")
 }
 
 @Test func retentionPolicyValuesModelDocumentVersionStrategies() {
@@ -83,6 +117,7 @@ import Testing
     #expect(MetaBrainKeyspace.outboundReference(sourceID: id, targetID: otherID) == "idx/ref/out/doc-a/doc-b")
     #expect(MetaBrainKeyspace.inboundReference(targetID: otherID, sourceID: id) == "idx/ref/in/doc-b/doc-a")
     #expect(MetaBrainKeyspace.tree(parentPath: try DocumentPath("/notes"), name: "today") == "tree//notes/today")
+    #expect(MetaBrainKeyspace.prefix(.documentID) == "doc/id/")
 
     let versionKeys = [10, 2, 1].map { MetaBrainKeyspace.version(id: id, sequence: UInt64($0)) }.sorted()
     #expect(versionKeys == [

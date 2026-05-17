@@ -142,6 +142,15 @@ extension MetaBrainCommand {
         @Option(name: .customLong("meta"), help: "Metadata as key=value. Repeat for multiple values.")
         var metadataPairs: [String] = []
 
+        @Option(name: .customLong("ref-id"), help: "Reference a document ID. Repeat for multiple references.")
+        var referenceIDs: [String] = []
+
+        @Option(name: .customLong("ref-path"), help: "Reference a document path. Repeat for multiple references.")
+        var referencePaths: [String] = []
+
+        @Option(name: .customLong("ref-url"), help: "Reference an external URL. Repeat for multiple references.")
+        var referenceURLs: [String] = []
+
         func run() async throws {
             let documentBody = try readBody(argument: body, filePath: bodyFile)
             let input = DocumentInput(
@@ -150,6 +159,11 @@ extension MetaBrainCommand {
                 body: documentBody,
                 tags: tags,
                 metadata: try parseMetadata(metadataPairs),
+                references: try parseReferences(
+                    ids: referenceIDs,
+                    paths: referencePaths,
+                    urls: referenceURLs
+                ),
                 retention: try retention.optionalPolicy()
             )
             let document = try await storeOptions.openStore().putDocument(input)
@@ -330,8 +344,27 @@ private func printDocument(_ document: StoredDocument) {
             .joined(separator: ", ")
         print("metadata: \(metadata)")
     }
+    if !document.references.isEmpty {
+        print("references: \(document.references.map(formatReference).joined(separator: ", "))")
+    }
     print("")
     print(document.body)
+}
+
+private func parseReferences(
+    ids: [String],
+    paths: [String],
+    urls: [String]
+) throws -> [DocumentReference] {
+    try ids.map { .documentID(try DocumentID(rawValue: $0)) }
+        + paths.map { .path(try DocumentPath($0)) }
+        + urls.map { rawURL in
+            guard let url = URL(string: rawURL), url.scheme != nil else {
+                throw ValidationError("Reference URLs must be absolute URLs.")
+            }
+
+            return .externalURL(url)
+        }
 }
 
 private func trimmedSingleLine(_ text: String) -> String {
@@ -363,11 +396,14 @@ private func formatReference(_ reference: DocumentReference) -> String {
 
 extension URL {
     static func expandingShellPath(_ path: String, isDirectory: Bool) -> URL {
+        let homeDirectory = ProcessInfo.processInfo.environment["METABRAIN_HOME"]
+            .map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? FileManager.default.homeDirectoryForCurrentUser
         let expandedPath: String
         if path == "~" {
-            expandedPath = FileManager.default.homeDirectoryForCurrentUser.path
+            expandedPath = homeDirectory.path
         } else if path.hasPrefix("~/") {
-            expandedPath = FileManager.default.homeDirectoryForCurrentUser
+            expandedPath = homeDirectory
                 .appendingPathComponent(String(path.dropFirst(2)))
                 .path
         } else {

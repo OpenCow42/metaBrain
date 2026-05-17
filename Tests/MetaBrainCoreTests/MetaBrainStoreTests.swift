@@ -1,5 +1,8 @@
 import Foundation
+import LevelDBTyped
+import LevelDBZstd
 @testable import MetaBrainCore
+import swift_leveldb
 import Testing
 
 private struct StoredNote: Codable, Equatable, Sendable {
@@ -8,12 +11,58 @@ private struct StoredNote: Codable, Equatable, Sendable {
     var body: String
 }
 
+private func storeTestCodec<Value: Codable & Sendable>(
+    options: MetaBrainStoreOptions,
+    for type: Value.Type
+) -> ZstdCodec<JSONCodec<MetaBrainRecordEnvelope<Value>>> {
+    ZstdCodec(
+        wrapping: JSONCodec<MetaBrainRecordEnvelope<Value>>(),
+        compressionLevel: options.zstdCompressionLevel,
+        storageStrategy: .adaptive(
+            minimumCompressionSavingsRatio: options.zstdAdaptiveMinimumSavingsRatio
+        )
+    )
+}
+
 @Test func opensTemporaryMetaBrainStore() async throws {
     try await withTemporaryStoreFixture { fixture in
         let store = try MetaBrainStore(url: fixture.storeURL)
 
         #expect(store.url == fixture.storeURL)
         #expect(FileManager.default.fileExists(atPath: fixture.storeURL.path))
+    }
+}
+
+@Test func opensStoreFromStringPathAndPreservesCustomOptions() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let options = MetaBrainStoreOptions(
+            createIfMissing: true,
+            errorIfExists: false,
+            zstdCompressionLevel: 5,
+            zstdAdaptiveMinimumSavingsRatio: 0.25,
+            lruCacheCapacity: nil,
+            bloomFilterBitsPerKey: nil
+        )
+        let store = try MetaBrainStore(path: fixture.storeURL.path, options: options)
+
+        #expect(store.url.path == fixture.storeURL.path)
+        #expect(store.options == options)
+    }
+}
+
+@Test func storeErrorsHaveActionableDescriptions() async throws {
+    let path = try DocumentPath("/taken")
+    let id = try DocumentID(rawValue: "doc-1")
+
+    #expect(MetaBrainStoreError.openFailed(path: "/tmp/store", message: "locked").description == "Could not open metaBrain store at /tmp/store: locked")
+    #expect(MetaBrainStoreError.operationFailed(message: "write failed").description == "LevelDB operation failed: write failed")
+    #expect(MetaBrainStoreError.pathAlreadyExists(path, existingID: id).description == "Document path /taken already points to document doc-1.")
+    #expect(MetaBrainStoreError.unsupportedRecordSchemaVersion(2).description == "Unsupported metaBrain record schema version: 2")
+    #expect(MetaBrainStore.storeError(from: .operationFailed("boom"), path: "/tmp/store") == .operationFailed(message: "boom"))
+    await #expect(throws: MetaBrainStoreError.operationFailed(message: "boom")) {
+        try await MetaBrainStore.mapLevelDBErrors(path: "/tmp/store") {
+            throw LevelDBError.operationFailed("boom")
+        }
     }
 }
 
@@ -53,6 +102,63 @@ private struct StoredNote: Codable, Equatable, Sendable {
         )
 
         #expect(missing == nil)
+    }
+}
+
+@Test func unsupportedCompressedRecordSchemaVersionThrows() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let invalidEnvelope = MetaBrainRecordEnvelope(
+            schemaVersion: 2,
+            payload: StoredNote(id: "note-1", title: "Bad Schema", body: "body")
+        )
+        let data = try storeTestCodec(options: store.options, for: StoredNote.self)
+            .encode(invalidEnvelope)
+
+        try await store.writeRawValue(data, forKey: "test/bad-schema")
+
+        await #expect(throws: MetaBrainStoreError.unsupportedRecordSchemaVersion(2)) {
+            try await store.compressedRecord(
+                forKey: "test/bad-schema",
+                as: StoredNote.self
+            )
+        }
+    }
+}
+
+@Test func unsupportedVersionAndChunkSchemaVersionsThrow() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let id = try DocumentID(rawValue: "doc-1")
+        let path = try DocumentPath("/bad/schema")
+        let version = DocumentVersion(
+            documentID: id,
+            sequence: 1,
+            snapshot: DocumentInput(path: path, body: "bad version"),
+            createdAt: Date(timeIntervalSince1970: 0)
+        )
+        let chunk = MetaBrainChunkRecord(
+            documentID: id,
+            versionSequence: 1,
+            ordinal: 0,
+            text: "bad chunk",
+            startOffset: 0,
+            endOffset: 9
+        )
+        let versionData = try storeTestCodec(options: store.options, for: DocumentVersion.self)
+            .encode(MetaBrainRecordEnvelope(schemaVersion: 2, payload: version))
+        let chunkData = try storeTestCodec(options: store.options, for: MetaBrainChunkRecord.self)
+            .encode(MetaBrainRecordEnvelope(schemaVersion: 2, payload: chunk))
+
+        try await store.writeRawValue(versionData, forKey: MetaBrainKeyspace.version(id: id, sequence: 1))
+        try await store.writeRawValue(chunkData, forKey: MetaBrainKeyspace.currentChunk(id: id, ordinal: 0))
+
+        await #expect(throws: MetaBrainStoreError.unsupportedRecordSchemaVersion(2)) {
+            try await store.listVersions(of: .documentID(id))
+        }
+        await #expect(throws: MetaBrainStoreError.unsupportedRecordSchemaVersion(2)) {
+            try await store.currentChunks(for: id)
+        }
     }
 }
 
@@ -167,6 +273,46 @@ private struct StoredNote: Codable, Equatable, Sendable {
     }
 }
 
+@Test func updateMissingReferenceCreatesDocument() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let input = DocumentInput(
+            path: try DocumentPath("/created/from-missing-reference"),
+            body: "created"
+        )
+
+        let document = try await store.updateDocument(
+            .path(try DocumentPath("/missing/reference")),
+            with: input
+        )
+
+        #expect(document.currentVersion == 1)
+        #expect(document.path == input.path)
+        #expect(try await store.getDocument(.path(input.path)) == document)
+    }
+}
+
+@Test func putDocumentWithDanglingPathAliasCreatesFreshDocument() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let fakeID = try DocumentID(rawValue: "fake-doc")
+        let path = try DocumentPath("/created/from-dangling-alias")
+
+        try await store.writeRawValue(
+            Data(fakeID.rawValue.utf8),
+            forKey: MetaBrainKeyspace.documentPath(path)
+        )
+
+        let document = try await store.putDocument(DocumentInput(
+            path: path,
+            body: "created despite stale alias"
+        ))
+
+        #expect(document.id != fakeID)
+        #expect(try await store.getDocument(.path(path)) == document)
+    }
+}
+
 @Test func updatingDocumentToOccupiedPathThrowsAndPreservesAliases() async throws {
     try await withTemporaryStoreFixture { fixture in
         let store = try MetaBrainStore(url: fixture.storeURL)
@@ -277,6 +423,63 @@ private struct StoredNote: Codable, Equatable, Sendable {
     }
 }
 
+@Test func explicitPruneCanRetainAllExistingVersions() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let path = try DocumentPath("/retention/noop")
+        let created = try await store.putDocument(DocumentInput(path: path, body: "v1"))
+        _ = try await store.putDocument(DocumentInput(path: path, body: "v2"))
+
+        let result = try await store.prune(PruneRequest(
+            reference: .documentID(created.id),
+            policy: .keepAll
+        ))
+
+        #expect(result == PruneResult(prunedVersionCount: 0, retainedVersionCount: 2))
+        #expect(try await store.listVersions(of: .documentID(created.id)).map(\.sequence) == [1, 2])
+    }
+}
+
+@Test func retentionPoliciesPreservePinnedVersions() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let keepRecentID = try DocumentID(rawValue: "pinned-recent")
+        let keepWithinID = try DocumentID(rawValue: "pinned-window")
+        let path = try DocumentPath("/retention/pinned")
+        let oldDate = Date(timeIntervalSince1970: 0)
+
+        for version in [
+            DocumentVersion(documentID: keepRecentID, sequence: 1, snapshot: DocumentInput(path: path, body: "pinned"), createdAt: oldDate, isPinned: true),
+            DocumentVersion(documentID: keepRecentID, sequence: 2, snapshot: DocumentInput(path: path, body: "middle"), createdAt: oldDate),
+            DocumentVersion(documentID: keepRecentID, sequence: 3, snapshot: DocumentInput(path: path, body: "current"), createdAt: oldDate),
+            DocumentVersion(documentID: keepWithinID, sequence: 1, snapshot: DocumentInput(path: path, body: "pinned"), createdAt: oldDate, isPinned: true),
+            DocumentVersion(documentID: keepWithinID, sequence: 2, snapshot: DocumentInput(path: path, body: "middle"), createdAt: oldDate),
+            DocumentVersion(documentID: keepWithinID, sequence: 3, snapshot: DocumentInput(path: path, body: "current"), createdAt: oldDate)
+        ] {
+            let data = try storeTestCodec(options: store.options, for: DocumentVersion.self)
+                .encode(MetaBrainRecordEnvelope(payload: version))
+            try await store.writeRawValue(
+                data,
+                forKey: MetaBrainKeyspace.version(id: version.documentID, sequence: version.sequence)
+            )
+        }
+
+        let recentResult = try await store.prune(PruneRequest(
+            reference: .documentID(keepRecentID),
+            policy: .keepMostRecent(1)
+        ))
+        let windowResult = try await store.prune(PruneRequest(
+            reference: .documentID(keepWithinID),
+            policy: .keepWithin(0)
+        ))
+
+        #expect(recentResult == PruneResult(prunedVersionCount: 1, retainedVersionCount: 2))
+        #expect(windowResult == PruneResult(prunedVersionCount: 1, retainedVersionCount: 2))
+        #expect(try await store.listVersions(of: .documentID(keepRecentID)).map(\.sequence) == [1, 3])
+        #expect(try await store.listVersions(of: .documentID(keepWithinID)).map(\.sequence) == [1, 3])
+    }
+}
+
 @Test func explicitPruneOfMissingDocumentReportsZeroCounts() async throws {
     try await withTemporaryStoreFixture { fixture in
         let store = try MetaBrainStore(url: fixture.storeURL)
@@ -288,6 +491,20 @@ private struct StoredNote: Codable, Equatable, Sendable {
 
         #expect(result == PruneResult(prunedVersionCount: 0, retainedVersionCount: 0))
         #expect(try await store.listVersions(of: .path(try DocumentPath("/missing"))) == [])
+    }
+}
+
+@Test func explicitPruneOfDocumentIDWithNoVersionsReportsZeroCounts() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let missingID = try DocumentID(rawValue: "missing-id")
+
+        let result = try await store.prune(PruneRequest(
+            reference: .documentID(missingID),
+            policy: .keepAll
+        ))
+
+        #expect(result == PruneResult(prunedVersionCount: 0, retainedVersionCount: 0))
     }
 }
 
@@ -492,6 +709,110 @@ private struct StoredNote: Codable, Equatable, Sendable {
     }
 }
 
+@Test func searchSortsTiesByDocumentIDAndChunkOrdinal() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let first = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/search/tie-a"),
+            body: "needle"
+        ))
+        let second = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/search/tie-b"),
+            body: "needle"
+        ))
+        let longBody = String(repeating: "filler ", count: 650) + " needle"
+        let multiChunk = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/search/tie-c"),
+            body: longBody
+        ))
+
+        let results = try await store.search(SearchQuery(text: "needle"))
+        let ids = results.map(\.documentID)
+
+        #expect(ids.contains(first.id))
+        #expect(ids.contains(second.id))
+        #expect(ids.contains(multiChunk.id))
+        #expect(results.first { $0.documentID == multiChunk.id }?.chunkOrdinal == 1)
+    }
+}
+
+@Test func searchSortsSameDocumentTieByChunkOrdinal() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let body = "needle " + String(repeating: "filler ", count: 650) + "needle"
+        let document = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/search/chunk-tie"),
+            body: body
+        ))
+
+        let results = try await store.search(SearchQuery(text: "needle"))
+
+        #expect(results.filter { $0.documentID == document.id }.map(\.chunkOrdinal) == [0, 1])
+    }
+}
+
+@Test func searchSkipsDanglingDocumentAndChunkPostings() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let fakeID = try DocumentID(rawValue: "fake-doc")
+        let document = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/search/dangling"),
+            body: "dangling"
+        ))
+
+        try await store.writeRawValue(
+            Data(),
+            forKey: MetaBrainKeyspace.term("ghost", id: fakeID, ordinal: 0)
+        )
+        try await store.writeRawValue(
+            Data(),
+            forKey: MetaBrainKeyspace.term("dangling", id: document.id, ordinal: 99)
+        )
+
+        #expect(try await store.search(SearchQuery(text: "ghost")) == [])
+        #expect(try await store.search(SearchQuery(text: "dangling")).map(\.chunkOrdinal) == [0])
+    }
+}
+
+@Test func nonTokenTermsAndExternalReferencesResolveToNoDocuments() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let url = try #require(URL(string: "https://example.com/doc"))
+
+        #expect(try await store.documentIDs(matchingTerm: "!!!") == [])
+        #expect(try await store.getDocument(.externalURL(url)) == nil)
+    }
+}
+
+@Test func malformedIndexKeysUseDefensiveFallbacks() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let id = try DocumentID(rawValue: "doc-1")
+
+        try await store.writeRawValue(Data(), forKey: MetaBrainKeyspace.tagPrefix("empty"))
+        await #expect(throws: MetaBrainDomainError.invalidDocumentID("")) {
+            try await store.documentIDs(tagged: "empty")
+        }
+
+        try await store.writeRawValue(Data(), forKey: MetaBrainKeyspace.termPrefix("bad"))
+        await #expect(throws: MetaBrainDomainError.invalidDocumentID("")) {
+            try await store.search(SearchQuery(text: "bad"))
+        }
+
+        try await store.writeRawValue(
+            Data(),
+            forKey: MetaBrainKeyspace.termPrefix("noordinal") + id.rawValue
+        )
+        try await store.writeRawValue(
+            Data(),
+            forKey: MetaBrainKeyspace.termPrefix("notnumber") + id.rawValue + "/not-a-number"
+        )
+
+        #expect(try await store.search(SearchQuery(text: "noordinal")) == [])
+        #expect(try await store.search(SearchQuery(text: "notnumber")) == [])
+    }
+}
+
 @Test func searchPathPrefixMatchesExactPathAndDescendantsOnly() async throws {
     try await withTemporaryStoreFixture { fixture in
         let store = try MetaBrainStore(url: fixture.storeURL)
@@ -554,6 +875,61 @@ private struct StoredNote: Codable, Equatable, Sendable {
 
         #expect(results.map(\.documentID) == [matching.id])
         #expect(results.first?.path == matching.path)
+    }
+}
+
+@Test func searchIntersectsMultipleTagAndMetadataFilters() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let matching = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/filters/matching"),
+            body: "multi filter needle",
+            tags: ["Search", "Daily"],
+            metadata: ["status": "active", "kind": "design"]
+        ))
+        _ = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/filters/tag-miss"),
+            body: "multi filter needle",
+            tags: ["Search"],
+            metadata: ["status": "active", "kind": "design"]
+        ))
+        _ = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/filters/meta-miss"),
+            body: "multi filter needle",
+            tags: ["Search", "Daily"],
+            metadata: ["status": "active", "kind": "draft"]
+        ))
+
+        let tagAndMetadataResults = try await store.search(SearchQuery(
+            text: "needle",
+            tags: ["search", "daily"],
+            metadata: ["status": "active", "kind": "design"]
+        ))
+        let metadataOnlyResults = try await store.search(SearchQuery(
+            text: "needle",
+            metadata: ["status": "active"]
+        ))
+
+        #expect(tagAndMetadataResults.map(\.documentID) == [matching.id])
+        #expect(metadataOnlyResults.map(\.documentID).contains(matching.id))
+    }
+}
+
+@Test func searchContextSortsNeighborsAndDropsDistantChunks() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let body = String(repeating: "before ", count: 600)
+            + "needle "
+            + String(repeating: "after ", count: 600)
+        _ = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/search/context-sort"),
+            body: body
+        ))
+
+        let result = try #require(try await store.search(SearchQuery(text: "needle")).first)
+
+        #expect(result.chunkOrdinal == 1)
+        #expect(result.context.map(\.ordinal) == [0, 2])
     }
 }
 

@@ -254,18 +254,14 @@ public final class MetaBrainStore: Sendable {
     }
 
     func writeRawValue(_ value: Data, forKey key: String) async throws {
-        do {
+        try await Self.mapLevelDBErrors(path: url.path) {
             try await records.put(value, forKey: key)
-        } catch let error as LevelDBError {
-            throw Self.storeError(from: error, path: url.path)
         }
     }
 
     func rawValue(forKey key: String) async throws -> Data? {
-        do {
-            return try await records.value(forKey: key)
-        } catch let error as LevelDBError {
-            throw Self.storeError(from: error, path: url.path)
+        try await Self.mapLevelDBErrors(path: url.path) {
+            try await records.value(forKey: key)
         }
     }
 
@@ -427,7 +423,7 @@ public final class MetaBrainStore: Sendable {
         }
         let indexKeys = try await currentIndexKeys(for: document, chunks: chunks)
 
-        do {
+        try await Self.mapLevelDBErrors(path: url.path) {
             try await records.write { batch in
                 for key in staleChunkKeys + staleIndexKeys + staleReferenceKeys {
                     try batch.deleteValue(forKey: key)
@@ -456,8 +452,6 @@ public final class MetaBrainStore: Sendable {
                     ))
                 }
             }
-        } catch let error as LevelDBError {
-            throw Self.storeError(from: error, path: url.path)
         }
     }
 
@@ -479,7 +473,7 @@ public final class MetaBrainStore: Sendable {
             )
         }
 
-        do {
+        try await Self.mapLevelDBErrors(path: url.path) {
             try await records.write { batch in
                 for version in prunedVersions {
                     try batch.deleteValue(forKey: MetaBrainKeyspace.version(
@@ -488,8 +482,6 @@ public final class MetaBrainStore: Sendable {
                     ))
                 }
             }
-        } catch let error as LevelDBError {
-            throw Self.storeError(from: error, path: url.path)
         }
 
         return PruneResult(
@@ -516,7 +508,7 @@ public final class MetaBrainStore: Sendable {
         let retainedSequences = retainedVersionSequences(
             from: versions,
             policy: policy,
-            currentSequence: versions.map(\.sequence).max() ?? 0
+            currentSequence: versions.map(\.sequence).max()!
         )
 
         return versions.filter { !retainedSequences.contains($0.sequence) }
@@ -582,24 +574,20 @@ public final class MetaBrainStore: Sendable {
     private func versionRecords(for id: DocumentID) async throws -> [DocumentVersion] {
         let prefix = "ver/\(id.rawValue)/"
 
-        do {
-            return try await records
+        return try await Self.mapLevelDBErrors(path: url.path) {
+            try await records
                 .scanEncodedPrefix(Data(prefix.utf8))
                 .map { try decodeCompressedData($0.value, as: DocumentVersion.self) }
                 .sorted { $0.sequence < $1.sequence }
-        } catch let error as LevelDBError {
-            throw Self.storeError(from: error, path: url.path)
         }
     }
 
     private func currentChunkRecords(for id: DocumentID) async throws -> [MetaBrainChunkRecord] {
-        do {
-            return try await records
+        return try await Self.mapLevelDBErrors(path: url.path) {
+            try await records
                 .scanEncodedPrefix(Data(MetaBrainKeyspace.currentChunkPrefix(id: id).utf8))
                 .map { try decodeCompressedData($0.value, as: MetaBrainChunkRecord.self) }
                 .sorted { $0.ordinal < $1.ordinal }
-        } catch let error as LevelDBError {
-            throw Self.storeError(from: error, path: url.path)
         }
     }
 
@@ -712,12 +700,20 @@ public final class MetaBrainStore: Sendable {
 
         for tag in query.tags {
             let ids = Set(try await documentIDs(tagged: tag))
-            filteredIDs = filteredIDs.map { $0.intersection(ids) } ?? ids
+            if let existingIDs = filteredIDs {
+                filteredIDs = existingIDs.intersection(ids)
+            } else {
+                filteredIDs = ids
+            }
         }
 
         for (key, value) in query.metadata {
             let ids = Set(try await documentIDs(metadataKey: key, value: value))
-            filteredIDs = filteredIDs.map { $0.intersection(ids) } ?? ids
+            if let existingIDs = filteredIDs {
+                filteredIDs = existingIDs.intersection(ids)
+            } else {
+                filteredIDs = ids
+            }
         }
 
         return filteredIDs
@@ -725,10 +721,6 @@ public final class MetaBrainStore: Sendable {
 
     private func termPostings(for term: String) async throws -> [MetaBrainSearchCandidate] {
         let normalized = Self.normalizedTerm(term)
-        guard !normalized.isEmpty else {
-            return []
-        }
-
         let prefix = MetaBrainKeyspace.termPrefix(normalized)
         return try await scanKeys(withPrefix: prefix).map { key in
             let suffix = key.dropFirst(prefix.count)
@@ -740,13 +732,11 @@ public final class MetaBrainStore: Sendable {
     }
 
     private func scanKeys(withPrefix prefix: String) async throws -> [String] {
-        do {
-            return try await records
+        return try await Self.mapLevelDBErrors(path: url.path) {
+            try await records
                 .scanEncodedPrefix(Data(prefix.utf8))
                 .map(\.key)
                 .sorted()
-        } catch let error as LevelDBError {
-            throw Self.storeError(from: error, path: url.path)
         }
     }
 
@@ -921,7 +911,18 @@ public final class MetaBrainStore: Sendable {
         return envelope.payload
     }
 
-    private static func storeError(from error: LevelDBError, path: String) -> MetaBrainStoreError {
+    static func mapLevelDBErrors<T: Sendable>(
+        path: String,
+        _ operation: () async throws -> T
+    ) async throws -> T {
+        do {
+            return try await operation()
+        } catch let error as LevelDBError {
+            throw storeError(from: error, path: path)
+        }
+    }
+
+    static func storeError(from error: LevelDBError, path: String) -> MetaBrainStoreError {
         switch error {
         case .openFailed(let message):
             .openFailed(path: path, message: message)
