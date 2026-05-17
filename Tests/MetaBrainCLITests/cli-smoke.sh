@@ -40,6 +40,28 @@ assert_put_text() {
     fi
 }
 
+assert_patch_write_json() {
+    local actual="$1"
+    local expected_path="$2"
+    local expected_version="$3"
+    local pattern='^\{"documentID":"[0-9a-f-]+","operation":"patch","path":"'"$expected_path"'","status":"patched","version":'"$expected_version"'\}$'
+
+    if [[ "$actual" == *$'\n'* ]] || ! printf '%s\n' "$actual" | rg -q "$pattern"; then
+        echo "Expected patch JSON for $expected_path v$expected_version, got: $actual" >&2
+        exit 1
+    fi
+}
+
+assert_patch_check_json() {
+    local actual="$1"
+    local expected='{"check":true,"operation":"patch","status":"applies","success":true}'
+
+    if [[ "$actual" != "$expected" ]]; then
+        echo "Expected patch check JSON, got: $actual" >&2
+        exit 1
+    fi
+}
+
 "${METABRAIN[@]}" | rg -q 'Agent discovery:'
 "${METABRAIN[@]}" --help | rg -q 'Common workflow:'
 "${METABRAIN[@]}" help | rg -q 'metabrain help search'
@@ -122,9 +144,11 @@ cat >"$PATCH_FILE" <<'PATCH'
 +one fresh patchable memory
 \ No newline at end of file
 PATCH
-"${METABRAIN[@]}" patch --store "$STORE" /notes/patchable --patch-file "$PATCH_FILE" --check | rg -q '^patch applies$'
+PATCH_CHECK_JSON="$("${METABRAIN[@]}" patch --store "$STORE" /notes/patchable --patch-file "$PATCH_FILE" --check)"
+assert_patch_check_json "$PATCH_CHECK_JSON"
 "${METABRAIN[@]}" get --store "$STORE" /notes/patchable | rg -q 'one old patchable memory'
-"${METABRAIN[@]}" patch --store "$STORE" /notes/patchable --patch-file "$PATCH_FILE" | rg -q '^version: 2$'
+PATCH_WRITE_JSON="$("${METABRAIN[@]}" patch --store "$STORE" /notes/patchable --patch-file "$PATCH_FILE")"
+assert_patch_write_json "$PATCH_WRITE_JSON" /notes/patchable 2
 "${METABRAIN[@]}" get --store "$STORE" /notes/patchable | rg -q 'one fresh patchable memory'
 "${METABRAIN[@]}" search --store "$STORE" fresh --tag patch | rg -q '^/notes/patchable'
 "${METABRAIN[@]}" search --store "$STORE" old --tag patch | rg -q '^No results\.$'
@@ -137,8 +161,25 @@ cat >"$STDIN_PATCH_FILE" <<'PATCH'
 +stdin fresh memory
 \ No newline at end of file
 PATCH
-"${METABRAIN[@]}" patch --store "$STORE" --path /notes/stdin-patch --patch-file - <"$STDIN_PATCH_FILE" | rg -q '^version: 2$'
+"${METABRAIN[@]}" patch --store "$STORE" --path /notes/stdin-patch --patch-file - --format text --check <"$STDIN_PATCH_FILE" | rg -q '^patch applies$'
+PATCH_STDIN_TEXT="$("${METABRAIN[@]}" patch --store "$STORE" --path /notes/stdin-patch --patch-file - --format text <"$STDIN_PATCH_FILE")"
+assert_put_text "$PATCH_STDIN_TEXT" /notes/stdin-patch 2
 "${METABRAIN[@]}" get --store "$STORE" --path /notes/stdin-patch | rg -q 'stdin fresh memory'
+"${METABRAIN[@]}" put --store "$STORE" --format text /notes/jsonl-patch 'jsonl old memory' | rg -q '^version: 1$'
+JSONL_PATCH_FILE="$TMP_DIR/jsonl-patch.diff"
+cat >"$JSONL_PATCH_FILE" <<'PATCH'
+@@ -1 +1 @@
+-jsonl old memory
+\ No newline at end of file
++jsonl fresh memory
+\ No newline at end of file
+PATCH
+PATCH_JSONL_CHECK="$("${METABRAIN[@]}" patch --store "$STORE" /notes/jsonl-patch --patch-file "$JSONL_PATCH_FILE" --format jsonl --check)"
+assert_patch_check_json "$PATCH_JSONL_CHECK"
+"${METABRAIN[@]}" get --store "$STORE" /notes/jsonl-patch | rg -q 'jsonl old memory'
+PATCH_JSONL_WRITE="$("${METABRAIN[@]}" patch --store "$STORE" /notes/jsonl-patch --patch-file "$JSONL_PATCH_FILE" --format jsonl)"
+assert_patch_write_json "$PATCH_JSONL_WRITE" /notes/jsonl-patch 2
+"${METABRAIN[@]}" get --store "$STORE" /notes/jsonl-patch | rg -q 'jsonl fresh memory'
 "${METABRAIN[@]}" list --store "$STORE" | rg -q '^notes/$'
 "${METABRAIN[@]}" list --store "$STORE" --recursive | rg -q '^notes/archive/final$'
 "${METABRAIN[@]}" list --store "$STORE" /notes | rg -q '^today$'

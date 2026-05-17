@@ -307,6 +307,7 @@ extension MetaBrainCommand {
 
         @OptionGroup var storeOptions: StoreOptions
         @OptionGroup var referenceOptions: ReferenceOptions
+        @OptionGroup var output: OutputFormatOptions
         @OptionGroup var retention: RetentionOptions
 
         @Option(name: .customLong("patch-file"), help: "Read a unified diff from a UTF-8 file. Use '-' for stdin.")
@@ -330,14 +331,43 @@ extension MetaBrainCommand {
 
             if check {
                 try await store.checkDocumentPatch(request)
-                print("patch applies")
+                let result = PatchCheckOutput(
+                    check: true,
+                    operation: "patch",
+                    status: "applies",
+                    success: true
+                )
+
+                switch output.format {
+                case .text:
+                    print("patch applies")
+                case .json:
+                    try printJSON(result)
+                case .jsonl:
+                    try printJSONLine(result)
+                }
                 return
             }
 
             let document = try await store.patchDocument(request)
-            print("id: \(document.id.rawValue)")
-            print("path: \(document.path.rawValue)")
-            print("version: \(document.currentVersion)")
+            let result = PatchOutput(
+                documentID: document.id.rawValue,
+                operation: "patch",
+                path: document.path.rawValue,
+                status: "patched",
+                version: document.currentVersion
+            )
+
+            switch output.format {
+            case .text:
+                print("id: \(document.id.rawValue)")
+                print("path: \(document.path.rawValue)")
+                print("version: \(document.currentVersion)")
+            case .json:
+                try printJSON(result)
+            case .jsonl:
+                try printJSONLine(result)
+            }
         }
     }
 
@@ -619,6 +649,21 @@ private struct PutOutput: Encodable {
     let path: String
     let status: String
     let version: UInt64
+}
+
+private struct PatchOutput: Encodable {
+    let documentID: String
+    let operation: String
+    let path: String
+    let status: String
+    let version: UInt64
+}
+
+private struct PatchCheckOutput: Encodable {
+    let check: Bool
+    let operation: String
+    let status: String
+    let success: Bool
 }
 
 private func readBody(argument: String?, filePath: String?) throws -> String {
