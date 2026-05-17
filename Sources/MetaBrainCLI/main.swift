@@ -573,6 +573,7 @@ extension MetaBrainCommand {
         )
 
         @OptionGroup var storeOptions: StoreOptions
+        @OptionGroup var output: ListOutputFormatOptions
 
         @Argument(help: "Document or folder path to dump.")
         var path: String
@@ -602,7 +603,14 @@ extension MetaBrainCommand {
                 outputEntries = entries
             }
 
-            try printJSONLines(outputEntries)
+            let dumpOutputs = outputEntries.map(DumpOutput.init)
+
+            switch output.format {
+            case .text, .jsonl:
+                try printJSONLines(dumpOutputs)
+            case .json:
+                try printJSON(dumpOutputs)
+            }
         }
     }
 
@@ -853,6 +861,71 @@ private struct SearchOutput: Encodable {
         try container.encode(score, forKey: .score)
         try container.encode(snippet, forKey: .snippet)
         try container.encode(title, forKey: .title)
+    }
+}
+
+private struct DumpOutput: Encodable {
+    let body: String
+    let bodyCharacterCount: Int
+    let bodyUTF8ByteCount: Int
+    let documentID: String
+    let fileSystemPath: String?
+    let isCurrent: Bool
+    let metadata: [String: String]
+    let path: String
+    let references: [DocumentDumpReference]
+    let tags: [String]
+    let title: String?
+    let version: UInt64
+    let versionCreatedAt: Date
+
+    init(_ entry: DocumentDumpEntry) {
+        body = entry.body
+        bodyCharacterCount = entry.bodyCharacterCount
+        bodyUTF8ByteCount = entry.bodyUTF8ByteCount
+        documentID = entry.documentID.rawValue
+        fileSystemPath = entry.fileSystemPath
+        isCurrent = entry.isCurrent
+        metadata = entry.metadata
+        path = entry.path.rawValue
+        references = entry.references
+        tags = entry.tags
+        title = entry.title
+        version = entry.version
+        versionCreatedAt = entry.versionCreatedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case body
+        case bodyCharacterCount
+        case bodyUTF8ByteCount
+        case documentID
+        case fileSystemPath
+        case isCurrent
+        case metadata
+        case path
+        case references
+        case tags
+        case title
+        case version
+        case versionCreatedAt
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(body, forKey: .body)
+        try container.encode(bodyCharacterCount, forKey: .bodyCharacterCount)
+        try container.encode(bodyUTF8ByteCount, forKey: .bodyUTF8ByteCount)
+        try container.encode(documentID, forKey: .documentID)
+        try container.encodeIfPresent(fileSystemPath, forKey: .fileSystemPath)
+        try container.encode(isCurrent, forKey: .isCurrent)
+        try container.encode(metadata, forKey: .metadata)
+        try container.encode(path, forKey: .path)
+        try container.encode(references, forKey: .references)
+        try container.encode(tags, forKey: .tags)
+        try container.encodeIfPresent(title, forKey: .title)
+        try container.encode(version, forKey: .version)
+        try container.encode(versionCreatedAt, forKey: .versionCreatedAt)
     }
 }
 

@@ -202,17 +202,47 @@ PUT_ARCHIVE_TEXT="$("${METABRAIN[@]}" put --store "$STORE" --format text /notes/
 assert_put_text "$PUT_ARCHIVE_TEXT" /notes/archive/final 1
 PUT_PATCHABLE_JSONL="$("${METABRAIN[@]}" put --store "$STORE" --format jsonl /notes/patchable 'one old patchable memory' --tag patch)"
 assert_put_json "$PUT_PATCHABLE_JSONL" /notes/patchable created 1
-"${METABRAIN[@]}" dump --store "$STORE" /notes >"$TMP_DIR/dump-notes.jsonl"
+DUMP_NOTES_DEFAULT_JSONL="$("${METABRAIN[@]}" dump --store "$STORE" /notes)"
+assert_line_count "$DUMP_NOTES_DEFAULT_JSONL" 3
+printf '%s\n' "$DUMP_NOTES_DEFAULT_JSONL" >"$TMP_DIR/dump-notes.jsonl"
 rg -F -q '"path":"/notes/archive/final"' "$TMP_DIR/dump-notes.jsonl"
 rg -F -q '"path":"/notes/today"' "$TMP_DIR/dump-notes.jsonl"
 rg -F -q '"body":"alpha beta searchable memory"' "$TMP_DIR/dump-notes.jsonl"
+rg -F -q '"references":[]' "$TMP_DIR/dump-notes.jsonl"
+rg -q '"documentID":"[0-9a-f-]+"' "$TMP_DIR/dump-notes.jsonl"
 if rg -F -q '"path":"/refs/target"' "$TMP_DIR/dump-notes.jsonl"; then
     echo "Expected /notes dump to exclude unrelated paths" >&2
     exit 1
 fi
-"${METABRAIN[@]}" dump --store "$STORE" /missing >"$TMP_DIR/dump-missing.jsonl"
-if [[ -s "$TMP_DIR/dump-missing.jsonl" ]]; then
-    echo "Expected missing dump path to produce no JSONL entries" >&2
+DUMP_NOTES_TEXT="$("${METABRAIN[@]}" dump --store "$STORE" /notes --format text)"
+if [[ "$DUMP_NOTES_TEXT" != "$DUMP_NOTES_DEFAULT_JSONL" ]]; then
+    echo "Expected dump text output to match legacy JSONL output, got: $DUMP_NOTES_TEXT" >&2
+    exit 1
+fi
+DUMP_NOTES_JSONL="$("${METABRAIN[@]}" dump --store "$STORE" /notes --format jsonl)"
+if [[ "$DUMP_NOTES_JSONL" != "$DUMP_NOTES_DEFAULT_JSONL" ]]; then
+    echo "Expected explicit dump JSONL output to match default output, got: $DUMP_NOTES_JSONL" >&2
+    exit 1
+fi
+DUMP_NOTES_JSON="$("${METABRAIN[@]}" dump --store "$STORE" /notes --format json)"
+assert_line_count "$DUMP_NOTES_JSON" 1
+printf '%s\n' "$DUMP_NOTES_JSON" | rg -q '^\[.*\]$'
+printf '%s\n' "$DUMP_NOTES_JSON" | rg -F -q '"path":"/notes/archive/final"'
+printf '%s\n' "$DUMP_NOTES_JSON" | rg -F -q '"path":"/notes/today"'
+printf '%s\n' "$DUMP_NOTES_JSON" | rg -F -q '"body":"alpha beta searchable memory"'
+DUMP_MISSING_DEFAULT_JSONL="$("${METABRAIN[@]}" dump --store "$STORE" /missing)"
+if [[ -n "$DUMP_MISSING_DEFAULT_JSONL" ]]; then
+    echo "Expected missing dump path to produce no default JSONL entries, got: $DUMP_MISSING_DEFAULT_JSONL" >&2
+    exit 1
+fi
+DUMP_MISSING_JSONL="$("${METABRAIN[@]}" dump --store "$STORE" /missing --format jsonl)"
+if [[ -n "$DUMP_MISSING_JSONL" ]]; then
+    echo "Expected missing dump path to produce no explicit JSONL entries, got: $DUMP_MISSING_JSONL" >&2
+    exit 1
+fi
+DUMP_MISSING_JSON="$("${METABRAIN[@]}" dump --store "$STORE" /missing --format json)"
+if [[ "$DUMP_MISSING_JSON" != "[]" ]]; then
+    echo "Expected missing dump path to produce an empty JSON array, got: $DUMP_MISSING_JSON" >&2
     exit 1
 fi
 PATCH_FILE="$TMP_DIR/patchable.diff"
