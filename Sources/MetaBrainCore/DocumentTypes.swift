@@ -170,6 +170,57 @@ public struct StoredDocument: Codable, Equatable, Sendable, Identifiable {
     }
 }
 
+public struct DocumentAccessCounts: Codable, Equatable, Sendable {
+    public var readCount: UInt64
+    public var patchCount: UInt64
+    public var fullWriteCount: UInt64
+
+    public init(
+        readCount: UInt64 = 0,
+        patchCount: UInt64 = 0,
+        fullWriteCount: UInt64 = 0
+    ) {
+        self.readCount = readCount
+        self.patchCount = patchCount
+        self.fullWriteCount = fullWriteCount
+    }
+}
+
+public struct DocumentEntryMetadata: Codable, Equatable, Sendable {
+    public static let defaultFormatTag = "metabrain.document.v1"
+
+    public var formatTag: String
+    public var featureFlags: [String]
+    public var access: DocumentAccessCounts
+
+    public init(
+        formatTag: String = Self.defaultFormatTag,
+        featureFlags: [String] = [],
+        access: DocumentAccessCounts = DocumentAccessCounts()
+    ) {
+        self.formatTag = formatTag
+        self.featureFlags = Array(Set(featureFlags)).sorted()
+        self.access = access
+    }
+}
+
+public struct StoredDocumentEntry: Codable, Equatable, Sendable, Identifiable {
+    public var id: DocumentID {
+        document.id
+    }
+
+    public var document: StoredDocument
+    public var entryMetadata: DocumentEntryMetadata
+
+    public init(
+        document: StoredDocument,
+        entryMetadata: DocumentEntryMetadata
+    ) {
+        self.document = document
+        self.entryMetadata = entryMetadata
+    }
+}
+
 public enum DocumentReference: Codable, Equatable, Hashable, Sendable {
     case documentID(DocumentID)
     case path(DocumentPath)

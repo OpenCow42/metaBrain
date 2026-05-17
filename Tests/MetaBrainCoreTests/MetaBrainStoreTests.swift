@@ -217,6 +217,176 @@ private func storeTestCodec<Value: Codable & Sendable>(
     }
 }
 
+@Test func entryMetadataSidecarTracksCreateFeaturesAndDirectReads() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let target = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/refs/target"),
+            body: "target"
+        ))
+        let path = try DocumentPath("/notes/metadata")
+        let document = try await store.putDocument(DocumentInput(
+            path: path,
+            title: "Metadata",
+            body: "featureful body",
+            tags: ["metadata"],
+            metadata: ["source": "test"],
+            references: [.documentID(target.id)]
+        ))
+
+        let initialMetadata = try #require(
+            try await store.entryMetadata(for: .documentID(document.id))
+        )
+        #expect(initialMetadata.formatTag == DocumentEntryMetadata.defaultFormatTag)
+        #expect(initialMetadata.featureFlags == [
+            "body",
+            "references",
+            "tags",
+            "title",
+            "user-metadata"
+        ])
+        #expect(initialMetadata.access == DocumentAccessCounts(
+            readCount: 0,
+            patchCount: 0,
+            fullWriteCount: 1
+        ))
+
+        let entry = try #require(try await store.getDocumentEntry(.path(path)))
+        #expect(entry.document == document)
+        #expect(entry.entryMetadata.access == DocumentAccessCounts(
+            readCount: 1,
+            patchCount: 0,
+            fullWriteCount: 1
+        ))
+
+        #expect(try await store.getDocument(.documentID(document.id)) == document)
+        let afterSecondRead = try #require(
+            try await store.entryMetadata(for: .documentID(document.id))
+        )
+        #expect(afterSecondRead.access.readCount == 2)
+        #expect(afterSecondRead.access.patchCount == 0)
+        #expect(afterSecondRead.access.fullWriteCount == 1)
+    }
+}
+
+@Test func entryMetadataSeparatesWholeWriteAndPatchCounters() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let path = try DocumentPath("/notes/counters")
+        let created = try await store.putDocument(DocumentInput(
+            path: path,
+            body: "created\n"
+        ))
+        _ = try await store.putDocument(DocumentInput(
+            path: path,
+            body: "updated\n"
+        ))
+        let movedPath = try DocumentPath("/notes/counters-renamed")
+        _ = try await store.updateDocument(
+            .documentID(created.id),
+            with: DocumentInput(
+                path: movedPath,
+                body: "renamed\n"
+            )
+        )
+        let patch = """
+        @@ -1 +1 @@
+        -renamed
+        +patched
+        """
+
+        _ = try await store.patchDocument(DocumentPatchRequest(
+            reference: .documentID(created.id),
+            unifiedDiff: patch
+        ))
+
+        let metadata = try #require(
+            try await store.entryMetadata(for: .path(movedPath))
+        )
+        #expect(metadata.access.readCount == 0)
+        #expect(metadata.access.patchCount == 1)
+        #expect(metadata.access.fullWriteCount == 3)
+    }
+}
+
+@Test func nonDirectDocumentAccessDoesNotIncrementReadCount() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let path = try DocumentPath("/notes/indirect")
+        let document = try await store.putDocument(DocumentInput(
+            path: path,
+            body: "alpha beta searchable\nbefore\n",
+            tags: ["indirect"],
+            metadata: ["kind": "counter-test"]
+        ))
+        let patch = """
+        @@ -1,2 +1,2 @@
+         alpha beta searchable
+        -before
+        +after
+        """
+
+        try await store.checkDocumentPatch(DocumentPatchRequest(
+            reference: .path(path),
+            unifiedDiff: patch
+        ))
+        #expect(try await store.dump(DocumentDumpQuery(path: path)).map(\.documentID) == [document.id])
+        #expect(try await store.listDirectory(recursive: true).map(\.documentID).contains(document.id))
+        #expect(try await store.tree().map(\.documentID).contains(document.id))
+        #expect(try await store.search(SearchQuery(
+            text: "alpha",
+            tags: ["indirect"],
+            metadata: ["kind": "counter-test"]
+        )).map(\.documentID) == [document.id])
+        #expect(try await store.listVersions(of: .documentID(document.id)).map(\.sequence) == [1])
+        #expect(try await store.prune(PruneRequest(
+            reference: .documentID(document.id),
+            policy: .keepAll
+        )).prunedVersionCount == 0)
+
+        let metadata = try #require(
+            try await store.entryMetadata(for: .documentID(document.id))
+        )
+        #expect(metadata.access.readCount == 0)
+        #expect(metadata.access.patchCount == 0)
+        #expect(metadata.access.fullWriteCount == 1)
+    }
+}
+
+@Test func missingEntryMetadataSidecarDefaultsWithoutMigration() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let document = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/legacy/document"),
+            title: "Legacy",
+            body: "legacy body",
+            tags: ["legacy"]
+        ))
+
+        try await store.deleteRawValue(
+            forKey: MetaBrainKeyspace.documentMetadata(id: document.id)
+        )
+
+        let defaultMetadata = try #require(
+            try await store.entryMetadata(for: .documentID(document.id))
+        )
+        #expect(defaultMetadata.formatTag == DocumentEntryMetadata.defaultFormatTag)
+        #expect(defaultMetadata.featureFlags == ["body", "tags", "title"])
+        #expect(defaultMetadata.access == DocumentAccessCounts())
+
+        #expect(try await store.getDocument(.documentID(document.id)) == document)
+
+        let afterRead = try #require(
+            try await store.entryMetadata(for: .documentID(document.id))
+        )
+        #expect(afterRead.access == DocumentAccessCounts(
+            readCount: 1,
+            patchCount: 0,
+            fullWriteCount: 0
+        ))
+    }
+}
+
 @Test func updatesDocumentAtSamePathAndPreservesStableID() async throws {
     try await withTemporaryStoreFixture { fixture in
         let store = try MetaBrainStore(url: fixture.storeURL)

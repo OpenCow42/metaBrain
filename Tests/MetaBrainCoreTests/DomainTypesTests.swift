@@ -129,6 +129,7 @@ import Testing
     let path = try DocumentPath("/notes/today")
 
     #expect(MetaBrainKeyspace.document(id: id) == "doc/id/doc-a")
+    #expect(MetaBrainKeyspace.documentMetadata(id: id) == "doc/meta/doc-a")
     #expect(MetaBrainKeyspace.documentPath(path) == "doc/path//notes/today")
     #expect(MetaBrainKeyspace.version(id: id, sequence: 7) == "ver/doc-a/00000000000000000007")
     #expect(MetaBrainKeyspace.currentChunk(id: id, ordinal: 3) == "chunk/current/doc-a/0000000003")
@@ -141,6 +142,7 @@ import Testing
     #expect(MetaBrainKeyspace.tree(parentPath: try DocumentPath("/notes"), name: "today") == "tree/%2Fnotes/today")
     #expect(MetaBrainKeyspace.treePrefix(parentPath: try DocumentPath("/notes")) == "tree/%2Fnotes/")
     #expect(MetaBrainKeyspace.prefix(.documentID) == "doc/id/")
+    #expect(MetaBrainKeyspace.prefix(.documentMetadata) == "doc/meta/")
 
     let versionKeys = [10, 2, 1].map { MetaBrainKeyspace.version(id: id, sequence: UInt64($0)) }.sorted()
     #expect(versionKeys == [

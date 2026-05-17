@@ -8,6 +8,10 @@ enum MetaBrainKeyspace {
         "doc/id/\(id.rawValue)"
     }
 
+    static func documentMetadata(id: DocumentID) -> String {
+        "doc/meta/\(id.rawValue)"
+    }
+
     static func documentPath(_ path: DocumentPath) -> String {
         "doc/path/\(path.rawValue)"
     }
@@ -111,6 +115,7 @@ enum MetaBrainKeyspace {
 extension MetaBrainKeyspace {
     enum KeyFamily: String {
         case documentID = "doc/id/"
+        case documentMetadata = "doc/meta/"
         case documentPath = "doc/path/"
         case version = "ver/"
         case currentChunk = "chunk/current/"

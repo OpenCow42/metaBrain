@@ -121,11 +121,36 @@ public final class MetaBrainStore: Sendable {
     }
 
     public func getDocument(_ reference: DocumentReference) async throws -> StoredDocument? {
-        guard let id = try await documentID(for: reference) else {
+        let entry = try await getDocumentEntry(reference)
+        return entry?.document
+    }
+
+    public func getDocumentEntry(_ reference: DocumentReference) async throws -> StoredDocumentEntry? {
+        try await writes.run {
+            guard let id = try await self.documentID(for: reference),
+                  let record = try await self.documentRecord(id: id) else {
+                return nil
+            }
+
+            let metadata = try await self.writeEntryMetadata(
+                for: record.document,
+                readDelta: 1
+            )
+
+            return StoredDocumentEntry(
+                document: record.document,
+                entryMetadata: metadata
+            )
+        }
+    }
+
+    public func entryMetadata(for reference: DocumentReference) async throws -> DocumentEntryMetadata? {
+        guard let id = try await documentID(for: reference),
+              let record = try await documentRecord(id: id) else {
             return nil
         }
 
-        return try await documentRecord(id: id)?.document
+        return try await entryMetadataRecord(for: record.document)
     }
 
     public func listVersions(of reference: DocumentReference) async throws -> [DocumentVersion] {
@@ -166,7 +191,11 @@ public final class MetaBrainStore: Sendable {
     public func patchDocument(_ request: DocumentPatchRequest) async throws -> StoredDocument {
         try await writes.run {
             let patched = try await self.patchedDocumentInput(for: request)
-            return try await self.writeDocumentUpdate(id: patched.id, input: patched.input)
+            return try await self.writeDocumentUpdate(
+                id: patched.id,
+                input: patched.input,
+                accessMutation: .patch
+            )
         }
     }
 
@@ -321,6 +350,14 @@ public final class MetaBrainStore: Sendable {
         }
     }
 
+    func deleteRawValue(forKey key: String) async throws {
+        try await Self.mapLevelDBErrors(path: url.path) {
+            try await records.write { batch in
+                try batch.deleteValue(forKey: key)
+            }
+        }
+    }
+
     func rawValue(forKey key: String) async throws -> Data? {
         try await Self.mapLevelDBErrors(path: url.path) {
             try await records.value(forKey: key)
@@ -365,9 +402,10 @@ public final class MetaBrainStore: Sendable {
         var documentIDs: Set<DocumentID> = []
         var documents: [StoredDocument] = []
 
-        if let document = try await getDocument(.path(path)) {
-            documents.append(document)
-            documentIDs.insert(document.id)
+        if let id = try await documentID(forPath: path),
+           let record = try await documentRecord(id: id) {
+            documents.append(record.document)
+            documentIDs.insert(record.document.id)
         }
 
         for entry in try await listDirectory(path: path, recursive: true) {
@@ -451,6 +489,10 @@ public final class MetaBrainStore: Sendable {
         try await writeDocumentBatch(
             record: record,
             version: version,
+            entryMetadata: Self.defaultEntryMetadata(
+                for: document,
+                access: DocumentAccessCounts(fullWriteCount: 1)
+            ),
             previousRecord: nil,
             removedPath: nil,
             prunedVersions: []
@@ -461,7 +503,8 @@ public final class MetaBrainStore: Sendable {
 
     private func writeDocumentUpdate(
         id: DocumentID,
-        input: DocumentInput
+        input: DocumentInput,
+        accessMutation: EntryAccessMutation = .fullWrite
     ) async throws -> StoredDocument {
         guard let existingRecord = try await documentRecord(id: id) else {
             return try await writeNewDocument(input)
@@ -513,10 +556,15 @@ public final class MetaBrainStore: Sendable {
             appending: version,
             policy: record.retention
         )
+        let entryMetadata = try await updatedEntryMetadata(
+            for: document,
+            accessMutation: accessMutation
+        )
 
         try await writeDocumentBatch(
             record: record,
             version: version,
+            entryMetadata: entryMetadata,
             previousRecord: existingRecord,
             removedPath: removedPath,
             prunedVersions: prunedVersions
@@ -551,6 +599,7 @@ public final class MetaBrainStore: Sendable {
     private func writeDocumentBatch(
         record: MetaBrainDocumentRecord,
         version: DocumentVersion,
+        entryMetadata: DocumentEntryMetadata,
         previousRecord: MetaBrainDocumentRecord?,
         removedPath: DocumentPath?,
         prunedVersions: [DocumentVersion]
@@ -564,6 +613,7 @@ public final class MetaBrainStore: Sendable {
         )
         let encodedRecord = try compressedData(record)
         let encodedVersion = try compressedData(version)
+        let encodedEntryMetadata = try compressedData(entryMetadata)
         let encodedID = Data(document.id.rawValue.utf8)
         let staleChunkKeys = try await currentChunkKeys(for: document.id)
         let staleIndexKeys = try await staleIndexKeys(
@@ -591,6 +641,10 @@ public final class MetaBrainStore: Sendable {
                 }
 
                 try batch.put(encodedRecord, forKey: documentKey)
+                try batch.put(
+                    encodedEntryMetadata,
+                    forKey: MetaBrainKeyspace.documentMetadata(id: document.id)
+                )
                 try batch.put(encodedID, forKey: pathKey)
                 try batch.put(encodedVersion, forKey: versionKey)
 
@@ -738,6 +792,49 @@ public final class MetaBrainStore: Sendable {
             forKey: MetaBrainKeyspace.document(id: id),
             as: MetaBrainDocumentRecord.self
         )
+    }
+
+    private func entryMetadataRecord(for document: StoredDocument) async throws -> DocumentEntryMetadata {
+        guard let metadata = try await compressedRecord(
+            forKey: MetaBrainKeyspace.documentMetadata(id: document.id),
+            as: DocumentEntryMetadata.self
+        ) else {
+            return Self.defaultEntryMetadata(for: document)
+        }
+
+        return Self.rederivedEntryMetadata(metadata, for: document)
+    }
+
+    private func updatedEntryMetadata(
+        for document: StoredDocument,
+        accessMutation: EntryAccessMutation
+    ) async throws -> DocumentEntryMetadata {
+        var metadata = try await entryMetadataRecord(for: document)
+
+        switch accessMutation {
+        case .fullWrite:
+            metadata.access.fullWriteCount = Self.incremented(metadata.access.fullWriteCount)
+        case .patch:
+            metadata.access.patchCount = Self.incremented(metadata.access.patchCount)
+        }
+
+        return Self.rederivedEntryMetadata(metadata, for: document)
+    }
+
+    private func writeEntryMetadata(
+        for document: StoredDocument,
+        readDelta: UInt64
+    ) async throws -> DocumentEntryMetadata {
+        var metadata = try await entryMetadataRecord(for: document)
+        metadata.access.readCount = Self.incremented(metadata.access.readCount, by: readDelta)
+        metadata = Self.rederivedEntryMetadata(metadata, for: document)
+
+        try await writeRawValue(
+            try compressedData(metadata),
+            forKey: MetaBrainKeyspace.documentMetadata(id: document.id)
+        )
+
+        return metadata
     }
 
     private func versionRecords(for id: DocumentID) async throws -> [DocumentVersion] {
@@ -1254,6 +1351,63 @@ public final class MetaBrainStore: Sendable {
         return context
     }
 
+    private static func defaultEntryMetadata(
+        for document: StoredDocument,
+        access: DocumentAccessCounts = DocumentAccessCounts()
+    ) -> DocumentEntryMetadata {
+        DocumentEntryMetadata(
+            featureFlags: entryFeatureFlags(for: document),
+            access: access
+        )
+    }
+
+    private static func rederivedEntryMetadata(
+        _ metadata: DocumentEntryMetadata,
+        for document: StoredDocument
+    ) -> DocumentEntryMetadata {
+        let preservedFeatureFlags = metadata.featureFlags.filter {
+            !knownEntryFeatureFlags.contains($0)
+        }
+
+        return DocumentEntryMetadata(
+            formatTag: metadata.formatTag,
+            featureFlags: entryFeatureFlags(for: document) + preservedFeatureFlags,
+            access: metadata.access
+        )
+    }
+
+    private static func entryFeatureFlags(for document: StoredDocument) -> [String] {
+        var flags = ["body"]
+
+        if document.title != nil {
+            flags.append("title")
+        }
+        if !document.tags.isEmpty {
+            flags.append("tags")
+        }
+        if !document.metadata.isEmpty {
+            flags.append("user-metadata")
+        }
+        if !document.references.isEmpty {
+            flags.append("references")
+        }
+
+        return flags
+    }
+
+    private static let knownEntryFeatureFlags: Set<String> = [
+        "body",
+        "references",
+        "tags",
+        "title",
+        "user-metadata"
+    ]
+
+    private static func incremented(_ value: UInt64, by delta: UInt64 = 1) -> UInt64 {
+        let result = value.addingReportingOverflow(delta)
+        return result.overflow ? .max : result.partialValue
+    }
+
     private static func chunkRecords(for document: StoredDocument) -> [MetaBrainChunkRecord] {
         let text = document.body
         guard !text.isEmpty else {
@@ -1365,6 +1519,11 @@ private actor MetaBrainWriteCoordinator {
     func run<T: Sendable>(_ operation: @Sendable () async throws -> T) async throws -> T {
         try await operation()
     }
+}
+
+private enum EntryAccessMutation: Sendable {
+    case fullWrite
+    case patch
 }
 
 private struct MetaBrainDocumentRecord: Codable, Equatable, Sendable {
