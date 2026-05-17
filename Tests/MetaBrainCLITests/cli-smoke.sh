@@ -126,6 +126,24 @@ assert_search_jsonl_result() {
     printf '%s\n' "$actual" | rg -F -q '"backlinks":['
 }
 
+assert_versions_jsonl() {
+    local actual="$1"
+    local expected_path="$2"
+    local expected_count="$3"
+
+    assert_line_count "$actual" "$expected_count"
+    printf '%s\n' "$actual" | rg -q '^\{.*\}$'
+    printf '%s\n' "$actual" | rg -q '"documentID":"[0-9a-f-]+"'
+    printf '%s\n' "$actual" | rg -F -q '"path":"'"$expected_path"'"'
+    printf '%s\n' "$actual" | rg -q '"sequence":[0-9]+'
+    printf '%s\n' "$actual" | rg -q '"createdAt":"[^"]+"'
+    printf '%s\n' "$actual" | rg -q '"isPinned":(true|false)'
+    if printf '%s\n' "$actual" | rg -F -q '"body":'; then
+        echo "Expected versions JSONL summary without body snapshots, got: $actual" >&2
+        exit 1
+    fi
+}
+
 "${METABRAIN[@]}" | rg -q 'Agent discovery:'
 "${METABRAIN[@]}" --help | rg -q 'Common workflow:'
 "${METABRAIN[@]}" help | rg -q 'metabrain help search'
@@ -441,11 +459,31 @@ if [[ -z "$DUMP_FILE" || ! -f "$DUMP_FILE" ]]; then
     exit 1
 fi
 rg -F -q 'alpha beta updated memory' "$DUMP_FILE"
-"${METABRAIN[@]}" versions --store "$STORE" /notes/today | rg -q '^2 '
-"${METABRAIN[@]}" versions --store "$STORE" --path /notes/today | rg -q '^2 '
+VERSIONS_TODAY_DEFAULT_JSONL="$("${METABRAIN[@]}" versions --store "$STORE" /notes/today)"
+assert_versions_jsonl "$VERSIONS_TODAY_DEFAULT_JSONL" /notes/today 2
+printf '%s\n' "$VERSIONS_TODAY_DEFAULT_JSONL" | rg -F -q '"sequence":1'
+printf '%s\n' "$VERSIONS_TODAY_DEFAULT_JSONL" | rg -F -q '"sequence":2'
+VERSIONS_TODAY_EXPLICIT_JSONL="$("${METABRAIN[@]}" versions --store "$STORE" --path /notes/today --format jsonl)"
+assert_versions_jsonl "$VERSIONS_TODAY_EXPLICIT_JSONL" /notes/today 2
+VERSIONS_TODAY_BY_ID_JSONL="$("${METABRAIN[@]}" versions --store "$STORE" --id "$GET_TODAY_ID")"
+assert_versions_jsonl "$VERSIONS_TODAY_BY_ID_JSONL" /notes/today 2
+VERSIONS_TODAY_TEXT="$("${METABRAIN[@]}" versions --store "$STORE" /notes/today --format text)"
+printf '%s\n' "$VERSIONS_TODAY_TEXT" | rg -q '^1 [^ ]+ path=/notes/today pinned=false$'
+printf '%s\n' "$VERSIONS_TODAY_TEXT" | rg -q '^2 [^ ]+ path=/notes/today pinned=false$'
+VERSIONS_TODAY_JSON="$("${METABRAIN[@]}" versions --store "$STORE" /notes/today --format json)"
+assert_line_count "$VERSIONS_TODAY_JSON" 1
+printf '%s\n' "$VERSIONS_TODAY_JSON" | rg -q '^\[.*\]$'
+printf '%s\n' "$VERSIONS_TODAY_JSON" | rg -q '"documentID":"[0-9a-f-]+"'
+printf '%s\n' "$VERSIONS_TODAY_JSON" | rg -F -q '"path":"/notes/today"'
+printf '%s\n' "$VERSIONS_TODAY_JSON" | rg -F -q '"sequence":1'
+printf '%s\n' "$VERSIONS_TODAY_JSON" | rg -F -q '"sequence":2'
+if printf '%s\n' "$VERSIONS_TODAY_JSON" | rg -F -q '"body":'; then
+    echo "Expected versions JSON summary without body snapshots, got: $VERSIONS_TODAY_JSON" >&2
+    exit 1
+fi
 "${METABRAIN[@]}" prune --store "$STORE" /notes/today --keep-last 1 | rg -q '^retained: 1$'
 "${METABRAIN[@]}" prune --store "$STORE" --path /notes/today --keep-last 1 | rg -q '^retained: 1$'
-"${METABRAIN[@]}" versions --store "$STORE" --path /notes/today | rg -q '^2 '
+"${METABRAIN[@]}" versions --store "$STORE" --path /notes/today --format text | rg -q '^2 '
 
 BODY_FILE="$TMP_DIR/body.txt"
 printf 'file body with gamma delta searchable terms\n' >"$BODY_FILE"
@@ -455,7 +493,22 @@ assert_put_json "$PUT_FILE_JSONL" /notes/file created 1
 SEARCH_LIMIT_JSONL="$("${METABRAIN[@]}" search --store "$STORE" gamma --path-prefix /notes --limit 1)"
 assert_search_jsonl_result "$SEARCH_LIMIT_JSONL" /notes/file gamma
 "${METABRAIN[@]}" search --store "$STORE" gamma --path-prefix /notes --limit 1 --format text | rg -q '^/notes/file'
-"${METABRAIN[@]}" versions --store "$STORE" --path /missing | rg -q '^No versions\.$'
+VERSIONS_MISSING_DEFAULT_JSONL="$("${METABRAIN[@]}" versions --store "$STORE" --path /missing)"
+if [[ -n "$VERSIONS_MISSING_DEFAULT_JSONL" ]]; then
+    echo "Expected missing versions default JSONL to emit no stdout, got: $VERSIONS_MISSING_DEFAULT_JSONL" >&2
+    exit 1
+fi
+VERSIONS_MISSING_JSONL="$("${METABRAIN[@]}" versions --store "$STORE" --path /missing --format jsonl)"
+if [[ -n "$VERSIONS_MISSING_JSONL" ]]; then
+    echo "Expected missing versions JSONL to emit no stdout, got: $VERSIONS_MISSING_JSONL" >&2
+    exit 1
+fi
+VERSIONS_MISSING_JSON="$("${METABRAIN[@]}" versions --store "$STORE" --path /missing --format json)"
+if [[ "$VERSIONS_MISSING_JSON" != "[]" ]]; then
+    echo "Expected missing versions JSON array to be [], got: $VERSIONS_MISSING_JSON" >&2
+    exit 1
+fi
+"${METABRAIN[@]}" versions --store "$STORE" --path /missing --format text | rg -q '^No versions\.$'
 "${METABRAIN[@]}" prune --store "$STORE" --path /missing --keep-within 0 | rg -q '^retained: 0$'
 
 mkdir -p "$TMP_DIR/home-root" "$TMP_DIR/home-nested"
@@ -612,7 +665,7 @@ if "${METABRAIN[@]}" versions --store "$STORE" 2>"$TMP_DIR/missing-version-refer
     exit 1
 fi
 rg -q 'Provide exactly one of --id, --path, or a positional path' "$TMP_DIR/missing-version-reference.err"
-rg -F -q 'Usage: metabrain versions [--store <store>] [--id <id>] [--path <path>] [<path>]' "$TMP_DIR/missing-version-reference.err"
+rg -F -q 'Usage: metabrain versions [--store <store>] [--id <id>] [--path <path>] [<path>] [--format <format>]' "$TMP_DIR/missing-version-reference.err"
 
 if "${METABRAIN[@]}" prune --store "$STORE" --path /notes/today 2>"$TMP_DIR/missing-retention.err"; then
     echo "Expected missing prune retention policy to fail" >&2

@@ -622,17 +622,26 @@ extension MetaBrainCommand {
 
         @OptionGroup var storeOptions: StoreOptions
         @OptionGroup var referenceOptions: ReferenceOptions
+        @OptionGroup var output: ListOutputFormatOptions
 
         func run() async throws {
             let versions = try await storeOptions.openStore().listVersions(of: referenceOptions.reference())
+            let outputVersions = versions.map(VersionsOutput.init)
 
-            if versions.isEmpty {
-                print("No versions.")
-                return
-            }
+            switch output.format {
+            case .text:
+                if versions.isEmpty {
+                    print("No versions.")
+                    return
+                }
 
-            for version in versions {
-                print("\(version.sequence) \(version.createdAt.ISO8601Format()) path=\(version.snapshot.path.rawValue) pinned=\(version.isPinned)")
+                for version in versions {
+                    print("\(version.sequence) \(version.createdAt.ISO8601Format()) path=\(version.snapshot.path.rawValue) pinned=\(version.isPinned)")
+                }
+            case .json:
+                try printJSON(outputVersions)
+            case .jsonl:
+                try printJSONLines(outputVersions)
             }
         }
     }
@@ -926,6 +935,22 @@ private struct DumpOutput: Encodable {
         try container.encodeIfPresent(title, forKey: .title)
         try container.encode(version, forKey: .version)
         try container.encode(versionCreatedAt, forKey: .versionCreatedAt)
+    }
+}
+
+private struct VersionsOutput: Encodable {
+    let createdAt: Date
+    let documentID: String
+    let isPinned: Bool
+    let path: String
+    let sequence: UInt64
+
+    init(_ version: DocumentVersion) {
+        createdAt = version.createdAt
+        documentID = version.documentID.rawValue
+        isPinned = version.isPinned
+        path = version.snapshot.path.rawValue
+        sequence = version.sequence
     }
 }
 
