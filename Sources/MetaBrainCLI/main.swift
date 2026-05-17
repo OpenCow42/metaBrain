@@ -70,6 +70,18 @@ struct StoreOptions: ParsableArguments {
         return try MetaBrainStore(url: url)
     }
 }
+
+enum CLIOutputFormat: String, ExpressibleByArgument {
+    case text
+    case json
+    case jsonl
+}
+
+struct OutputFormatOptions: ParsableArguments {
+    @Option(help: "Output format: text, json, or jsonl.")
+    var format: CLIOutputFormat = .json
+}
+
 struct ReferenceOptions: ParsableArguments {
     @Option(help: "Document ID to read.")
     var id: String?
@@ -181,10 +193,24 @@ extension MetaBrainCommand {
         )
 
         @OptionGroup var storeOptions: StoreOptions
+        @OptionGroup var output: OutputFormatOptions
 
         func run() async throws {
             let store = try storeOptions.openStore()
-            print("Initialized metaBrain store at \(store.url.path)")
+            let result = InitializeOutput(
+                operation: "init",
+                status: "initialized",
+                storePath: store.url.path
+            )
+
+            switch output.format {
+            case .text:
+                print("Initialized metaBrain store at \(store.url.path)")
+            case .json:
+                try printJSON(result)
+            case .jsonl:
+                try printJSONLine(result)
+            }
         }
     }
 
@@ -566,6 +592,12 @@ extension MetaBrainCommand {
     }
 }
 
+private struct InitializeOutput: Encodable {
+    let operation: String
+    let status: String
+    let storePath: String
+}
+
 private func readBody(argument: String?, filePath: String?) throws -> String {
     try validateBodyInputs(argument: argument, filePath: filePath)
 
@@ -616,11 +648,24 @@ private func parseMetadata(_ pairs: [String]) throws -> [String: String] {
     }
 }
 
-private func printJSONLines(_ entries: [DocumentDumpEntry]) throws {
+private func makeJSONEncoder() -> JSONEncoder {
     let encoder = JSONEncoder()
     encoder.dateEncodingStrategy = .iso8601
     encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+    return encoder
+}
 
+private func printJSON<T: Encodable>(_ value: T) throws {
+    let data = try makeJSONEncoder().encode(value)
+    print(String(decoding: data, as: UTF8.self))
+}
+
+private func printJSONLine<T: Encodable>(_ value: T) throws {
+    try printJSON(value)
+}
+
+private func printJSONLines<T: Encodable>(_ entries: [T]) throws {
+    let encoder = makeJSONEncoder()
     for entry in entries {
         let data = try encoder.encode(entry)
         print(String(decoding: data, as: UTF8.self))

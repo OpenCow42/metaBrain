@@ -42,7 +42,7 @@ if "${METABRAIN[@]}" init --unknown-option 2>"$TMP_DIR/init-invalid.err"; then
     echo "Expected invalid init option to fail" >&2
     exit 1
 fi
-rg -F -q 'Usage: metabrain init [--store <store>]' "$TMP_DIR/init-invalid.err"
+rg -F -q 'Usage: metabrain init [--store <store>] [--format <format>]' "$TMP_DIR/init-invalid.err"
 
 if "${METABRAIN[@]}" search query --limit 0 2>"$TMP_DIR/search-invalid.err"; then
     echo "Expected invalid search limit to fail" >&2
@@ -56,7 +56,18 @@ if "${METABRAIN[@]}" tree --max-depth=-1 2>"$TMP_DIR/tree-invalid-depth.err"; th
 fi
 rg -q -- '--max-depth must be zero or greater' "$TMP_DIR/tree-invalid-depth.err"
 
-"${METABRAIN[@]}" init --store "$STORE" | rg -q 'Initialized metaBrain store'
+INIT_DEFAULT_JSON="$("${METABRAIN[@]}" init --store "$STORE")"
+EXPECTED_INIT_JSON="{\"operation\":\"init\",\"status\":\"initialized\",\"storePath\":\"$STORE\"}"
+if [[ "$INIT_DEFAULT_JSON" != "$EXPECTED_INIT_JSON" ]]; then
+    echo "Expected init default JSON output, got: $INIT_DEFAULT_JSON" >&2
+    exit 1
+fi
+"${METABRAIN[@]}" init --store "$STORE" --format text | rg -F -q "Initialized metaBrain store at $STORE"
+INIT_JSONL="$("${METABRAIN[@]}" init --store "$STORE" --format jsonl)"
+if [[ "$INIT_JSONL" != "$EXPECTED_INIT_JSON" ]]; then
+    echo "Expected init JSONL output, got: $INIT_JSONL" >&2
+    exit 1
+fi
 "${METABRAIN[@]}" put --store "$STORE" /notes/today 'alpha beta searchable memory' --title Today --tag search --meta status=active --meta kind=daily | rg -q '^version: 1$'
 "${METABRAIN[@]}" put --store "$STORE" /notes/archive/final 'archived memory' | rg -q '^version: 1$'
 "${METABRAIN[@]}" put --store "$STORE" /notes/patchable 'one old patchable memory' --tag patch | rg -q '^version: 1$'
@@ -144,8 +155,8 @@ printf 'file body with gamma delta searchable terms\n' >"$BODY_FILE"
 "${METABRAIN[@]}" prune --store "$STORE" --path /missing --keep-within 0 | rg -q '^retained: 0$'
 
 mkdir -p "$TMP_DIR/home-root" "$TMP_DIR/home-nested"
-env METABRAIN_HOME="$TMP_DIR/home-root" "${METABRAIN[@]}" init --store '~' | rg -q "Initialized metaBrain store at $TMP_DIR/home-root"
-env METABRAIN_HOME="$TMP_DIR/home-nested" "${METABRAIN[@]}" init --store '~/.metabrain/store.leveldb' | rg -q "Initialized metaBrain store at $TMP_DIR/home-nested/.metabrain/store.leveldb"
+env METABRAIN_HOME="$TMP_DIR/home-root" "${METABRAIN[@]}" init --store '~' --format text | rg -q "Initialized metaBrain store at $TMP_DIR/home-root"
+env METABRAIN_HOME="$TMP_DIR/home-nested" "${METABRAIN[@]}" init --store '~/.metabrain/store.leveldb' --format text | rg -q "Initialized metaBrain store at $TMP_DIR/home-nested/.metabrain/store.leveldb"
 
 "${METABRAIN[@]}" put --store "$STORE" /refs/target 'target needle reference' --title Target | rg -q '^version: 1$'
 TARGET_ID="$("${METABRAIN[@]}" get --store "$STORE" --path /refs/target | awk '/^id: / { print $2 }')"
