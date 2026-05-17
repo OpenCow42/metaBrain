@@ -465,7 +465,7 @@ rg -F -q '"isCurrent":true' "$TMP_DIR/dump-today-versions.jsonl"
 DUMP_OUTPUT_DIR="$TMP_DIR/dump-files"
 "${METABRAIN[@]}" dump --store "$STORE" /notes/today --output-dir "$DUMP_OUTPUT_DIR" >"$TMP_DIR/dump-today-files.jsonl"
 rg -F -q '"fileSystemPath":"' "$TMP_DIR/dump-today-files.jsonl"
-DUMP_FILE="$(find "$DUMP_OUTPUT_DIR" -type f -name 'today__*__v2__*.txt' | head -n 1)"
+DUMP_FILE="$(find "$DUMP_OUTPUT_DIR" -type f -name 'today__*__v2__*.md' | head -n 1)"
 if [[ -z "$DUMP_FILE" || ! -f "$DUMP_FILE" ]]; then
     echo "Expected dump --output-dir to create a versioned copy" >&2
     exit 1

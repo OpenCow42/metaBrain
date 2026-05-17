@@ -179,7 +179,7 @@ public struct DocumentDumpFileWriter {
         guard let dotIndex = fileName.lastIndex(of: "."),
               dotIndex != fileName.startIndex,
               dotIndex != fileName.index(before: fileName.endIndex) else {
-            return (fileName, ".txt")
+            return (fileName, ".md")
         }
 
         return (

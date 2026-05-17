@@ -18,7 +18,7 @@ This file records orchestrator handoff notes for the serial milestone plan in `I
 
 - Status: completed in commit `1773bff`.
 - Handoff: `MetaBrainStore` is an async `final class` facade over `LevelDBStore<StringCodec, DataCodec>`. Values use ZSTD-compressed Codable JSON envelopes with schema version `1`; index keys remain available as raw ordered strings for later milestones.
-- Defaults: ZSTD level `3`, adaptive minimum savings ratio `0.10`, Bloom filter `10` bits per key, LRU cache `64 MiB`, and LevelDB native compression disabled so the explicit ZSTD layer owns content compression.
+- Defaults: ZSTD level `3`, adaptive minimum savings ratio `0.10`, LevelDB paranoid checks enabled, Bloom filter `10` bits per key, LRU cache `64 MiB`, and LevelDB native compression disabled so the explicit ZSTD layer owns content compression.
 - Lifecycle: opening a locked/already-open store surfaces `MetaBrainStoreError.openFailed` with the store path and underlying message.
 - Verification: `swift build` passed; `swift test` passed with 12 tests and 0 failures.
 

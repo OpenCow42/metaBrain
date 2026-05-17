@@ -8,6 +8,7 @@ public struct MetaBrainStoreOptions: Equatable, Sendable {
 
     public var createIfMissing: Bool
     public var errorIfExists: Bool
+    public var paranoidChecks: Bool
     public var zstdCompressionLevel: Int32
     public var zstdAdaptiveMinimumSavingsRatio: Double
     public var lruCacheCapacity: Int?
@@ -16,6 +17,7 @@ public struct MetaBrainStoreOptions: Equatable, Sendable {
     public init(
         createIfMissing: Bool = true,
         errorIfExists: Bool = false,
+        paranoidChecks: Bool = true,
         zstdCompressionLevel: Int32 = 3,
         zstdAdaptiveMinimumSavingsRatio: Double = 0.10,
         lruCacheCapacity: Int? = 64 * 1024 * 1024,
@@ -23,6 +25,7 @@ public struct MetaBrainStoreOptions: Equatable, Sendable {
     ) {
         self.createIfMissing = createIfMissing
         self.errorIfExists = errorIfExists
+        self.paranoidChecks = paranoidChecks
         self.zstdCompressionLevel = zstdCompressionLevel
         self.zstdAdaptiveMinimumSavingsRatio = zstdAdaptiveMinimumSavingsRatio
         self.lruCacheCapacity = lruCacheCapacity
@@ -33,6 +36,7 @@ public struct MetaBrainStoreOptions: Equatable, Sendable {
         LevelDBStoreOptions(
             createIfMissing: createIfMissing,
             errorIfExists: errorIfExists,
+            paranoidChecks: paranoidChecks,
             compression: Database.OpenOptions.Compression.none,
             lruCacheCapacity: lruCacheCapacity,
             bloomFilterBitsPerKey: bloomFilterBitsPerKey

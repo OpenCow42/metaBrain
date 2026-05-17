@@ -62,13 +62,16 @@ exists and all descendant documents below that path. By default it emits current
 documents only; `--versions` emits every retained version for each selected
 current document. `--output-dir <dir>` additionally writes UTF-8 body copies
 using filenames suffixed with the document ID, version, and UTC version date.
+Dumped body files preserve a path extension when present and default to `.md`
+when the stored path has no extension.
 
 ## Implemented Store Behavior
 
 The current package implements an embedded LevelDB-backed document store in
 `MetaBrainCore`. Values for document records, versions, and current chunks are
 Codable JSON envelopes stored through adaptive ZSTD compression. Ordered index
-keys remain plain ASCII strings for prefix scans.
+keys remain plain ASCII strings for prefix scans. The default ZSTD compression
+level is `3`, and LevelDB paranoid checks are enabled by default.
 
 Implemented document behavior:
 

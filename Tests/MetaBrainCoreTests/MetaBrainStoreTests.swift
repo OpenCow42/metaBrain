@@ -29,6 +29,8 @@ private func storeTestCodec<Value: Codable & Sendable>(
         let store = try MetaBrainStore(url: fixture.storeURL)
 
         #expect(store.url == fixture.storeURL)
+        #expect(store.options.zstdCompressionLevel == 3)
+        #expect(store.options.paranoidChecks)
         #expect(FileManager.default.fileExists(atPath: fixture.storeURL.path))
     }
 }
@@ -38,6 +40,7 @@ private func storeTestCodec<Value: Codable & Sendable>(
         let options = MetaBrainStoreOptions(
             createIfMissing: true,
             errorIfExists: false,
+            paranoidChecks: false,
             zstdCompressionLevel: 5,
             zstdAdaptiveMinimumSavingsRatio: 0.25,
             lruCacheCapacity: nil,
@@ -1744,8 +1747,8 @@ private func storeTestCodec<Value: Codable & Sendable>(
     let readmeURL = outputDirectory
         .appendingPathComponent("notes", isDirectory: true)
         .appendingPathComponent("readme__doc-1__v7__20260517T110203Z.md")
-    let rootURL = outputDirectory.appendingPathComponent("root__doc-1__v2__19700101T000000Z.txt")
-    let colonURL = outputDirectory.appendingPathComponent("bad_name__doc-1__v3__19700101T000000Z.txt")
+    let rootURL = outputDirectory.appendingPathComponent("root__doc-1__v2__19700101T000000Z.md")
+    let colonURL = outputDirectory.appendingPathComponent("bad_name__doc-1__v3__19700101T000000Z.md")
 
     #expect(copied.map(\.fileSystemPath) == [readmeURL.path, rootURL.path, colonURL.path])
     #expect(try String(contentsOf: readmeURL, encoding: .utf8) == "hello é")

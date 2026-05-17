@@ -116,6 +116,7 @@ Default store tuning should start conservatively:
 
 - ZSTD compression level `3`
 - adaptive compression savings threshold `0.10`
+- LevelDB paranoid checks enabled
 - Bloom filter around `10` bits per key
 - LRU cache around `64 MiB`
 - chunk target around `4000` characters
