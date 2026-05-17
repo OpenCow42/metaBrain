@@ -20,6 +20,7 @@ struct MetaBrainCommand: AsyncParsableCommand {
         Common workflow:
           metabrain init --store .metabrain/store.leveldb
           metabrain put /notes/today "Important context" --tag planning --meta source=agent
+          metabrain patch /notes/today --patch-file change.diff
           metabrain list
           metabrain list /notes --recursive --dates
           metabrain tree --max-depth 2
@@ -38,6 +39,7 @@ struct MetaBrainCommand: AsyncParsableCommand {
             Help.self,
             Initialize.self,
             Put.self,
+            Patch.self,
             Get.self,
             List.self,
             Tree.self,
@@ -148,7 +150,7 @@ extension MetaBrainCommand {
             abstract: "Show metaBrain CLI help."
         )
 
-        @Argument(help: "Optional command to inspect: init, put, get, list, tree, search, versions, or prune.")
+        @Argument(help: "Optional command to inspect: init, put, patch, get, list, tree, search, versions, or prune.")
         var command: String?
 
         func validate() throws {
@@ -157,10 +159,10 @@ extension MetaBrainCommand {
             }
 
             switch command {
-            case "init", "put", "get", "list", "tree", "search", "versions", "prune":
+            case "init", "put", "patch", "get", "list", "tree", "search", "versions", "prune":
                 return
             default:
-                throw ValidationError("Unknown help topic '\(command)'. Use one of: init, put, get, list, tree, search, versions, prune.")
+                throw ValidationError("Unknown help topic '\(command)'. Use one of: init, put, patch, get, list, tree, search, versions, prune.")
             }
         }
 
@@ -247,6 +249,48 @@ extension MetaBrainCommand {
             )
             let document = try await storeOptions.openStore().putDocument(input)
 
+            print("id: \(document.id.rawValue)")
+            print("path: \(document.path.rawValue)")
+            print("version: \(document.currentVersion)")
+        }
+    }
+
+    struct Patch: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "patch",
+            abstract: "Patch a document body with a unified diff."
+        )
+
+        @OptionGroup var storeOptions: StoreOptions
+        @OptionGroup var referenceOptions: ReferenceOptions
+        @OptionGroup var retention: RetentionOptions
+
+        @Option(name: .customLong("patch-file"), help: "Read a unified diff from a UTF-8 file. Use '-' for stdin.")
+        var patchFile: String
+
+        @Flag(name: .customLong("check"), help: "Validate the patch without writing a new version.")
+        var check = false
+
+        func validate() throws {
+            try referenceOptions.validate()
+            _ = try retention.optionalPolicy()
+        }
+
+        func run() async throws {
+            let request = DocumentPatchRequest(
+                reference: try referenceOptions.reference(),
+                unifiedDiff: try readPatch(filePath: patchFile),
+                retention: try retention.optionalPolicy()
+            )
+            let store = try storeOptions.openStore()
+
+            if check {
+                try await store.checkDocumentPatch(request)
+                print("patch applies")
+                return
+            }
+
+            let document = try await store.patchDocument(request)
             print("id: \(document.id.rawValue)")
             print("path: \(document.path.rawValue)")
             print("version: \(document.currentVersion)")
@@ -492,6 +536,21 @@ private func readBody(argument: String?, filePath: String?) throws -> String {
     )
 }
 
+private func readPatch(filePath: String) throws -> String {
+    let data: Data
+    if filePath == "-" {
+        data = FileHandle.standardInput.readDataToEndOfFile()
+    } else {
+        data = try Data(contentsOf: URL.expandingShellPath(filePath, isDirectory: false))
+    }
+
+    guard let patch = String(data: data, encoding: .utf8) else {
+        throw ValidationError("Patch file must be UTF-8 text.")
+    }
+
+    return patch
+}
+
 private func validateBodyInputs(argument: String?, filePath: String?) throws {
     switch (argument, filePath) {
     case (.some, nil), (nil, .some):
@@ -656,11 +715,12 @@ private func commandHelpMessage(for command: String?) -> String {
         return MetaBrainCommand.helpMessage()
     }
 
-    return [
-        "init": MetaBrainCommand.Initialize.helpMessage(),
-        "put": MetaBrainCommand.Put.helpMessage(),
-        "get": MetaBrainCommand.Get.helpMessage(),
-        "list": MetaBrainCommand.List.helpMessage(),
+        return [
+            "init": MetaBrainCommand.Initialize.helpMessage(),
+            "put": MetaBrainCommand.Put.helpMessage(),
+            "patch": MetaBrainCommand.Patch.helpMessage(),
+            "get": MetaBrainCommand.Get.helpMessage(),
+            "list": MetaBrainCommand.List.helpMessage(),
         "tree": MetaBrainCommand.Tree.helpMessage(),
         "search": MetaBrainCommand.Search.helpMessage(),
         "versions": MetaBrainCommand.Versions.helpMessage(),

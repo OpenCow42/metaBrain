@@ -22,6 +22,7 @@ cd "$ROOT_DIR"
 "${METABRAIN[@]}" help | rg -q 'metabrain help tree'
 "${METABRAIN[@]}" help init | rg -q 'Create or open a metaBrain store'
 "${METABRAIN[@]}" help put | rg -q 'Create or update a document at a path'
+"${METABRAIN[@]}" help patch | rg -q 'Patch a document body with a unified diff'
 "${METABRAIN[@]}" help get | rg -q 'Read a document by path or ID'
 "${METABRAIN[@]}" help list | rg -q 'List stored document paths in a folder'
 "${METABRAIN[@]}" help tree | rg -q 'Show the stored document path tree'
@@ -56,6 +57,34 @@ rg -q -- '--max-depth must be zero or greater' "$TMP_DIR/tree-invalid-depth.err"
 "${METABRAIN[@]}" init --store "$STORE" | rg -q 'Initialized metaBrain store'
 "${METABRAIN[@]}" put --store "$STORE" /notes/today 'alpha beta searchable memory' --title Today --tag search --meta status=active --meta kind=daily | rg -q '^version: 1$'
 "${METABRAIN[@]}" put --store "$STORE" /notes/archive/final 'archived memory' | rg -q '^version: 1$'
+"${METABRAIN[@]}" put --store "$STORE" /notes/patchable 'one old patchable memory' --tag patch | rg -q '^version: 1$'
+PATCH_FILE="$TMP_DIR/patchable.diff"
+cat >"$PATCH_FILE" <<'PATCH'
+--- a/notes/patchable
++++ b/notes/patchable
+@@ -1 +1 @@
+-one old patchable memory
+\ No newline at end of file
++one fresh patchable memory
+\ No newline at end of file
+PATCH
+"${METABRAIN[@]}" patch --store "$STORE" /notes/patchable --patch-file "$PATCH_FILE" --check | rg -q '^patch applies$'
+"${METABRAIN[@]}" get --store "$STORE" /notes/patchable | rg -q 'one old patchable memory'
+"${METABRAIN[@]}" patch --store "$STORE" /notes/patchable --patch-file "$PATCH_FILE" | rg -q '^version: 2$'
+"${METABRAIN[@]}" get --store "$STORE" /notes/patchable | rg -q 'one fresh patchable memory'
+"${METABRAIN[@]}" search --store "$STORE" fresh --tag patch | rg -q '^/notes/patchable'
+"${METABRAIN[@]}" search --store "$STORE" old --tag patch | rg -q '^No results\.$'
+"${METABRAIN[@]}" put --store "$STORE" /notes/stdin-patch 'stdin old memory' | rg -q '^version: 1$'
+STDIN_PATCH_FILE="$TMP_DIR/stdin-patch.diff"
+cat >"$STDIN_PATCH_FILE" <<'PATCH'
+@@ -1 +1 @@
+-stdin old memory
+\ No newline at end of file
++stdin fresh memory
+\ No newline at end of file
+PATCH
+"${METABRAIN[@]}" patch --store "$STORE" --path /notes/stdin-patch --patch-file - <"$STDIN_PATCH_FILE" | rg -q '^version: 2$'
+"${METABRAIN[@]}" get --store "$STORE" --path /notes/stdin-patch | rg -q 'stdin fresh memory'
 "${METABRAIN[@]}" list --store "$STORE" | rg -q '^notes/$'
 "${METABRAIN[@]}" list --store "$STORE" --recursive | rg -q '^notes/archive/final$'
 "${METABRAIN[@]}" list --store "$STORE" /notes | rg -q '^today$'
@@ -183,6 +212,40 @@ if "${METABRAIN[@]}" put --store "$STORE" /notes/bad-ref body --ref-url relative
 fi
 rg -q 'Reference URLs must be absolute URLs' "$TMP_DIR/bad-ref-url.err"
 rg -F -q 'Usage: metabrain put [<options>] <path> [<body>]' "$TMP_DIR/bad-ref-url.err"
+
+BAD_PATCH_FILE="$TMP_DIR/bad.patch"
+printf 'not a patch\n' >"$BAD_PATCH_FILE"
+if "${METABRAIN[@]}" patch --store "$STORE" --path /notes/patchable --patch-file "$BAD_PATCH_FILE" 2>"$TMP_DIR/bad-patch.err"; then
+    echo "Expected malformed patch to fail" >&2
+    exit 1
+fi
+rg -q 'Patch does not contain any hunks' "$TMP_DIR/bad-patch.err"
+
+BAD_UTF8_PATCH_FILE="$TMP_DIR/bad-utf8.patch"
+printf '\xff' >"$BAD_UTF8_PATCH_FILE"
+if "${METABRAIN[@]}" patch --store "$STORE" --path /notes/patchable --patch-file "$BAD_UTF8_PATCH_FILE" 2>"$TMP_DIR/bad-utf8-patch.err"; then
+    echo "Expected invalid UTF-8 patch to fail" >&2
+    exit 1
+fi
+rg -q 'Patch file must be UTF-8 text' "$TMP_DIR/bad-utf8-patch.err"
+
+MISMATCH_PATCH_FILE="$TMP_DIR/mismatch.patch"
+cat >"$MISMATCH_PATCH_FILE" <<'PATCH'
+@@ -1 +1 @@
+-one old patchable memory
++one newer patchable memory
+PATCH
+if "${METABRAIN[@]}" patch --store "$STORE" --path /notes/patchable --patch-file "$MISMATCH_PATCH_FILE" 2>"$TMP_DIR/mismatch-patch.err"; then
+    echo "Expected patch context mismatch to fail" >&2
+    exit 1
+fi
+rg -q 'Patch context mismatch' "$TMP_DIR/mismatch-patch.err"
+
+if "${METABRAIN[@]}" patch --store "$STORE" --path /missing --patch-file "$PATCH_FILE" 2>"$TMP_DIR/missing-patch.err"; then
+    echo "Expected missing patch document to fail" >&2
+    exit 1
+fi
+rg -q 'Document not found' "$TMP_DIR/missing-patch.err"
 
 if "${METABRAIN[@]}" versions --store "$STORE" 2>"$TMP_DIR/missing-version-reference.err"; then
     echo "Expected missing version reference options to fail" >&2

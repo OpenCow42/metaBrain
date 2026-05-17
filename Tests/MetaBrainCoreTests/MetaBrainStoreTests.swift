@@ -1164,6 +1164,164 @@ private func storeTestCodec<Value: Codable & Sendable>(
     }
 }
 
+@Test func searchSkipsDanglingChunkPostingsForExistingDocuments() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let document = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/search/dangling-chunk"),
+            body: "real content"
+        ))
+        try await store.writeRawValue(
+            Data(),
+            forKey: MetaBrainKeyspace.term("dangling", id: document.id, ordinal: 99)
+        )
+
+        let results = try await store.search(SearchQuery(text: "dangling"))
+
+        #expect(results.isEmpty)
+    }
+}
+
+@Test func searchCachesBacklinkHintsAcrossMultipleResultsForSameDocument() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let firstChunkText = "needle " + String(repeating: "alpha ", count: 700)
+        let secondChunkText = "needle beta"
+        let target = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/search/backlink-target"),
+            body: firstChunkText + secondChunkText
+        ))
+        let source = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/search/backlink-source"),
+            body: "source reference",
+            references: [.documentID(target.id)]
+        ))
+
+        let results = try await store.search(SearchQuery(
+            text: "needle",
+            includeBacklinks: true,
+            limit: 10
+        ))
+        let targetResults = results.filter { $0.documentID == target.id }
+
+        #expect(targetResults.count == 2)
+        #expect(targetResults.allSatisfy { $0.backlinks == [.documentID(source.id)] })
+    }
+}
+
+@Test func patchDocumentUpdatesBodyAndPreservesDocumentFields() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let target = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/refs/target"),
+            body: "target reference"
+        ))
+        let sourcePath = try DocumentPath("/notes/patch")
+        let source = try await store.putDocument(DocumentInput(
+            path: sourcePath,
+            title: "Patchable",
+            body: "alpha beta searchable\nstale term\nomega\n",
+            tags: ["patch"],
+            metadata: ["status": "active"],
+            references: [.documentID(target.id)],
+            retention: .keepAll
+        ))
+        let patch = """
+        --- a/notes/patch
+        +++ b/notes/patch
+        @@ -1,3 +1,3 @@
+         alpha beta searchable
+        -stale term
+        +fresh term
+         omega
+        """
+
+        let patched = try await store.patchDocument(DocumentPatchRequest(
+            reference: .path(sourcePath),
+            unifiedDiff: patch
+        ))
+
+        #expect(patched.id == source.id)
+        #expect(patched.path == sourcePath)
+        #expect(patched.title == "Patchable")
+        #expect(patched.tags == ["patch"])
+        #expect(patched.metadata == ["status": "active"])
+        #expect(patched.references == [.documentID(target.id)])
+        #expect(patched.currentVersion == 2)
+        #expect(patched.body == "alpha beta searchable\nfresh term\nomega\n")
+        #expect(try await store.outboundReferences(from: source.id) == [target.id])
+        #expect(try await store.search(SearchQuery(text: "fresh", tags: ["patch"])).map(\.documentID) == [source.id])
+        #expect(try await store.search(SearchQuery(text: "stale")).isEmpty)
+
+        let versions = try await store.listVersions(of: .path(sourcePath))
+        #expect(versions.map(\.sequence) == [1, 2])
+        #expect(versions.map(\.snapshot.body) == [
+            "alpha beta searchable\nstale term\nomega\n",
+            "alpha beta searchable\nfresh term\nomega\n"
+        ])
+    }
+}
+
+@Test func checkDocumentPatchDoesNotWriteNewVersion() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let path = try DocumentPath("/notes/check")
+        let document = try await store.putDocument(DocumentInput(
+            path: path,
+            body: "one\ntwo\n"
+        ))
+        let patch = """
+        @@ -1,2 +1,2 @@
+         one
+        -two
+        +TWO
+        """
+
+        try await store.checkDocumentPatch(DocumentPatchRequest(
+            reference: .documentID(document.id),
+            unifiedDiff: patch
+        ))
+
+        let fetched = try await store.getDocument(.path(path))
+        let versions = try await store.listVersions(of: .path(path))
+        #expect(fetched?.currentVersion == 1)
+        #expect(fetched?.body == "one\ntwo\n")
+        #expect(versions.map(\.sequence) == [1])
+    }
+}
+
+@Test func patchDocumentAppliesRetentionAndRejectsMissingDocuments() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let path = try DocumentPath("/notes/retained-patch")
+        try await store.putDocument(DocumentInput(
+            path: path,
+            body: "before\n"
+        ))
+        let patch = """
+        @@ -1 +1 @@
+        -before
+        +after
+        """
+
+        try await store.patchDocument(DocumentPatchRequest(
+            reference: .path(path),
+            unifiedDiff: patch,
+            retention: .keepMostRecent(1)
+        ))
+
+        let versions = try await store.listVersions(of: .path(path))
+        #expect(versions.map(\.sequence) == [2])
+
+        await #expect(throws: MetaBrainPatchError.documentNotFound) {
+            try await store.patchDocument(DocumentPatchRequest(
+                reference: .path(try DocumentPath("/missing")),
+                unifiedDiff: patch
+            ))
+        }
+    }
+}
+
 @Test func listDirectoryReadsIndexedDirectRecursiveAndDirectoryOnlyEntries() async throws {
     try await withTemporaryStoreFixture { fixture in
         let store = try MetaBrainStore(url: fixture.storeURL)

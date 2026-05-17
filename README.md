@@ -32,6 +32,7 @@ swift build
 ```bash
 swift run metabrain init --store .metabrain/store.leveldb
 swift run metabrain put --store .metabrain/store.leveldb /notes/today "Remember the lexical store."
+swift run metabrain patch --store .metabrain/store.leveldb /notes/today --patch-file change.diff
 swift run metabrain list --store .metabrain/store.leveldb
 swift run metabrain list --store .metabrain/store.leveldb /notes --recursive --dates
 swift run metabrain tree --store .metabrain/store.leveldb --max-depth 2
@@ -42,8 +43,10 @@ swift run metabrain prune --store .metabrain/store.leveldb /notes/today --keep-l
 ```
 
 `put` accepts repeated `--tag` and `--meta key=value` options, plus `--body-file`
-for larger UTF-8 text. `get`, `versions`, and `prune` accept a positional
-document path, `--path`, or `--id`.
+for larger UTF-8 text. `patch` applies a single-file unified diff to the stored
+document body with `--patch-file <file>`, accepts `--patch-file -` for stdin,
+and supports `--check` to validate without writing a new version. `get`,
+`versions`, and `prune` accept a positional document path, `--path`, or `--id`.
 
 `list` and `tree` browse the store's virtual folder structure. `list` defaults
 to direct children of `/`, accepts an optional folder path, supports
@@ -68,6 +71,9 @@ Implemented document behavior:
   document already aliased to that path.
 - `updateDocument` can rename a document by ID while preserving its ID, and it
   rejects renames onto another document's path.
+- `patchDocument` applies unified-diff body edits to an existing document and
+  stores the result through the same full-snapshot update path as whole-body
+  writes. Patches do not create missing documents.
 - Versions are full snapshots. Retention supports keep-all, keep-most-recent-N,
   and keep-within-time-window policies. Pruning always retains at least the
   current version, and pinned versions are preserved by the pruning helper.
@@ -86,10 +92,11 @@ Implemented document behavior:
   written before the tree index existed may need to be rebuilt or recreated for
   complete browsing results.
 
-The CLI currently wraps the core store for `init`, `put`, `get`, `search`,
-`list`, `tree`, `versions`, and `prune`. It validates exactly one document
-reference for read/prune commands, one retention option per write/prune command,
-non-negative tree depth, and `key=value` metadata syntax.
+The CLI currently wraps the core store for `init`, `put`, `patch`, `get`,
+`search`, `list`, `tree`, `versions`, and `prune`. It validates exactly one
+document reference for read/patch/prune commands, one retention option per
+write/patch/prune command, non-negative tree depth, and `key=value` metadata
+syntax.
 
 ## Run The App
 

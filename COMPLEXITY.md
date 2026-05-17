@@ -15,6 +15,7 @@ contributors toward the calls that can become expensive as a store grows.
 - `T`: number of distinct indexed terms in a document or query context.
 - `Q`: number of distinct query terms.
 - `P`: total postings scanned for the query terms.
+- `P_patch`: size of a unified diff patch.
 - `M`: number of unique matching document/chunk candidates before `--limit`.
 - `G`: number of tag and metadata filters on a search query.
 - `F`: total tag and metadata filter postings scanned.
@@ -71,6 +72,7 @@ and [LevelDB options](https://github.com/google/leveldb/blob/main/include/leveld
 | `init` | `StoreOptions.openStore`, `MetaBrainStore.init` | `O(1)` relative to documents, plus LevelDB open/recovery work | Creates the parent directory and opens LevelDB. Recovery can replay logs and clean stale files. |
 | `put` new document | `putDocument`, `writeNewDocument`, `writeDocumentBatch` | `O(B + T + R + L * seek(S) + X_tree + D)` | Body chunking now advances indices incrementally. Tree maintenance touches only the new path branch instead of rebuilding the whole tree index. |
 | `put` existing document | `putDocument`, `writeDocumentUpdate`, `writeDocumentBatch`, retention helpers | `O(B + B_old + T + T_old + R + R_old + V log V + H + L * seek(S) + X_tree + D)` | Updates delete stale chunks/indexes/references, may scan all versions for retention, and update only old/new tree branches. |
+| `patch` | `checkDocumentPatch`/`patchDocument`, unified diff parsing, `writeDocumentUpdate`, `writeDocumentBatch`, retention helpers | `O(P_patch + B_old + B + T + T_old + R + R_old + V log V + H + L * seek(S) + X_tree + D)` for writes; `O(P_patch + B_old)` for `--check` | Patch is partial at the CLI layer, but writes still store a full next document snapshot and rebuild current chunks/indexes. |
 | `get` | `getDocument`, `documentID(for:)`, `documentRecord(id:)`, `printDocument` | `O(seek(S) + B)` | Decoding and printing the stored document body dominate once the point lookup succeeds. |
 | `list` non-recursive | `listDirectory`, `childTreeEntries`, `formatListEntry` | `O(seek(S) + K log K)` | Scans one tree prefix, decodes child records, sorts by display path, and prints them. |
 | `list --recursive` | `listDirectory`, `flattenedTreeEntries`, `childTreeEntries` | `O(A * seek(S) + A log A)` typical, with extra recursive array-copy overhead | Walks directories with many separate prefix scans and materializes the whole subtree. `--directories-only` filters output but still traverses descendants. |
@@ -91,6 +93,9 @@ and [LevelDB options](https://github.com/google/leveldb/blob/main/include/leveld
 - `put` with retention on a long-lived document scans and decodes the document's
   full version history. Because versions are full snapshots, large historical
   bodies make this cost closer to `O(H)` than just `O(V)`.
+- `patch` avoids sending a whole replacement body through the CLI, but after the
+  diff applies in memory it uses the same full-snapshot update path as `put`.
+  One-line patches to large documents are therefore still large-document writes.
 - Tree updates are branch-local now, but each affected branch entry still checks
   descendant document paths. Very deep paths or broad descendant sets can still
   make writes more expensive than the document body alone.
@@ -146,6 +151,24 @@ For an existing document, add:
   `O(R_old log R_old)`;
 - if retention applies, scan/decode/sort versions:
   `O(V log V + H)`.
+
+### `patch`
+
+`patch` reads a unified diff from a UTF-8 file or stdin, resolves the target
+document, applies the diff to the current body in memory, and then either stops
+for `--check` or calls `MetaBrainStore.patchDocument(_:)`.
+
+For `--check`, the main work is:
+
+- read and parse the patch: `O(P_patch)`;
+- decode the current document body and match hunk context/removals:
+  `O(B_old + P_patch)`.
+
+For a write, add the same existing-document update cost as `put`: the patched
+body becomes the next full snapshot, current chunks and indexes are rebuilt, and
+retention may scan historical full-snapshot versions. This intentionally keeps
+version reads and pruning simple while making tiny patches to large documents
+cost about the same as whole-body updates.
 
 ### `get`
 

@@ -132,6 +132,18 @@ public final class MetaBrainStore: Sendable {
         return try await versionRecords(for: id)
     }
 
+    public func checkDocumentPatch(_ request: DocumentPatchRequest) async throws {
+        _ = try await patchedDocumentInput(for: request)
+    }
+
+    @discardableResult
+    public func patchDocument(_ request: DocumentPatchRequest) async throws -> StoredDocument {
+        try await writes.run {
+            let patched = try await self.patchedDocumentInput(for: request)
+            return try await self.writeDocumentUpdate(id: patched.id, input: patched.input)
+        }
+    }
+
     public func listDirectory(
         path: DocumentPath = try! DocumentPath("/"),
         recursive: Bool = false,
@@ -227,6 +239,8 @@ public final class MetaBrainStore: Sendable {
                     path: document.path,
                     title: document.title,
                     chunkOrdinal: chunk.ordinal,
+                    snippet: chunk.text,
+                    context: Self.contextChunks(around: chunk.ordinal, in: chunks),
                     score: score
                 ))
             }
@@ -428,6 +442,29 @@ public final class MetaBrainStore: Sendable {
         )
 
         return document
+    }
+
+    private func patchedDocumentInput(
+        for request: DocumentPatchRequest
+    ) async throws -> (id: DocumentID, input: DocumentInput) {
+        guard let id = try await documentID(for: request.reference),
+              let record = try await documentRecord(id: id) else {
+            throw MetaBrainPatchError.documentNotFound
+        }
+
+        let document = record.document
+        let patchedBody = try UnifiedTextPatch(request.unifiedDiff).applying(to: document.body)
+        let input = DocumentInput(
+            path: document.path,
+            title: document.title,
+            body: patchedBody,
+            tags: document.tags,
+            metadata: document.metadata,
+            references: document.references,
+            retention: request.retention
+        )
+
+        return (id: id, input: input)
     }
 
     private func writeDocumentBatch(
@@ -944,25 +981,11 @@ public final class MetaBrainStore: Sendable {
         from candidates: [MetaBrainRankedSearchCandidate],
         query: SearchQuery
     ) async throws -> [SearchResult] {
-        var chunksByDocument: [DocumentID: [MetaBrainChunkRecord]] = [:]
         var linkedDocumentsByDocument: [DocumentID: [DocumentReference]] = [:]
         var backlinksByDocument: [DocumentID: [DocumentReference]] = [:]
         var results: [SearchResult] = []
 
         for candidate in candidates {
-            let chunks: [MetaBrainChunkRecord]
-            if let cachedChunks = chunksByDocument[candidate.documentID] {
-                chunks = cachedChunks
-            } else {
-                let currentChunks = try await currentChunkRecords(for: candidate.documentID)
-                chunksByDocument[candidate.documentID] = currentChunks
-                chunks = currentChunks
-            }
-
-            guard let chunk = chunks.first(where: { $0.ordinal == candidate.chunkOrdinal }) else {
-                continue
-            }
-
             let linkedDocuments: [DocumentReference]
             if query.includeLinkedDocuments {
                 if let cachedReferences = linkedDocumentsByDocument[candidate.documentID] {
@@ -996,9 +1019,9 @@ public final class MetaBrainStore: Sendable {
                 path: candidate.path,
                 title: candidate.title,
                 chunkOrdinal: candidate.chunkOrdinal,
-                snippet: chunk.text,
+                snippet: candidate.snippet,
                 score: candidate.score,
-                context: Self.contextChunks(around: candidate.chunkOrdinal, in: chunks),
+                context: candidate.context,
                 linkedDocuments: linkedDocuments,
                 backlinks: backlinks
             ))
@@ -1292,6 +1315,8 @@ private struct MetaBrainRankedSearchCandidate: Sendable {
     var path: DocumentPath
     var title: String?
     var chunkOrdinal: UInt32
+    var snippet: String
+    var context: [SearchContextChunk]
     var score: Double
 }
 
@@ -1304,10 +1329,6 @@ private struct MetaBrainSearchTopCandidates: Sendable {
     }
 
     mutating func insert(_ candidate: MetaBrainRankedSearchCandidate) {
-        guard limit > 0 else {
-            return
-        }
-
         if let insertionIndex = candidates.firstIndex(where: { Self.ranksBefore(candidate, $0) }) {
             candidates.insert(candidate, at: insertionIndex)
             if candidates.count > limit {
