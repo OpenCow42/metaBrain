@@ -655,6 +655,7 @@ extension MetaBrainCommand {
         @OptionGroup var storeOptions: StoreOptions
         @OptionGroup var referenceOptions: ReferenceOptions
         @OptionGroup var retention: RetentionOptions
+        @OptionGroup var output: OutputFormatOptions
 
         func validate() throws {
             try referenceOptions.validate()
@@ -667,8 +668,14 @@ extension MetaBrainCommand {
                 policy: try retention.requiredPolicy()
             ))
 
-            print("pruned: \(result.prunedVersionCount)")
-            print("retained: \(result.retainedVersionCount)")
+            let outputResult = PruneOutput(result)
+            switch output.format {
+            case .text:
+                print("pruned: \(result.prunedVersionCount)")
+                print("retained: \(result.retainedVersionCount)")
+            case .json, .jsonl:
+                try printJSONLine(outputResult)
+            }
         }
     }
 }
@@ -700,6 +707,20 @@ private struct PatchCheckOutput: Encodable {
     let operation: String
     let status: String
     let success: Bool
+}
+
+private struct PruneOutput: Encodable {
+    let operation: String
+    let prunedVersionCount: Int
+    let retainedVersionCount: Int
+    let status: String
+
+    init(_ result: PruneResult) {
+        operation = "prune"
+        prunedVersionCount = result.prunedVersionCount
+        retainedVersionCount = result.retainedVersionCount
+        status = "completed"
+    }
 }
 
 private struct GetOutput: Encodable {

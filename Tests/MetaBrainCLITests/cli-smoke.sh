@@ -144,6 +144,18 @@ assert_versions_jsonl() {
     fi
 }
 
+assert_prune_json() {
+    local actual="$1"
+    local expected_pruned="$2"
+    local expected_retained="$3"
+    local expected='{"operation":"prune","prunedVersionCount":'"$expected_pruned"',"retainedVersionCount":'"$expected_retained"',"status":"completed"}'
+
+    if [[ "$actual" != "$expected" ]]; then
+        echo "Expected prune JSON, got: $actual" >&2
+        exit 1
+    fi
+}
+
 "${METABRAIN[@]}" | rg -q 'Agent discovery:'
 "${METABRAIN[@]}" --help | rg -q 'Common workflow:'
 "${METABRAIN[@]}" help | rg -q 'metabrain help search'
@@ -481,8 +493,15 @@ if printf '%s\n' "$VERSIONS_TODAY_JSON" | rg -F -q '"body":'; then
     echo "Expected versions JSON summary without body snapshots, got: $VERSIONS_TODAY_JSON" >&2
     exit 1
 fi
-"${METABRAIN[@]}" prune --store "$STORE" /notes/today --keep-last 1 | rg -q '^retained: 1$'
-"${METABRAIN[@]}" prune --store "$STORE" --path /notes/today --keep-last 1 | rg -q '^retained: 1$'
+PRUNE_TODAY_DEFAULT_JSON="$("${METABRAIN[@]}" prune --store "$STORE" /notes/today --keep-last 1)"
+assert_prune_json "$PRUNE_TODAY_DEFAULT_JSON" 1 1
+PRUNE_TODAY_TEXT="$("${METABRAIN[@]}" prune --store "$STORE" --path /notes/today --keep-last 1 --format text)"
+if [[ "$PRUNE_TODAY_TEXT" != $'pruned: 0\nretained: 1' ]]; then
+    echo "Expected prune text output, got: $PRUNE_TODAY_TEXT" >&2
+    exit 1
+fi
+PRUNE_TODAY_BY_ID_JSONL="$("${METABRAIN[@]}" prune --store "$STORE" --id "$GET_TODAY_ID" --keep-last 1 --format jsonl)"
+assert_prune_json "$PRUNE_TODAY_BY_ID_JSONL" 0 1
 "${METABRAIN[@]}" versions --store "$STORE" --path /notes/today --format text | rg -q '^2 '
 
 BODY_FILE="$TMP_DIR/body.txt"
@@ -509,7 +528,8 @@ if [[ "$VERSIONS_MISSING_JSON" != "[]" ]]; then
     exit 1
 fi
 "${METABRAIN[@]}" versions --store "$STORE" --path /missing --format text | rg -q '^No versions\.$'
-"${METABRAIN[@]}" prune --store "$STORE" --path /missing --keep-within 0 | rg -q '^retained: 0$'
+PRUNE_MISSING_JSON="$("${METABRAIN[@]}" prune --store "$STORE" --path /missing --keep-within 0)"
+assert_prune_json "$PRUNE_MISSING_JSON" 0 0
 
 mkdir -p "$TMP_DIR/home-root" "$TMP_DIR/home-nested"
 env METABRAIN_HOME="$TMP_DIR/home-root" "${METABRAIN[@]}" init --store '~' --format text | rg -q "Initialized metaBrain store at $TMP_DIR/home-root"
@@ -672,7 +692,7 @@ if "${METABRAIN[@]}" prune --store "$STORE" --path /notes/today 2>"$TMP_DIR/miss
     exit 1
 fi
 rg -q 'Provide one of --keep-all, --keep-last, or --keep-within' "$TMP_DIR/missing-retention.err"
-rg -F -q 'Usage: metabrain prune [--store <store>] [--id <id>] [--path <path>] [<path>] [--keep-all] [--keep-last <keep-last>] [--keep-within <keep-within>]' "$TMP_DIR/missing-retention.err"
+rg -F -q 'Usage: metabrain prune [--store <store>] [--id <id>] [--path <path>] [<path>] [--keep-all] [--keep-last <keep-last>] [--keep-within <keep-within>] [--format <format>]' "$TMP_DIR/missing-retention.err"
 
 if "${METABRAIN[@]}" get --store "$STORE" 2>"$TMP_DIR/missing-reference.err"; then
     echo "Expected missing reference options to fail" >&2
