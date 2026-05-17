@@ -111,7 +111,7 @@ public final class LiveMetaBrainStoreClient: MetaBrainStoreClient {
     }
 
     public func loadDocument(path: DocumentPath) async throws -> StoredDocument? {
-        try await store.getDocument(.path(path))
+        try await store.getDocument(.path(path), trackingRead: false)
     }
 
     public func search(text: String, limit: Int) async throws -> [SearchResult] {
@@ -423,8 +423,8 @@ public final class MetaBrainBrowserModel: ObservableObject {
     }
 
     public func openMetaBrainFolder(_ folderURL: URL) async {
-        state.isOpening = true
-        state.errorMessage = nil
+        storeClient = nil
+        state = MetaBrainBrowserState(isOpening: true)
 
         do {
             let client = try await openStore(folderURL)
@@ -435,8 +435,7 @@ public final class MetaBrainBrowserModel: ObservableObject {
                 tree: MetaBrainTreeBuilder.forest(from: entries)
             )
         } catch {
-            state.isOpening = false
-            state.errorMessage = Self.errorMessage(for: error)
+            state = MetaBrainBrowserState(errorMessage: Self.errorMessage(for: error))
         }
     }
 

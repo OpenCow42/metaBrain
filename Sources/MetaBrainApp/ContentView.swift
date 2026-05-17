@@ -414,6 +414,15 @@ private struct SearchSheet: View {
                 systemImage: "magnifyingglass",
                 description: Text("Type a term to search the open metaBrain database.")
             )
+        } else if model.state.isSearching && model.state.searchResults.isEmpty {
+            ProgressView("Searching...")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let errorMessage = model.state.errorMessage {
+            ContentUnavailableView(
+                "Search Failed",
+                systemImage: "exclamationmark.triangle",
+                description: Text(errorMessage)
+            )
         } else if model.state.searchResults.isEmpty && !model.state.isSearching {
             ContentUnavailableView(
                 "No Results",

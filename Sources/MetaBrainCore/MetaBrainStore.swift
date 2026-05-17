@@ -120,16 +120,34 @@ public final class MetaBrainStore: Sendable {
         }
     }
 
-    public func getDocument(_ reference: DocumentReference) async throws -> StoredDocument? {
-        let entry = try await getDocumentEntry(reference)
+    public func getDocument(
+        _ reference: DocumentReference,
+        trackingRead: Bool = true
+    ) async throws -> StoredDocument? {
+        let entry = try await getDocumentEntry(reference, trackingRead: trackingRead)
         return entry?.document
     }
 
-    public func getDocumentEntry(_ reference: DocumentReference) async throws -> StoredDocumentEntry? {
-        try await writes.run {
+    public func getDocumentEntry(
+        _ reference: DocumentReference,
+        trackingRead: Bool = true
+    ) async throws -> StoredDocumentEntry? {
+        guard trackingRead else {
+            guard let id = try await documentID(for: reference),
+                  let record = try await documentRecord(id: id) else {
+                return nil
+            }
+
+            return StoredDocumentEntry(
+                document: record.document,
+                entryMetadata: try await entryMetadataRecord(for: record.document)
+            )
+        }
+
+        return try await writes.run {
             guard let id = try await self.documentID(for: reference),
                   let record = try await self.documentRecord(id: id) else {
-                return nil
+                return nil as StoredDocumentEntry?
             }
 
             let metadata = try await self.writeEntryMetadata(

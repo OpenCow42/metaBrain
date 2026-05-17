@@ -267,6 +267,17 @@ private func storeTestCodec<Value: Codable & Sendable>(
         #expect(afterSecondRead.access.readCount == 2)
         #expect(afterSecondRead.access.patchCount == 0)
         #expect(afterSecondRead.access.fullWriteCount == 1)
+
+        let untrackedEntry = try #require(
+            try await store.getDocumentEntry(.path(path), trackingRead: false)
+        )
+        #expect(untrackedEntry.document == document)
+        #expect(untrackedEntry.entryMetadata.access.readCount == 2)
+        #expect(try await store.getDocument(.documentID(document.id), trackingRead: false) == document)
+        let afterUntrackedReads = try #require(
+            try await store.entryMetadata(for: .documentID(document.id))
+        )
+        #expect(afterUntrackedReads.access.readCount == 2)
     }
 }
 

@@ -8,6 +8,7 @@ private final class FakeStoreClient: MetaBrainStoreClient, @unchecked Sendable {
     var entries: [DocumentTreeEntry]
     var documents: [DocumentPath: StoredDocument]
     var results: [SearchResult]
+    var searchError: Error?
     var treeLoadCount = 0
     var searchedText: String?
     var searchedLimit: Int?
@@ -19,12 +20,14 @@ private final class FakeStoreClient: MetaBrainStoreClient, @unchecked Sendable {
         ),
         entries: [DocumentTreeEntry] = [],
         documents: [DocumentPath: StoredDocument] = [:],
-        results: [SearchResult] = []
+        results: [SearchResult] = [],
+        searchError: Error? = nil
     ) {
         self.location = location
         self.entries = entries
         self.documents = documents
         self.results = results
+        self.searchError = searchError
     }
 
     func loadTree() async throws -> [DocumentTreeEntry] {
@@ -37,10 +40,32 @@ private final class FakeStoreClient: MetaBrainStoreClient, @unchecked Sendable {
     }
 
     func search(text: String, limit: Int) async throws -> [SearchResult] {
+        if let searchError {
+            throw searchError
+        }
+
         searchedText = text
         searchedLimit = limit
         return results
     }
+}
+
+private enum TestStoreError: Error, LocalizedError {
+    case locked
+    case searchUnavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .locked:
+            "The metaBrain store is already open somewhere else."
+        case .searchUnavailable:
+            "Search index is unavailable."
+        }
+    }
+}
+
+private final class OpenFailureSwitch: @unchecked Sendable {
+    var shouldFail = false
 }
 
 @Test func resolvesSelectedMetaBrainFolderToStoreChild() throws {
@@ -65,6 +90,9 @@ private final class FakeStoreClient: MetaBrainStoreClient, @unchecked Sendable {
     let rootURL = fileManager.temporaryDirectory
         .appendingPathComponent("metabrain-app-tests-\(UUID().uuidString)", isDirectory: true)
     let folderURL = rootURL.appendingPathComponent(".metabrain", isDirectory: true)
+    let missingFolderURL = rootURL
+        .appendingPathComponent("missing", isDirectory: true)
+        .appendingPathComponent(".metabrain", isDirectory: true)
     let wrongFolderURL = rootURL.appendingPathComponent("notes", isDirectory: true)
     try fileManager.createDirectory(at: folderURL, withIntermediateDirectories: true)
     try fileManager.createDirectory(at: wrongFolderURL, withIntermediateDirectories: true)
@@ -79,6 +107,9 @@ private final class FakeStoreClient: MetaBrainStoreClient, @unchecked Sendable {
     }
     #expect(throws: MetaBrainAppSupportError.invalidMetaBrainFolder(wrongFolderURL.standardizedFileURL.path)) {
         try MetaBrainStoreLocation.resolve(selectedFolder: wrongFolderURL)
+    }
+    #expect(throws: MetaBrainAppSupportError.missingMetaBrainFolder(missingFolderURL.standardizedFileURL.path)) {
+        try MetaBrainStoreLocation.resolve(selectedFolder: missingFolderURL)
     }
 }
 
@@ -124,9 +155,19 @@ private final class FakeStoreClient: MetaBrainStoreClient, @unchecked Sendable {
     let model = MetaBrainBrowserModel(
         state: MetaBrainBrowserState(
             selectedPath: try DocumentPath("/old"),
+            expandedPathIDs: ["/old"],
+            selectedDocument: DocumentPresentation(
+                document: try storedDocument(path: try DocumentPath("/old"), title: "Old", body: "old")
+            ),
+            selectedDirectory: MetaBrainTreeNode(
+                path: try DocumentPath("/old-directory"),
+                name: "old-directory",
+                entryHasChildren: true
+            ),
             searchResults: [
                 SearchResultPresentation(result: try searchResult(path: try DocumentPath("/old")))
-            ]
+            ],
+            errorMessage: "old error"
         ),
         openStore: { _ in fakeStore }
     )
@@ -138,8 +179,84 @@ private final class FakeStoreClient: MetaBrainStoreClient, @unchecked Sendable {
     #expect(model.state.tree.first?.path == notesPath)
     #expect(model.state.tree.first?.children.first?.path == path)
     #expect(model.state.selectedPath == nil)
+    #expect(model.state.expandedPathIDs.isEmpty)
+    #expect(model.state.selectedDocument == nil)
+    #expect(model.state.selectedDirectory == nil)
     #expect(model.state.searchResults.isEmpty)
+    #expect(model.state.errorMessage == nil)
     #expect(fakeStore.treeLoadCount == 1)
+}
+
+@Test @MainActor func failedOpenClearsStaleBrowserStateAndSurfacesError() async throws {
+    let path = try DocumentPath("/notes/today")
+    let document = try storedDocument(path: path, title: "Today", body: "find this")
+    let successfulStore = FakeStoreClient(
+        entries: [
+            DocumentTreeEntry(
+                path: path,
+                name: "today",
+                hasChildren: false,
+                documentID: document.id
+            )
+        ],
+        documents: [path: document],
+        results: [try searchResult(path: path)]
+    )
+    let openFailure = OpenFailureSwitch()
+    let model = MetaBrainBrowserModel { _ in
+        if openFailure.shouldFail {
+            throw TestStoreError.locked
+        }
+
+        return successfulStore
+    }
+
+    await model.openMetaBrainFolder(URL(fileURLWithPath: "/tmp/.metabrain", isDirectory: true))
+    await model.selectPath(path)
+    await model.search("find")
+    openFailure.shouldFail = true
+
+    await model.openMetaBrainFolder(URL(fileURLWithPath: "/tmp/locked.metabrain", isDirectory: true))
+
+    #expect(model.state.location == nil)
+    #expect(model.state.tree.isEmpty)
+    #expect(model.state.selectedPath == nil)
+    #expect(model.state.expandedPathIDs.isEmpty)
+    #expect(model.state.selectedDocument == nil)
+    #expect(model.state.selectedDirectory == nil)
+    #expect(model.state.searchResults.isEmpty)
+    #expect(model.state.isOpening == false)
+    #expect(model.state.isLoadingDocument == false)
+    #expect(model.state.isSearching == false)
+    #expect(model.state.errorMessage == TestStoreError.locked.errorDescription)
+
+    await model.search("find")
+    #expect(model.state.errorMessage == MetaBrainAppSupportError.noOpenStore.description)
+}
+
+@Test @MainActor func searchErrorsClearStaleResultsAndSurfaceMessage() async throws {
+    let path = try DocumentPath("/notes/today")
+    let fakeStore = FakeStoreClient(
+        entries: [
+            DocumentTreeEntry(
+                path: path,
+                name: "today",
+                hasChildren: false,
+                documentID: try DocumentID(rawValue: "doc-today")
+            )
+        ],
+        results: [try searchResult(path: path)]
+    )
+    let model = MetaBrainBrowserModel(openStore: { _ in fakeStore })
+    await model.openMetaBrainFolder(URL(fileURLWithPath: "/tmp/.metabrain", isDirectory: true))
+    await model.search("find")
+    fakeStore.searchError = TestStoreError.searchUnavailable
+
+    await model.search("find again")
+
+    #expect(model.state.searchResults.isEmpty)
+    #expect(model.state.isSearching == false)
+    #expect(model.state.errorMessage == TestStoreError.searchUnavailable.errorDescription)
 }
 
 @Test @MainActor func selectingDocumentAndDirectoryUpdatesBrowserState() async throws {
