@@ -1752,3 +1752,40 @@ private func storeTestCodec<Value: Codable & Sendable>(
     #expect(try String(contentsOf: rootURL, encoding: .utf8) == "root")
     #expect(try String(contentsOf: colonURL, encoding: .utf8) == "colon")
 }
+
+@Test func dumpEntryEncodesStableJSONFields() throws {
+    let entry = DocumentDumpEntry(
+        documentID: try DocumentID(rawValue: "doc-1"),
+        path: try DocumentPath("/notes/readme.md"),
+        title: "Read Me",
+        body: "hello",
+        version: 7,
+        versionCreatedAt: Date(timeIntervalSince1970: 0),
+        isCurrent: true,
+        tags: ["docs"],
+        metadata: ["kind": "note"],
+        references: [
+            DocumentDumpReference(kind: .path, value: "/notes/source")
+        ],
+        fileSystemPath: "/tmp/readme.md"
+    )
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .iso8601
+    let data = try encoder.encode(entry)
+    let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    let references = try #require(object["references"] as? [[String: String]])
+
+    #expect(object["documentID"] as? String == "doc-1")
+    #expect(object["path"] as? String == "/notes/readme.md")
+    #expect(object["title"] as? String == "Read Me")
+    #expect(object["body"] as? String == "hello")
+    #expect(object["version"] as? Int == 7)
+    #expect(object["versionCreatedAt"] as? String == "1970-01-01T00:00:00Z")
+    #expect(object["isCurrent"] as? Bool == true)
+    #expect(object["tags"] as? [String] == ["docs"])
+    #expect(object["metadata"] as? [String: String] == ["kind": "note"])
+    #expect(references == [["kind": "path", "value": "/notes/source"]])
+    #expect(object["bodyCharacterCount"] as? Int == 5)
+    #expect(object["bodyUTF8ByteCount"] as? Int == 5)
+    #expect(object["fileSystemPath"] as? String == "/tmp/readme.md")
+}
