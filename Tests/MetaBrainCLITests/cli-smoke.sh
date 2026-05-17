@@ -156,6 +156,31 @@ assert_prune_json() {
     fi
 }
 
+assert_delete_json() {
+    local actual="$1"
+    local expected_reference="$2"
+    local expected_deleted="$3"
+    local expected='{"deleted":'"$expected_deleted"',"operation":"delete","reference":"'"$expected_reference"'","status":"completed"}'
+
+    if [[ "$actual" != "$expected" ]]; then
+        echo "Expected delete JSON, got: $actual" >&2
+        exit 1
+    fi
+}
+
+assert_remove_version_json() {
+    local actual="$1"
+    local expected_reference="$2"
+    local expected_removed="$3"
+    local expected_sequence="$4"
+    local expected='{"operation":"remove-version","reference":"'"$expected_reference"'","removed":'"$expected_removed"',"sequence":'"$expected_sequence"',"status":"completed"}'
+
+    if [[ "$actual" != "$expected" ]]; then
+        echo "Expected remove-version JSON, got: $actual" >&2
+        exit 1
+    fi
+}
+
 "${METABRAIN[@]}" | rg -q 'Agent discovery:'
 "${METABRAIN[@]}" --help | rg -q 'Common workflow:'
 "${METABRAIN[@]}" help | rg -q 'metabrain help search'
@@ -172,12 +197,16 @@ assert_prune_json() {
 "${METABRAIN[@]}" help dump | rg -q 'Dump stored documents as JSONL'
 "${METABRAIN[@]}" help versions | rg -q 'List stored versions for a document'
 "${METABRAIN[@]}" help prune | rg -q 'Prune document versions using a retention policy'
+"${METABRAIN[@]}" help delete | rg -q 'Delete a document and all retained versions'
+"${METABRAIN[@]}" help remove-version | rg -q 'Remove one retained historical document version'
 
 if "${METABRAIN[@]}" help missing 2>"$TMP_DIR/help-missing.err"; then
     echo "Expected unknown help topic to fail" >&2
     exit 1
 fi
 rg -F -q 'Usage: metabrain help [<command>]' "$TMP_DIR/help-missing.err"
+rg -F -q 'delete' "$TMP_DIR/help-missing.err"
+rg -F -q 'remove-version' "$TMP_DIR/help-missing.err"
 
 if "${METABRAIN[@]}" init --unknown-option 2>"$TMP_DIR/init-invalid.err"; then
     echo "Expected invalid init option to fail" >&2
@@ -531,6 +560,68 @@ fi
 PRUNE_MISSING_JSON="$("${METABRAIN[@]}" prune --store "$STORE" --path /missing --keep-within 0)"
 assert_prune_json "$PRUNE_MISSING_JSON" 0 0
 
+"${METABRAIN[@]}" put --store "$STORE" --format text /delete/target 'delete target v1 needle' --keep-all | rg -q '^version: 1$'
+"${METABRAIN[@]}" put --store "$STORE" --format text /delete/target 'delete target v2 needle' --keep-all | rg -q '^version: 2$'
+DELETE_TARGET_TEXT="$("${METABRAIN[@]}" delete --store "$STORE" /delete/target --format text)"
+if [[ "$DELETE_TARGET_TEXT" != $'deleted: true\nreference: /delete/target' ]]; then
+    echo "Expected delete text output, got: $DELETE_TARGET_TEXT" >&2
+    exit 1
+fi
+if "${METABRAIN[@]}" get --store "$STORE" /delete/target 2>"$TMP_DIR/delete-get.err"; then
+    echo "Expected deleted document get to fail" >&2
+    exit 1
+fi
+rg -q 'Document not found' "$TMP_DIR/delete-get.err"
+VERSIONS_DELETED="$("${METABRAIN[@]}" versions --store "$STORE" /delete/target)"
+if [[ -n "$VERSIONS_DELETED" ]]; then
+    echo "Expected deleted document to have no retained versions, got: $VERSIONS_DELETED" >&2
+    exit 1
+fi
+SEARCH_DELETED="$("${METABRAIN[@]}" search --store "$STORE" 'delete target needle' --path-prefix /delete)"
+if [[ -n "$SEARCH_DELETED" ]]; then
+    echo "Expected deleted document to be absent from search, got: $SEARCH_DELETED" >&2
+    exit 1
+fi
+if "${METABRAIN[@]}" list --store "$STORE" /delete --format text | rg -q 'target'; then
+    echo "Expected deleted document to be absent from list output" >&2
+    exit 1
+fi
+if "${METABRAIN[@]}" tree --store "$STORE" /delete --format text | rg -q 'target'; then
+    echo "Expected deleted document to be absent from tree output" >&2
+    exit 1
+fi
+DELETE_MISSING_JSON="$("${METABRAIN[@]}" delete --store "$STORE" /delete/missing --format json)"
+assert_delete_json "$DELETE_MISSING_JSON" /delete/missing false
+DELETE_MISSING_JSONL="$("${METABRAIN[@]}" delete --store "$STORE" /delete/missing --format jsonl)"
+assert_delete_json "$DELETE_MISSING_JSONL" /delete/missing false
+
+"${METABRAIN[@]}" put --store "$STORE" --format text /versions/remove-text 'remove version text v1' --keep-all | rg -q '^version: 1$'
+"${METABRAIN[@]}" put --store "$STORE" --format text /versions/remove-text 'remove version text v2' --keep-all | rg -q '^version: 2$'
+REMOVE_VERSION_TEXT="$("${METABRAIN[@]}" remove-version --store "$STORE" /versions/remove-text --sequence 1 --format text)"
+if [[ "$REMOVE_VERSION_TEXT" != $'removed: true\nsequence: 1\nreference: /versions/remove-text' ]]; then
+    echo "Expected remove-version text output, got: $REMOVE_VERSION_TEXT" >&2
+    exit 1
+fi
+"${METABRAIN[@]}" versions --store "$STORE" /versions/remove-text --format text | rg -q '^2 '
+if "${METABRAIN[@]}" versions --store "$STORE" /versions/remove-text --format text | rg -q '^1 '; then
+    echo "Expected removed sequence 1 to be absent from versions output" >&2
+    exit 1
+fi
+REMOVE_VERSION_JSONL="$("${METABRAIN[@]}" remove-version --store "$STORE" /versions/remove-text --sequence 1 --format jsonl)"
+assert_remove_version_json "$REMOVE_VERSION_JSONL" /versions/remove-text false 1
+
+"${METABRAIN[@]}" put --store "$STORE" --format text /versions/remove-json 'remove version json v1' --keep-all | rg -q '^version: 1$'
+"${METABRAIN[@]}" put --store "$STORE" --format text /versions/remove-json 'remove version json v2' --keep-all | rg -q '^version: 2$'
+REMOVE_VERSION_JSON="$("${METABRAIN[@]}" remove-version --store "$STORE" /versions/remove-json --sequence 1 --format json)"
+assert_remove_version_json "$REMOVE_VERSION_JSON" /versions/remove-json true 1
+if "${METABRAIN[@]}" remove-version --store "$STORE" /versions/remove-json --sequence 2 2>"$TMP_DIR/remove-current-version.err"; then
+    echo "Expected current version removal to fail" >&2
+    exit 1
+fi
+rg -q 'Cannot remove current version 2' "$TMP_DIR/remove-current-version.err"
+REMOVE_VERSION_MISSING_JSON="$("${METABRAIN[@]}" remove-version --store "$STORE" /versions/missing --sequence 1 --format json)"
+assert_remove_version_json "$REMOVE_VERSION_MISSING_JSON" /versions/missing false 1
+
 mkdir -p "$TMP_DIR/home-root" "$TMP_DIR/home-nested"
 env METABRAIN_HOME="$TMP_DIR/home-root" "${METABRAIN[@]}" init --store '~' --format text | rg -q "Initialized metaBrain store at $TMP_DIR/home-root"
 env METABRAIN_HOME="$TMP_DIR/home-nested" "${METABRAIN[@]}" init --store '~/.metabrain/store.leveldb' --format text | rg -q "Initialized metaBrain store at $TMP_DIR/home-nested/.metabrain/store.leveldb"
@@ -686,6 +777,33 @@ if "${METABRAIN[@]}" versions --store "$STORE" 2>"$TMP_DIR/missing-version-refer
 fi
 rg -q 'Provide exactly one of --id, --path, or a positional path' "$TMP_DIR/missing-version-reference.err"
 rg -F -q 'Usage: metabrain versions [--store <store>] [--id <id>] [--path <path>] [<path>] [--format <format>]' "$TMP_DIR/missing-version-reference.err"
+
+if "${METABRAIN[@]}" delete --store "$STORE" 2>"$TMP_DIR/missing-delete-reference.err"; then
+    echo "Expected missing delete reference options to fail" >&2
+    exit 1
+fi
+rg -q 'Provide exactly one of --id, --path, or a positional path' "$TMP_DIR/missing-delete-reference.err"
+rg -F -q 'Usage: metabrain delete [--store <store>] [--id <id>] [--path <path>] [<path>] [--format <format>]' "$TMP_DIR/missing-delete-reference.err"
+
+if "${METABRAIN[@]}" remove-version --store "$STORE" --sequence 1 2>"$TMP_DIR/missing-remove-version-reference.err"; then
+    echo "Expected missing remove-version reference options to fail" >&2
+    exit 1
+fi
+rg -q 'Provide exactly one of --id, --path, or a positional path' "$TMP_DIR/missing-remove-version-reference.err"
+rg -F -q 'Usage: metabrain remove-version [--store <store>] [--id <id>] [--path <path>] [<path>] [--format <format>] --sequence <sequence>' "$TMP_DIR/missing-remove-version-reference.err"
+
+if "${METABRAIN[@]}" remove-version --store "$STORE" /versions/remove-json 2>"$TMP_DIR/missing-remove-version-sequence.err"; then
+    echo "Expected missing remove-version sequence to fail" >&2
+    exit 1
+fi
+rg -q 'Missing expected (argument|option).*--sequence <sequence>' "$TMP_DIR/missing-remove-version-sequence.err"
+rg -F -q 'Usage: metabrain remove-version [--store <store>] [--id <id>] [--path <path>] [<path>] [--format <format>] --sequence <sequence>' "$TMP_DIR/missing-remove-version-sequence.err"
+
+if "${METABRAIN[@]}" remove-version --store "$STORE" /versions/remove-json --sequence 0 2>"$TMP_DIR/zero-remove-version-sequence.err"; then
+    echo "Expected zero remove-version sequence to fail" >&2
+    exit 1
+fi
+rg -q -- '--sequence must be greater than zero' "$TMP_DIR/zero-remove-version-sequence.err"
 
 if "${METABRAIN[@]}" prune --store "$STORE" --path /notes/today 2>"$TMP_DIR/missing-retention.err"; then
     echo "Expected missing prune retention policy to fail" >&2

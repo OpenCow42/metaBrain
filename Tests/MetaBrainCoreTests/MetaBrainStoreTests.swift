@@ -155,6 +155,72 @@ private func storeTestCodec<Value: Codable & Sendable>(
     }
 }
 
+@Test func deleteDocumentKeepsAncestorDocumentWhenChildIsRemoved() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let parent = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/topic"),
+            body: "parent"
+        ))
+        let child = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/topic/child"),
+            body: "child"
+        ))
+
+        #expect(try await store.deleteDocument(.documentID(child.id)) == true)
+
+        let entries = try await store.listDirectory(path: try DocumentPath("/"))
+        let topic = entries.first { $0.path.rawValue == "/topic" }
+        #expect(topic?.documentID == parent.id)
+        #expect(topic?.hasChildren == false)
+        #expect(try await store.getDocument(.path(parent.path)) == parent)
+        #expect(try await store.getDocument(.path(child.path)) == nil)
+    }
+}
+
+@Test func deleteDocumentIgnoresMalformedDescendantPathKeys() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let path = try DocumentPath("/delete/corrupt")
+        let document = try await store.putDocument(DocumentInput(
+            path: path,
+            body: "delete corrupt path"
+        ))
+
+        try await store.writeRawValue(
+            Data("bad-id".utf8),
+            forKey: MetaBrainKeyspace.documentPathDescendantPrefix(path) + "\u{0}"
+        )
+
+        #expect(try await store.deleteDocument(.documentID(document.id)) == true)
+        #expect(try await store.listDirectory(path: try DocumentPath("/delete")).isEmpty)
+    }
+}
+
+@Test func deleteDocumentRemovesBacklinkIndexesWhenTargetIsRemoved() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let target = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/refs/remove-target"),
+            body: "target body"
+        ))
+        let source = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/refs/remove-source"),
+            body: "source body",
+            references: [.documentID(target.id)]
+        ))
+
+        #expect(try await store.inboundReferences(to: target.id) == [source.id])
+        #expect(try await store.outboundReferences(from: source.id) == [target.id])
+
+        #expect(try await store.deleteDocument(.documentID(target.id)) == true)
+
+        #expect(try await store.inboundReferences(to: target.id).isEmpty)
+        #expect(try await store.outboundReferences(from: source.id).isEmpty)
+        #expect(try await store.getDocument(.documentID(source.id))?.references == [.documentID(target.id)])
+    }
+}
+
 @Test func removeVersionDeletesNonCurrentVersionOnly() async throws {
     try await withTemporaryStoreFixture { fixture in
         let store = try MetaBrainStore(url: fixture.storeURL)
@@ -175,6 +241,17 @@ private func storeTestCodec<Value: Codable & Sendable>(
         await #expect(throws: MetaBrainStoreError.currentVersionCannotBeRemoved(created.id, sequence: 3)) {
             try await store.removeVersion(documentID: created.id, sequence: 3)
         }
+    }
+}
+
+@Test func removeVersionOfMissingDocumentReturnsFalse() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+
+        #expect(try await store.removeVersion(
+            documentID: try DocumentID(rawValue: "missing-document"),
+            sequence: 1
+        ) == false)
     }
 }
 

@@ -36,7 +36,10 @@ contributors toward the calls that can become expensive as a store grows.
 - `X`: number of keys matched by one LevelDB prefix scan.
 - `X_tree`: total `doc/path` descendant keys scanned while maintaining affected
   tree branch entries.
-- `P_delete`: number of version keys deleted by a prune operation.
+- `P_delete`: number of version keys deleted by a prune or explicit document
+  delete operation.
+- `K_delete`: number of document, chunk, index, reference, backlink, and tree
+  keys cleaned up by one explicit document delete.
 
 LevelDB stores keys in sorted order and exposes efficient seek/iterator scans.
 Point lookups are not truly `O(1)`: they are usually small with cache and Bloom
@@ -85,6 +88,8 @@ and [LevelDB options](https://github.com/google/leveldb/blob/main/include/leveld
 | `search` | `search`, `filteredDocumentIDs`, `termPostings`, `currentChunkRecords`, scoring, optional edge scans | `O((Q + G + M) * seek(S) + F log F + P log P + B_match + C_match + M * (W^2 + E) + M log M)` | `W` is terms in a scored chunk. `--limit` is applied after collecting, scoring, and sorting all candidates, so it does not cap the initial scan. |
 | `versions` | `listVersions`, `versionRecords` | `O(seek(S) + V log V + H)` | Scans, decodes, sorts, and prints every full-snapshot version for the document. |
 | `prune` | `prune`, `pruneVersions`, `versionRecords`, retention helpers | `O(seek(S) + V log V + H + P_delete)` | Scans and decodes all versions before deciding which version keys to delete. |
+| `delete` | `deleteDocument`, `deleteDocumentRecord`, cleanup helpers | `O((C + R + E + L) * seek(S) + T + V + X_tree + P_delete + K_delete)` | Resolves one explicit document, then cleans current chunks, lexical/tag/metadata indexes, references/backlinks, retained versions, and affected tree entries. |
+| `remove-version` | `getDocument`, `removeVersion` | `O(seek(S))` | Resolves one document and performs one version-key point lookup/delete. Rejects the current version. |
 
 ## Current Complex Calls To Treat Carefully
 
@@ -118,6 +123,11 @@ and [LevelDB options](https://github.com/google/leveldb/blob/main/include/leveld
   paths or `tree --max-depth`.
 - `versions` and `prune` decode every version snapshot for the target document.
   Large bodies plus many versions are the worst case.
+- `delete` is intentionally explicit, but it can still issue a broad cleanup for
+  one document: current chunks and indexes, references and backlinks, retained
+  version keys, and virtual tree branch entries are all removed or refreshed.
+- `remove-version` is a point deletion after document resolution. It is cheap
+  compared with pruning, but it cannot remove the current version.
 
 ## Command Details
 
@@ -258,6 +268,29 @@ decodes, and sorts all versions before applying the retention policy and
 deleting pruned version keys.
 
 Complexity is `O(seek(S) + V log V + H + P_delete)`.
+
+### `delete`
+
+`delete` resolves a path or ID and calls `deleteDocument(_:)`. Missing documents
+return successfully without cleanup work. Existing documents delete the current
+document record, path alias, current chunks, lexical/tag/metadata indexes,
+outbound references, inbound backlink records, retained version keys, and
+affected virtual tree entries.
+
+Complexity is
+`O((C + R + E + L) * seek(S) + T + V + X_tree + P_delete + K_delete)`.
+The exact constant factor depends on how many indexed terms, references, and
+tree branches the deleted document touched.
+
+### `remove-version`
+
+`remove-version` resolves a path or ID to the current document and then calls
+`removeVersion(documentID:sequence:)`. Missing documents or missing historical
+version keys return successfully with no deletion. Removing the current version
+throws a core error so the current document remains readable.
+
+Complexity is `O(seek(S))` for document resolution plus one version-key point
+lookup and, when present, one delete.
 
 ## Maintenance Guidance
 

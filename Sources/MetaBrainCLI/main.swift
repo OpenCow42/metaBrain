@@ -17,6 +17,8 @@ struct MetaBrainCommand: AsyncParsableCommand {
           metabrain help tree
           metabrain help search
           metabrain help dump
+          metabrain help delete
+          metabrain help remove-version
 
         Common workflow:
           metabrain init --store .metabrain/store.leveldb
@@ -28,6 +30,8 @@ struct MetaBrainCommand: AsyncParsableCommand {
           metabrain search "Important context" --tag planning
           metabrain get /notes/today
           metabrain dump /notes --output-dir ./metabrain-dump
+          metabrain delete /notes/today
+          metabrain remove-version /notes/today --sequence 1
 
         The default store is .metabrain/store.leveldb. Pass --store to any command
         when a workspace uses a different location.
@@ -48,7 +52,9 @@ struct MetaBrainCommand: AsyncParsableCommand {
             Search.self,
             Dump.self,
             Versions.self,
-            Prune.self
+            Prune.self,
+            Delete.self,
+            RemoveVersion.self
         ]
     )
 
@@ -185,7 +191,7 @@ extension MetaBrainCommand {
             abstract: "Show metaBrain CLI help."
         )
 
-        @Argument(help: "Optional command to inspect: init, put, patch, get, list, tree, search, dump, versions, or prune.")
+        @Argument(help: "Optional command to inspect: init, put, patch, get, list, tree, search, dump, versions, prune, delete, or remove-version.")
         var command: String?
 
         func validate() throws {
@@ -194,10 +200,10 @@ extension MetaBrainCommand {
             }
 
             switch command {
-            case "init", "put", "patch", "get", "list", "tree", "search", "dump", "versions", "prune":
+            case "init", "put", "patch", "get", "list", "tree", "search", "dump", "versions", "prune", "delete", "remove-version":
                 return
             default:
-                throw ValidationError("Unknown help topic '\(command)'. Use one of: init, put, patch, get, list, tree, search, dump, versions, prune.")
+                throw ValidationError("Unknown help topic '\(command)'. Use one of: init, put, patch, get, list, tree, search, dump, versions, prune, delete, remove-version.")
             }
         }
 
@@ -716,6 +722,85 @@ extension MetaBrainCommand {
             }
         }
     }
+
+    struct Delete: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "delete",
+            abstract: "Delete a document and all retained versions."
+        )
+
+        @OptionGroup var storeOptions: StoreOptions
+        @OptionGroup var referenceOptions: ReferenceOptions
+        @OptionGroup var output: OutputFormatOptions
+
+        func validate() throws {
+            try referenceOptions.validate()
+        }
+
+        func run() async throws {
+            let reference = try referenceOptions.reference()
+            let formattedReference = formatReference(reference)
+            let deleted = try await storeOptions.withOpenStore { store in
+                try await store.deleteDocument(reference)
+            }
+            let result = DeleteOutput(reference: formattedReference, deleted: deleted)
+
+            switch output.format {
+            case .text:
+                print("deleted: \(deleted)")
+                print("reference: \(formattedReference)")
+            case .json, .jsonl:
+                try printJSONLine(result)
+            }
+        }
+    }
+
+    struct RemoveVersion: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "remove-version",
+            abstract: "Remove one retained historical document version."
+        )
+
+        @OptionGroup var storeOptions: StoreOptions
+        @OptionGroup var referenceOptions: ReferenceOptions
+        @OptionGroup var output: OutputFormatOptions
+
+        @Option(help: "Version sequence to remove.")
+        var sequence: UInt64
+
+        func validate() throws {
+            try referenceOptions.validate()
+            guard sequence > 0 else {
+                throw ValidationError("--sequence must be greater than zero.")
+            }
+        }
+
+        func run() async throws {
+            let reference = try referenceOptions.reference()
+            let formattedReference = formatReference(reference)
+            let removed = try await storeOptions.withOpenStore { store in
+                guard let document = try await store.getDocument(reference, trackingRead: false) else {
+                    return false
+                }
+
+                return try await store.removeVersion(documentID: document.id, sequence: sequence)
+            }
+            let result = RemoveVersionOutput(
+                reference: formattedReference,
+                removed: removed,
+                sequence: sequence
+            )
+
+            switch output.format {
+            case .text:
+                print("removed: \(removed)")
+                print("sequence: \(sequence)")
+                print("reference: \(formattedReference)")
+            case .json, .jsonl:
+                try printJSONLine(result)
+            }
+        }
+    }
 }
 
 private struct InitializeOutput: Encodable {
@@ -757,6 +842,36 @@ private struct PruneOutput: Encodable {
         operation = "prune"
         prunedVersionCount = result.prunedVersionCount
         retainedVersionCount = result.retainedVersionCount
+        status = "completed"
+    }
+}
+
+private struct DeleteOutput: Encodable {
+    let deleted: Bool
+    let operation: String
+    let reference: String
+    let status: String
+
+    init(reference: String, deleted: Bool) {
+        self.deleted = deleted
+        operation = "delete"
+        self.reference = reference
+        status = "completed"
+    }
+}
+
+private struct RemoveVersionOutput: Encodable {
+    let operation: String
+    let reference: String
+    let removed: Bool
+    let sequence: UInt64
+    let status: String
+
+    init(reference: String, removed: Bool, sequence: UInt64) {
+        operation = "remove-version"
+        self.reference = reference
+        self.removed = removed
+        self.sequence = sequence
         status = "completed"
     }
 }
@@ -1281,7 +1396,9 @@ private func commandHelpMessage(for command: String?) -> String {
             "search": MetaBrainCommand.Search.helpMessage(),
             "dump": MetaBrainCommand.Dump.helpMessage(),
             "versions": MetaBrainCommand.Versions.helpMessage(),
-            "prune": MetaBrainCommand.Prune.helpMessage()
+            "prune": MetaBrainCommand.Prune.helpMessage(),
+            "delete": MetaBrainCommand.Delete.helpMessage(),
+            "remove-version": MetaBrainCommand.RemoveVersion.helpMessage()
     ][command]!
 }
 

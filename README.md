@@ -42,13 +42,18 @@ swift run metabrain search --store .metabrain/store.leveldb "lexical store"
 swift run metabrain dump --store .metabrain/store.leveldb /notes --output-dir ./metabrain-dump
 swift run metabrain versions --store .metabrain/store.leveldb /notes/today
 swift run metabrain prune --store .metabrain/store.leveldb /notes/today --keep-last 3
+swift run metabrain remove-version --store .metabrain/store.leveldb /notes/today --sequence 1
+swift run metabrain delete --store .metabrain/store.leveldb /notes/today
 ```
 
 `put` accepts repeated `--tag` and `--meta key=value` options, plus `--body-file`
 for larger UTF-8 text. `patch` applies a single-file unified diff to the stored
 document body with `--patch-file <file>`, accepts `--patch-file -` for stdin,
 and supports `--check` to validate without writing a new version. `get`,
-`versions`, and `prune` accept a positional document path, `--path`, or `--id`.
+`versions`, `prune`, `delete`, and `remove-version` accept a positional document
+path, `--path`, or `--id`. `delete` removes one current document plus its retained
+versions and indexes. `remove-version` removes one retained non-current version
+by `--sequence`; the current version cannot be removed through the CLI.
 
 `list` and `tree` browse the store's virtual folder structure. `list` defaults
 to direct children of `/`, accepts an optional folder path, supports
@@ -109,10 +114,11 @@ Implemented document behavior:
   with versioned filenames.
 
 The CLI currently wraps the core store for `init`, `put`, `patch`, `get`,
-`search`, `list`, `tree`, `dump`, `versions`, and `prune`. It validates exactly one
-document reference for read/patch/prune commands, one retention option per
-write/patch/prune command, non-negative tree depth, and `key=value` metadata
-syntax.
+`search`, `list`, `tree`, `dump`, `versions`, `prune`, `delete`, and
+`remove-version`. It validates exactly one document reference for
+read/patch/prune/delete/remove-version commands, one retention option per
+write/patch/prune command, positive version removal sequences, non-negative tree
+depth, and `key=value` metadata syntax.
 
 ## Run The App
 
