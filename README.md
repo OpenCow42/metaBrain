@@ -136,6 +136,7 @@ both targets report 100.00% line coverage.
 
 - [MANIFESTO.md](MANIFESTO.md) explains the project vision and principles.
 - [ARCHITECTURE.md](ARCHITECTURE.md) records the planned compressed document store design.
+- [COMPLEXITY.md](COMPLEXITY.md) estimates the big-O cost of CLI commands and their core store methods.
 - [AGENTS.md](AGENTS.md) defines repository rules for coding agents and contributors.
 - [ORCHESTRATOR.md](ORCHESTRATOR.md) defines the supervising agent role for implementation.
 - [IMPLEMENTATION_AGENTS.md](IMPLEMENTATION_AGENTS.md) defines the serial subagent milestones and launch prompt.

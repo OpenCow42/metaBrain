@@ -109,6 +109,9 @@ Embedding and vector search should remain a future extension point. The v1 store
 
 Use ZSTD as the primary compression layer for content-bearing values. Keep index records small and raw.
 
+See [COMPLEXITY.md](COMPLEXITY.md) for the current big-O estimates of the CLI
+commands and the core store methods they call.
+
 Default store tuning should start conservatively:
 
 - ZSTD compression level `3`
