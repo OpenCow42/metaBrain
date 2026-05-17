@@ -92,6 +92,23 @@ assert_get_today_text() {
     fi
 }
 
+assert_line_count() {
+    local actual="$1"
+    local expected="$2"
+    local count
+
+    if [[ -z "$actual" ]]; then
+        count=0
+    else
+        count="$(printf '%s\n' "$actual" | wc -l | tr -d ' ')"
+    fi
+
+    if [[ "$count" != "$expected" ]]; then
+        echo "Expected $expected output lines, got $count: $actual" >&2
+        exit 1
+    fi
+}
+
 "${METABRAIN[@]}" | rg -q 'Agent discovery:'
 "${METABRAIN[@]}" --help | rg -q 'Common workflow:'
 "${METABRAIN[@]}" help | rg -q 'metabrain help search'
@@ -226,15 +243,51 @@ assert_patch_check_json "$PATCH_JSONL_CHECK"
 PATCH_JSONL_WRITE="$("${METABRAIN[@]}" patch --store "$STORE" /notes/jsonl-patch --patch-file "$JSONL_PATCH_FILE" --format jsonl)"
 assert_patch_write_json "$PATCH_JSONL_WRITE" /notes/jsonl-patch 2
 "${METABRAIN[@]}" get --store "$STORE" /notes/jsonl-patch | rg -q 'jsonl fresh memory'
-"${METABRAIN[@]}" list --store "$STORE" | rg -q '^notes/$'
-"${METABRAIN[@]}" list --store "$STORE" --recursive | rg -q '^notes/archive/final$'
-"${METABRAIN[@]}" list --store "$STORE" /notes | rg -q '^today$'
-"${METABRAIN[@]}" list --store "$STORE" /notes --recursive | rg -q '^archive/final$'
-"${METABRAIN[@]}" list --store "$STORE" /notes --recursive --directories-only | rg -q '^archive/$'
-"${METABRAIN[@]}" list --store "$STORE" /notes --dates | rg -q '^today  created=.* updated=.*'
+LIST_ROOT_JSONL="$("${METABRAIN[@]}" list --store "$STORE")"
+assert_line_count "$LIST_ROOT_JSONL" 1
+printf '%s\n' "$LIST_ROOT_JSONL" | rg -q '^\{.*"hasChildren":true.*"name":"notes".*"path":"/notes".*\}$'
+LIST_ROOT_TEXT="$("${METABRAIN[@]}" list --store "$STORE" --format text)"
+printf '%s\n' "$LIST_ROOT_TEXT" | rg -q '^notes/$'
+LIST_ROOT_EXPLICIT_JSONL="$("${METABRAIN[@]}" list --store "$STORE" --format jsonl)"
+if [[ "$LIST_ROOT_EXPLICIT_JSONL" != "$LIST_ROOT_JSONL" ]]; then
+    echo "Expected explicit list JSONL to match default JSONL output, got: $LIST_ROOT_EXPLICIT_JSONL" >&2
+    exit 1
+fi
+LIST_NOTES_JSON="$("${METABRAIN[@]}" list --store "$STORE" /notes --format json)"
+assert_line_count "$LIST_NOTES_JSON" 1
+printf '%s\n' "$LIST_NOTES_JSON" | rg -q '^\[.*\]$'
+printf '%s\n' "$LIST_NOTES_JSON" | rg -F -q '"path":"/notes/today"'
+printf '%s\n' "$LIST_NOTES_JSON" | rg -q '"documentID":"[0-9a-f-]+"'
+printf '%s\n' "$LIST_NOTES_JSON" | rg -q '"createdAt":"[^"]+"'
+printf '%s\n' "$LIST_NOTES_JSON" | rg -q '"updatedAt":"[^"]+"'
+LIST_NOTES_JSONL="$("${METABRAIN[@]}" list --store "$STORE" /notes --format jsonl)"
+printf '%s\n' "$LIST_NOTES_JSONL" | rg -F -q '"path":"/notes/today"'
+printf '%s\n' "$LIST_NOTES_JSONL" | rg -F -q '"path":"/notes/archive"'
+"${METABRAIN[@]}" list --store "$STORE" --recursive | rg -F -q '"path":"/notes/archive/final"'
+"${METABRAIN[@]}" list --store "$STORE" --format text --recursive | rg -q '^notes/archive/final$'
+"${METABRAIN[@]}" list --store "$STORE" /notes --format text | rg -q '^today$'
+"${METABRAIN[@]}" list --store "$STORE" /notes --format text --recursive | rg -q '^archive/final$'
+"${METABRAIN[@]}" list --store "$STORE" /notes --recursive --directories-only | rg -F -q '"path":"/notes/archive"'
+"${METABRAIN[@]}" list --store "$STORE" /notes --format text --recursive --directories-only | rg -q '^archive/$'
+"${METABRAIN[@]}" list --store "$STORE" /notes --format text --dates | rg -q '^today  created=.* updated=.*'
 "${METABRAIN[@]}" tree --store "$STORE" --max-depth 2 | rg -q '^`-- notes/$'
 "${METABRAIN[@]}" tree --store "$STORE" /notes --directories-only | rg -q '^`-- archive/$'
-"${METABRAIN[@]}" list --store "$STORE" /missing | rg -q '^No documents\.$'
+LIST_MISSING_DEFAULT="$("${METABRAIN[@]}" list --store "$STORE" /missing)"
+if [[ -n "$LIST_MISSING_DEFAULT" ]]; then
+    echo "Expected missing list path to produce no default JSONL output, got: $LIST_MISSING_DEFAULT" >&2
+    exit 1
+fi
+LIST_MISSING_JSON="$("${METABRAIN[@]}" list --store "$STORE" /missing --format json)"
+if [[ "$LIST_MISSING_JSON" != "[]" ]]; then
+    echo "Expected missing list path to produce empty JSON array, got: $LIST_MISSING_JSON" >&2
+    exit 1
+fi
+LIST_MISSING_JSONL="$("${METABRAIN[@]}" list --store "$STORE" /missing --format jsonl)"
+if [[ -n "$LIST_MISSING_JSONL" ]]; then
+    echo "Expected missing list path to produce no explicit JSONL output, got: $LIST_MISSING_JSONL" >&2
+    exit 1
+fi
+"${METABRAIN[@]}" list --store "$STORE" /missing --format text | rg -q '^No documents\.$'
 "${METABRAIN[@]}" tree --store "$STORE" /missing | rg -q '^No documents\.$'
 "${METABRAIN[@]}" tree --store "$STORE" --max-depth 0 | rg -q '^/$'
 "${METABRAIN[@]}" get --store "$STORE" --format text /notes/today | rg -q 'alpha beta searchable memory'

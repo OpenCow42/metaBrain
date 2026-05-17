@@ -82,6 +82,11 @@ struct OutputFormatOptions: ParsableArguments {
     var format: CLIOutputFormat = .json
 }
 
+struct ListOutputFormatOptions: ParsableArguments {
+    @Option(help: "Output format: text, json, or jsonl.")
+    var format: CLIOutputFormat = .jsonl
+}
+
 struct ReferenceOptions: ParsableArguments {
     @Option(help: "Document ID to read.")
     var id: String?
@@ -404,6 +409,7 @@ extension MetaBrainCommand {
         )
 
         @OptionGroup var storeOptions: StoreOptions
+        @OptionGroup var output: ListOutputFormatOptions
 
         @Argument(help: "Folder path to list.")
         var path = "/"
@@ -429,13 +435,22 @@ extension MetaBrainCommand {
                 directoriesOnly: directoriesOnly
             )
 
-            guard !entries.isEmpty else {
-                print("No documents.")
-                return
-            }
+            let outputEntries = entries.map(ListOutput.init)
 
-            for entry in entries {
-                print(formatListEntry(entry, relativeTo: root, recursive: recursive, includeDates: dates))
+            switch output.format {
+            case .text:
+                guard !entries.isEmpty else {
+                    print("No documents.")
+                    return
+                }
+
+                for entry in entries {
+                    print(formatListEntry(entry, relativeTo: root, recursive: recursive, includeDates: dates))
+                }
+            case .json:
+                try printJSON(outputEntries)
+            case .jsonl:
+                try printJSONLines(outputEntries)
             }
         }
     }
@@ -724,6 +739,24 @@ private struct GetOutput: Encodable {
         try container.encode(title, forKey: .title)
         try container.encode(updatedAt, forKey: .updatedAt)
         try container.encode(version, forKey: .version)
+    }
+}
+
+private struct ListOutput: Encodable {
+    let path: String
+    let name: String
+    let hasChildren: Bool
+    let documentID: String?
+    let createdAt: Date?
+    let updatedAt: Date?
+
+    init(_ entry: DocumentTreeEntry) {
+        path = entry.path.rawValue
+        name = entry.name
+        hasChildren = entry.hasChildren
+        documentID = entry.documentID?.rawValue
+        createdAt = entry.createdAt
+        updatedAt = entry.updatedAt
     }
 }
 
