@@ -270,8 +270,42 @@ printf '%s\n' "$LIST_NOTES_JSONL" | rg -F -q '"path":"/notes/archive"'
 "${METABRAIN[@]}" list --store "$STORE" /notes --recursive --directories-only | rg -F -q '"path":"/notes/archive"'
 "${METABRAIN[@]}" list --store "$STORE" /notes --format text --recursive --directories-only | rg -q '^archive/$'
 "${METABRAIN[@]}" list --store "$STORE" /notes --format text --dates | rg -q '^today  created=.* updated=.*'
-"${METABRAIN[@]}" tree --store "$STORE" --max-depth 2 | rg -q '^`-- notes/$'
-"${METABRAIN[@]}" tree --store "$STORE" /notes --directories-only | rg -q '^`-- archive/$'
+TREE_ROOT_JSONL="$("${METABRAIN[@]}" tree --store "$STORE")"
+printf '%s\n' "$TREE_ROOT_JSONL" | rg -F -q '{"createdAt":null,"documentID":null,"hasChildren":true,"kind":"root","name":"/","path":"/","updatedAt":null}'
+printf '%s\n' "$TREE_ROOT_JSONL" | rg -F -q '{"createdAt":null,"documentID":null,"hasChildren":true,"kind":"entry","name":"notes","path":"/notes","updatedAt":null}'
+printf '%s\n' "$TREE_ROOT_JSONL" | rg -q '^\{"createdAt":"[^"]+","documentID":"[0-9a-f-]+","hasChildren":false,"kind":"entry","name":"today","path":"/notes/today","updatedAt":"[^"]+"\}$'
+TREE_ROOT_JSON="$("${METABRAIN[@]}" tree --store "$STORE" --format json)"
+assert_line_count "$TREE_ROOT_JSON" 1
+printf '%s\n' "$TREE_ROOT_JSON" | rg -q '^\[.*\]$'
+printf '%s\n' "$TREE_ROOT_JSON" | rg -F -q '"kind":"root"'
+printf '%s\n' "$TREE_ROOT_JSON" | rg -F -q '"path":"/notes/today"'
+TREE_ROOT_EXPLICIT_JSONL="$("${METABRAIN[@]}" tree --store "$STORE" --format jsonl)"
+if [[ "$TREE_ROOT_EXPLICIT_JSONL" != "$TREE_ROOT_JSONL" ]]; then
+    echo "Expected explicit tree JSONL to match default JSONL output, got: $TREE_ROOT_EXPLICIT_JSONL" >&2
+    exit 1
+fi
+TREE_TEXT="$("${METABRAIN[@]}" tree --store "$STORE" --format text --max-depth 2)"
+printf '%s\n' "$TREE_TEXT" | rg -q '^/$'
+printf '%s\n' "$TREE_TEXT" | rg -q '^`-- notes/$'
+TREE_DIRECTORIES_JSONL="$("${METABRAIN[@]}" tree --store "$STORE" /notes --directories-only)"
+assert_line_count "$TREE_DIRECTORIES_JSONL" 2
+printf '%s\n' "$TREE_DIRECTORIES_JSONL" | rg -F -q '"kind":"root","name":"notes","path":"/notes"'
+printf '%s\n' "$TREE_DIRECTORIES_JSONL" | rg -F -q '"kind":"entry","name":"archive","path":"/notes/archive"'
+if printf '%s\n' "$TREE_DIRECTORIES_JSONL" | rg -F -q '"path":"/notes/today"'; then
+    echo "Expected tree --directories-only to exclude documents" >&2
+    exit 1
+fi
+"${METABRAIN[@]}" tree --store "$STORE" /notes --format text --directories-only | rg -q '^`-- archive/$'
+TREE_MAX_DEPTH_ZERO_JSONL="$("${METABRAIN[@]}" tree --store "$STORE" --max-depth 0)"
+assert_line_count "$TREE_MAX_DEPTH_ZERO_JSONL" 1
+printf '%s\n' "$TREE_MAX_DEPTH_ZERO_JSONL" | rg -F -q '{"createdAt":null,"documentID":null,"hasChildren":false,"kind":"root","name":"/","path":"/","updatedAt":null}'
+TREE_MAX_DEPTH_TWO_JSONL="$("${METABRAIN[@]}" tree --store "$STORE" --max-depth 2)"
+assert_line_count "$TREE_MAX_DEPTH_TWO_JSONL" 7
+printf '%s\n' "$TREE_MAX_DEPTH_TWO_JSONL" | rg -F -q '"path":"/notes/archive"'
+if printf '%s\n' "$TREE_MAX_DEPTH_TWO_JSONL" | rg -F -q '"path":"/notes/archive/final"'; then
+    echo "Expected tree --max-depth 2 to exclude deeper descendants" >&2
+    exit 1
+fi
 LIST_MISSING_DEFAULT="$("${METABRAIN[@]}" list --store "$STORE" /missing)"
 if [[ -n "$LIST_MISSING_DEFAULT" ]]; then
     echo "Expected missing list path to produce no default JSONL output, got: $LIST_MISSING_DEFAULT" >&2
@@ -288,8 +322,26 @@ if [[ -n "$LIST_MISSING_JSONL" ]]; then
     exit 1
 fi
 "${METABRAIN[@]}" list --store "$STORE" /missing --format text | rg -q '^No documents\.$'
-"${METABRAIN[@]}" tree --store "$STORE" /missing | rg -q '^No documents\.$'
-"${METABRAIN[@]}" tree --store "$STORE" --max-depth 0 | rg -q '^/$'
+TREE_MISSING_DEFAULT="$("${METABRAIN[@]}" tree --store "$STORE" /missing)"
+if [[ -n "$TREE_MISSING_DEFAULT" ]]; then
+    echo "Expected missing tree path to produce no default JSONL output, got: $TREE_MISSING_DEFAULT" >&2
+    exit 1
+fi
+TREE_MISSING_JSON="$("${METABRAIN[@]}" tree --store "$STORE" /missing --format json)"
+if [[ "$TREE_MISSING_JSON" != "[]" ]]; then
+    echo "Expected missing tree path to produce empty JSON array, got: $TREE_MISSING_JSON" >&2
+    exit 1
+fi
+TREE_MISSING_JSONL="$("${METABRAIN[@]}" tree --store "$STORE" /missing --format jsonl)"
+if [[ -n "$TREE_MISSING_JSONL" ]]; then
+    echo "Expected missing tree path to produce no explicit JSONL output, got: $TREE_MISSING_JSONL" >&2
+    exit 1
+fi
+"${METABRAIN[@]}" tree --store "$STORE" /missing --format text | rg -q '^No documents\.$'
+"${METABRAIN[@]}" tree --store "$STORE" --format text --max-depth 0 | rg -q '^/$'
+TREE_MISSING_MAX_DEPTH_ZERO="$("${METABRAIN[@]}" tree --store "$STORE" /missing --max-depth 0)"
+assert_line_count "$TREE_MISSING_MAX_DEPTH_ZERO" 1
+printf '%s\n' "$TREE_MISSING_MAX_DEPTH_ZERO" | rg -F -q '{"createdAt":null,"documentID":null,"hasChildren":false,"kind":"root","name":"missing","path":"/missing","updatedAt":null}'
 "${METABRAIN[@]}" get --store "$STORE" --format text /notes/today | rg -q 'alpha beta searchable memory'
 "${METABRAIN[@]}" get --store "$STORE" --format text --path /notes/today | rg -q 'alpha beta searchable memory'
 "${METABRAIN[@]}" search --store "$STORE" 'alpha beta' --tag search --meta status=active | rg -q '/notes/today'

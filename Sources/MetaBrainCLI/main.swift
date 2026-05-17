@@ -462,6 +462,7 @@ extension MetaBrainCommand {
         )
 
         @OptionGroup var storeOptions: StoreOptions
+        @OptionGroup var output: ListOutputFormatOptions
 
         @Argument(help: "Folder path to use as the tree root.")
         var path = "/"
@@ -487,12 +488,19 @@ extension MetaBrainCommand {
                 maxDepth: maxDepth
             ))
 
-            if entries.isEmpty, maxDepth != 0 {
-                print("No documents.")
-                return
-            }
+            switch output.format {
+            case .text:
+                if entries.isEmpty, maxDepth != 0 {
+                    print("No documents.")
+                    return
+                }
 
-            printTree(root: root, entries: entries)
+                printTree(root: root, entries: entries)
+            case .json:
+                try printJSON(treeOutputs(root: root, entries: entries, maxDepth: maxDepth))
+            case .jsonl:
+                try printJSONLines(treeOutputs(root: root, entries: entries, maxDepth: maxDepth))
+            }
         }
     }
 
@@ -760,6 +768,57 @@ private struct ListOutput: Encodable {
     }
 }
 
+private struct TreeOutput: Encodable {
+    let path: String
+    let name: String
+    let hasChildren: Bool
+    let documentID: String?
+    let createdAt: Date?
+    let updatedAt: Date?
+    let kind: String
+
+    enum CodingKeys: String, CodingKey {
+        case createdAt
+        case documentID
+        case hasChildren
+        case kind
+        case name
+        case path
+        case updatedAt
+    }
+
+    init(root: DocumentPath, hasChildren: Bool) {
+        path = root.rawValue
+        name = treeRootName(root)
+        self.hasChildren = hasChildren
+        documentID = nil
+        createdAt = nil
+        updatedAt = nil
+        kind = "root"
+    }
+
+    init(_ entry: DocumentTreeEntry) {
+        path = entry.path.rawValue
+        name = entry.name
+        hasChildren = entry.hasChildren
+        documentID = entry.documentID?.rawValue
+        createdAt = entry.createdAt
+        updatedAt = entry.updatedAt
+        kind = "entry"
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encode(documentID, forKey: .documentID)
+        try container.encode(hasChildren, forKey: .hasChildren)
+        try container.encode(kind, forKey: .kind)
+        try container.encode(name, forKey: .name)
+        try container.encode(path, forKey: .path)
+        try container.encode(updatedAt, forKey: .updatedAt)
+    }
+}
+
 private func readBody(argument: String?, filePath: String?) throws -> String {
     try validateBodyInputs(argument: argument, filePath: filePath)
 
@@ -888,6 +947,18 @@ private func relativePath(_ path: DocumentPath, from root: DocumentPath) -> Stri
     return String(path.rawValue.dropFirst(prefix.count))
 }
 
+private func treeOutputs(
+    root: DocumentPath,
+    entries: [DocumentTreeEntry],
+    maxDepth: Int?
+) -> [TreeOutput] {
+    guard !entries.isEmpty || maxDepth == 0 else {
+        return []
+    }
+
+    return [TreeOutput(root: root, hasChildren: !entries.isEmpty)] + entries.map(TreeOutput.init)
+}
+
 private func printTree(root: DocumentPath, entries: [DocumentTreeEntry]) {
     print(root.rawValue == "/" ? "/" : root.name + "/")
 
@@ -926,6 +997,10 @@ private func printTreeChildren(
 
 private func formatTreeEntry(_ entry: DocumentTreeEntry) -> String {
     entry.name + (entry.hasChildren ? "/" : "")
+}
+
+private func treeRootName(_ root: DocumentPath) -> String {
+    root.rawValue == "/" ? "/" : root.name
 }
 
 private func parseReferences(
