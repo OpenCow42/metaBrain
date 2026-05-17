@@ -379,13 +379,21 @@ extension MetaBrainCommand {
 
         @OptionGroup var storeOptions: StoreOptions
         @OptionGroup var referenceOptions: ReferenceOptions
+        @OptionGroup var output: OutputFormatOptions
 
         func run() async throws {
             guard let document = try await storeOptions.openStore().getDocument(referenceOptions.reference()) else {
                 throw ValidationError("Document not found.")
             }
 
-            printDocument(document)
+            switch output.format {
+            case .text:
+                printDocument(document)
+            case .json:
+                try printJSON(GetOutput(document))
+            case .jsonl:
+                try printJSONLine(GetOutput(document))
+            }
         }
     }
 
@@ -664,6 +672,59 @@ private struct PatchCheckOutput: Encodable {
     let operation: String
     let status: String
     let success: Bool
+}
+
+private struct GetOutput: Encodable {
+    let body: String
+    let createdAt: Date
+    let documentID: String
+    let metadata: [String: String]
+    let path: String
+    let references: [DocumentDumpReference]
+    let tags: [String]
+    let title: String?
+    let updatedAt: Date
+    let version: UInt64
+
+    init(_ document: StoredDocument) {
+        body = document.body
+        createdAt = document.createdAt
+        documentID = document.id.rawValue
+        metadata = document.metadata
+        path = document.path.rawValue
+        references = document.references.map(DocumentDumpReference.init)
+        tags = document.tags
+        title = document.title
+        updatedAt = document.updatedAt
+        version = document.currentVersion
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case body
+        case createdAt
+        case documentID
+        case metadata
+        case path
+        case references
+        case tags
+        case title
+        case updatedAt
+        case version
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(body, forKey: .body)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encode(documentID, forKey: .documentID)
+        try container.encode(metadata, forKey: .metadata)
+        try container.encode(path, forKey: .path)
+        try container.encode(references, forKey: .references)
+        try container.encode(tags, forKey: .tags)
+        try container.encode(title, forKey: .title)
+        try container.encode(updatedAt, forKey: .updatedAt)
+        try container.encode(version, forKey: .version)
+    }
 }
 
 private func readBody(argument: String?, filePath: String?) throws -> String {

@@ -62,6 +62,36 @@ assert_patch_check_json() {
     fi
 }
 
+assert_get_json() {
+    local actual="$1"
+    local expected_path="$2"
+    local expected_body="$3"
+    local expected_version="$4"
+
+    if [[ "$actual" == *$'\n'* ]]; then
+        echo "Expected get JSON on one line, got: $actual" >&2
+        exit 1
+    fi
+
+    printf '%s\n' "$actual" | rg -q '^\{.*\}$'
+    printf '%s\n' "$actual" | rg -q '"documentID":"[0-9a-f-]+"'
+    printf '%s\n' "$actual" | rg -F -q '"path":"'"$expected_path"'"'
+    printf '%s\n' "$actual" | rg -F -q '"body":"'"$expected_body"'"'
+    printf '%s\n' "$actual" | rg -F -q '"version":'"$expected_version"
+    printf '%s\n' "$actual" | rg -q '"createdAt":"[^"]+"'
+    printf '%s\n' "$actual" | rg -q '"updatedAt":"[^"]+"'
+}
+
+assert_get_today_text() {
+    local actual="$1"
+    local pattern='^id: [0-9a-f-]+'$'\n''path: /notes/today'$'\n''title: Today'$'\n''version: 1'$'\n''tags: search'$'\n''metadata: kind=daily, status=active'$'\n\n''alpha beta searchable memory$'
+
+    if [[ ! "$actual" =~ $pattern ]]; then
+        echo "Expected get text output for /notes/today, got: $actual" >&2
+        exit 1
+    fi
+}
+
 "${METABRAIN[@]}" | rg -q 'Agent discovery:'
 "${METABRAIN[@]}" --help | rg -q 'Common workflow:'
 "${METABRAIN[@]}" help | rg -q 'metabrain help search'
@@ -117,6 +147,22 @@ if [[ "$INIT_JSONL" != "$EXPECTED_INIT_JSON" ]]; then
 fi
 PUT_TODAY_JSON="$("${METABRAIN[@]}" put --store "$STORE" /notes/today 'alpha beta searchable memory' --title Today --tag search --meta status=active --meta kind=daily)"
 assert_put_json "$PUT_TODAY_JSON" /notes/today created 1
+GET_TODAY_DEFAULT_JSON="$("${METABRAIN[@]}" get --store "$STORE" /notes/today)"
+assert_get_json "$GET_TODAY_DEFAULT_JSON" /notes/today 'alpha beta searchable memory' 1
+printf '%s\n' "$GET_TODAY_DEFAULT_JSON" | rg -F -q '"metadata":{"kind":"daily","status":"active"}'
+printf '%s\n' "$GET_TODAY_DEFAULT_JSON" | rg -F -q '"references":[]'
+printf '%s\n' "$GET_TODAY_DEFAULT_JSON" | rg -F -q '"tags":["search"]'
+printf '%s\n' "$GET_TODAY_DEFAULT_JSON" | rg -F -q '"title":"Today"'
+GET_TODAY_TEXT="$("${METABRAIN[@]}" get --store "$STORE" --format text /notes/today)"
+assert_get_today_text "$GET_TODAY_TEXT"
+GET_TODAY_JSONL="$("${METABRAIN[@]}" get --store "$STORE" --format jsonl --path /notes/today)"
+if [[ "$GET_TODAY_JSONL" != "$GET_TODAY_DEFAULT_JSON" ]]; then
+    echo "Expected get JSONL to match compact JSON output, got: $GET_TODAY_JSONL" >&2
+    exit 1
+fi
+GET_TODAY_ID="$(printf '%s\n' "$GET_TODAY_DEFAULT_JSON" | sed -E 's/.*"documentID":"([^"]+)".*/\1/')"
+GET_TODAY_BY_ID_JSONL="$("${METABRAIN[@]}" get --store "$STORE" --format jsonl --id "$GET_TODAY_ID")"
+assert_get_json "$GET_TODAY_BY_ID_JSONL" /notes/today 'alpha beta searchable memory' 1
 PUT_ARCHIVE_TEXT="$("${METABRAIN[@]}" put --store "$STORE" --format text /notes/archive/final 'archived memory')"
 assert_put_text "$PUT_ARCHIVE_TEXT" /notes/archive/final 1
 PUT_PATCHABLE_JSONL="$("${METABRAIN[@]}" put --store "$STORE" --format jsonl /notes/patchable 'one old patchable memory' --tag patch)"
@@ -191,8 +237,8 @@ assert_patch_write_json "$PATCH_JSONL_WRITE" /notes/jsonl-patch 2
 "${METABRAIN[@]}" list --store "$STORE" /missing | rg -q '^No documents\.$'
 "${METABRAIN[@]}" tree --store "$STORE" /missing | rg -q '^No documents\.$'
 "${METABRAIN[@]}" tree --store "$STORE" --max-depth 0 | rg -q '^/$'
-"${METABRAIN[@]}" get --store "$STORE" /notes/today | rg -q 'alpha beta searchable memory'
-"${METABRAIN[@]}" get --store "$STORE" --path /notes/today | rg -q 'alpha beta searchable memory'
+"${METABRAIN[@]}" get --store "$STORE" --format text /notes/today | rg -q 'alpha beta searchable memory'
+"${METABRAIN[@]}" get --store "$STORE" --format text --path /notes/today | rg -q 'alpha beta searchable memory'
 "${METABRAIN[@]}" search --store "$STORE" 'alpha beta' --tag search --meta status=active | rg -q '/notes/today'
 "${METABRAIN[@]}" search --store "$STORE" 'alpha beta' --tag missing | rg -q '^No results\.$'
 PUT_TODAY_UPDATE_JSON="$("${METABRAIN[@]}" put --store "$STORE" /notes/today 'alpha beta updated memory' --keep-last 2)"
@@ -230,10 +276,11 @@ env METABRAIN_HOME="$TMP_DIR/home-root" "${METABRAIN[@]}" init --store '~' --for
 env METABRAIN_HOME="$TMP_DIR/home-nested" "${METABRAIN[@]}" init --store '~/.metabrain/store.leveldb' --format text | rg -q "Initialized metaBrain store at $TMP_DIR/home-nested/.metabrain/store.leveldb"
 
 "${METABRAIN[@]}" put --store "$STORE" --format text /refs/target 'target needle reference' --title Target | rg -q '^version: 1$'
-TARGET_ID="$("${METABRAIN[@]}" get --store "$STORE" --path /refs/target | awk '/^id: / { print $2 }')"
+TARGET_ID="$("${METABRAIN[@]}" get --store "$STORE" --format text --path /refs/target | awk '/^id: / { print $2 }')"
 "${METABRAIN[@]}" get --store "$STORE" --id "$TARGET_ID" | rg -q 'target needle reference'
 "${METABRAIN[@]}" put --store "$STORE" --format text /refs/source 'source needle reference' --ref-id "$TARGET_ID" --ref-path /refs/target --ref-url https://example.com/ref | rg -q '^version: 1$'
-"${METABRAIN[@]}" get --store "$STORE" --path /refs/source | rg -q "references: $TARGET_ID, /refs/target, https://example.com/ref"
+"${METABRAIN[@]}" get --store "$STORE" --path /refs/source | rg -F -q '"references":[{"kind":"documentID","value":"'"$TARGET_ID"'"},{"kind":"path","value":"/refs/target"},{"kind":"externalURL","value":"https://example.com/ref"}]'
+"${METABRAIN[@]}" get --store "$STORE" --format text --path /refs/source | rg -q "references: $TARGET_ID, /refs/target, https://example.com/ref"
 "${METABRAIN[@]}" search --store "$STORE" source --include-linked-documents | rg -q '^linked: [0-9a-f-]+$'
 "${METABRAIN[@]}" search --store "$STORE" target --include-backlinks | rg -q '^backlinks: [0-9a-f-]+$'
 
@@ -264,7 +311,7 @@ if "${METABRAIN[@]}" get --store "$STORE" --id abc --path /notes/today 2>"$TMP_D
     exit 1
 fi
 rg -q 'Provide exactly one of --id, --path, or a positional path' "$TMP_DIR/double-reference.err"
-rg -F -q 'Usage: metabrain get [--store <store>] [--id <id>] [--path <path>] [<path>]' "$TMP_DIR/double-reference.err"
+rg -F -q 'Usage: metabrain get [--store <store>] [--id <id>] [--path <path>] [<path>] [--format <format>]' "$TMP_DIR/double-reference.err"
 
 if "${METABRAIN[@]}" get --store "$STORE" --path /notes/today /notes/file 2>"$TMP_DIR/path-and-positional-reference.err"; then
     echo "Expected option path plus positional path to fail" >&2
@@ -382,4 +429,4 @@ if "${METABRAIN[@]}" get --store "$STORE" 2>"$TMP_DIR/missing-reference.err"; th
     exit 1
 fi
 rg -q 'Provide exactly one of --id, --path, or a positional path' "$TMP_DIR/missing-reference.err"
-rg -F -q 'Usage: metabrain get [--store <store>] [--id <id>] [--path <path>] [<path>]' "$TMP_DIR/missing-reference.err"
+rg -F -q 'Usage: metabrain get [--store <store>] [--id <id>] [--path <path>] [<path>] [--format <format>]' "$TMP_DIR/missing-reference.err"
