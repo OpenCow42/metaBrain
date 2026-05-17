@@ -24,7 +24,7 @@ struct MetaBrainCommand: AsyncParsableCommand {
           metabrain list /notes --recursive --dates
           metabrain tree --max-depth 2
           metabrain search "Important context" --tag planning
-          metabrain get --path /notes/today
+          metabrain get /notes/today
 
         The default store is .metabrain/store.leveldb. Pass --store to any command
         when a workspace uses a different location.
@@ -69,20 +69,23 @@ struct ReferenceOptions: ParsableArguments {
     @Option(help: "Document ID to read.")
     var id: String?
 
-    @Option(help: "Document path to read.")
+    @Option(name: .customLong("path"), help: "Document path to read.")
+    var optionPath: String?
+
+    @Argument(help: "Document path to read.")
     var path: String?
 
     func reference() throws -> DocumentReference {
-        switch (id, path) {
-        case (.some(let rawID), nil):
-            return .documentID(try DocumentID(rawValue: rawID))
-        case (nil, .some(let rawPath)):
-            return .path(try DocumentPath(rawPath))
-        case (nil, nil):
-            throw ValidationError("Provide either --id or --path.")
-        case (.some, .some):
-            throw ValidationError("Use only one of --id or --path.")
+        let provided = [id != nil, optionPath != nil, path != nil].filter { $0 }.count
+        guard provided == 1 else {
+            throw ValidationError("Provide exactly one of --id, --path, or a positional path.")
         }
+
+        if let rawID = id {
+            return .documentID(try DocumentID(rawValue: rawID))
+        }
+
+        return .path(try DocumentPath(optionPath ?? path!))
     }
 
     func validate() throws {

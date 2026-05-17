@@ -67,11 +67,14 @@ rg -q -- '--max-depth must be zero or greater' "$TMP_DIR/tree-invalid-depth.err"
 "${METABRAIN[@]}" list --store "$STORE" /missing | rg -q '^No documents\.$'
 "${METABRAIN[@]}" tree --store "$STORE" /missing | rg -q '^No documents\.$'
 "${METABRAIN[@]}" tree --store "$STORE" --max-depth 0 | rg -q '^/$'
+"${METABRAIN[@]}" get --store "$STORE" /notes/today | rg -q 'alpha beta searchable memory'
 "${METABRAIN[@]}" get --store "$STORE" --path /notes/today | rg -q 'alpha beta searchable memory'
 "${METABRAIN[@]}" search --store "$STORE" 'alpha beta' --tag search --meta status=active | rg -q '/notes/today'
 "${METABRAIN[@]}" search --store "$STORE" 'alpha beta' --tag missing | rg -q '^No results\.$'
 "${METABRAIN[@]}" put --store "$STORE" /notes/today 'alpha beta updated memory' --keep-last 2 | rg -q '^version: 2$'
+"${METABRAIN[@]}" versions --store "$STORE" /notes/today | rg -q '^2 '
 "${METABRAIN[@]}" versions --store "$STORE" --path /notes/today | rg -q '^2 '
+"${METABRAIN[@]}" prune --store "$STORE" /notes/today --keep-last 1 | rg -q '^retained: 1$'
 "${METABRAIN[@]}" prune --store "$STORE" --path /notes/today --keep-last 1 | rg -q '^retained: 1$'
 "${METABRAIN[@]}" versions --store "$STORE" --path /notes/today | rg -q '^2 '
 
@@ -115,8 +118,20 @@ if "${METABRAIN[@]}" get --store "$STORE" --id abc --path /notes/today 2>"$TMP_D
     echo "Expected duplicate reference options to fail" >&2
     exit 1
 fi
-rg -q 'Use only one of --id or --path' "$TMP_DIR/double-reference.err"
-rg -F -q 'Usage: metabrain get [--store <store>] [--id <id>] [--path <path>]' "$TMP_DIR/double-reference.err"
+rg -q 'Provide exactly one of --id, --path, or a positional path' "$TMP_DIR/double-reference.err"
+rg -F -q 'Usage: metabrain get [--store <store>] [--id <id>] [--path <path>] [<path>]' "$TMP_DIR/double-reference.err"
+
+if "${METABRAIN[@]}" get --store "$STORE" --path /notes/today /notes/file 2>"$TMP_DIR/path-and-positional-reference.err"; then
+    echo "Expected option path plus positional path to fail" >&2
+    exit 1
+fi
+rg -q 'Provide exactly one of --id, --path, or a positional path' "$TMP_DIR/path-and-positional-reference.err"
+
+if "${METABRAIN[@]}" get --store "$STORE" --id abc /notes/today 2>"$TMP_DIR/id-and-positional-reference.err"; then
+    echo "Expected ID plus positional path to fail" >&2
+    exit 1
+fi
+rg -q 'Provide exactly one of --id, --path, or a positional path' "$TMP_DIR/id-and-positional-reference.err"
 
 if "${METABRAIN[@]}" get --store "$STORE" --path /missing 2>"$TMP_DIR/not-found.err"; then
     echo "Expected missing document to fail" >&2
@@ -173,19 +188,19 @@ if "${METABRAIN[@]}" versions --store "$STORE" 2>"$TMP_DIR/missing-version-refer
     echo "Expected missing version reference options to fail" >&2
     exit 1
 fi
-rg -q 'Provide either --id or --path' "$TMP_DIR/missing-version-reference.err"
-rg -F -q 'Usage: metabrain versions [--store <store>] [--id <id>] [--path <path>]' "$TMP_DIR/missing-version-reference.err"
+rg -q 'Provide exactly one of --id, --path, or a positional path' "$TMP_DIR/missing-version-reference.err"
+rg -F -q 'Usage: metabrain versions [--store <store>] [--id <id>] [--path <path>] [<path>]' "$TMP_DIR/missing-version-reference.err"
 
 if "${METABRAIN[@]}" prune --store "$STORE" --path /notes/today 2>"$TMP_DIR/missing-retention.err"; then
     echo "Expected missing prune retention policy to fail" >&2
     exit 1
 fi
 rg -q 'Provide one of --keep-all, --keep-last, or --keep-within' "$TMP_DIR/missing-retention.err"
-rg -F -q 'Usage: metabrain prune [--store <store>] [--id <id>] [--path <path>] [--keep-all] [--keep-last <keep-last>] [--keep-within <keep-within>]' "$TMP_DIR/missing-retention.err"
+rg -F -q 'Usage: metabrain prune [--store <store>] [--id <id>] [--path <path>] [<path>] [--keep-all] [--keep-last <keep-last>] [--keep-within <keep-within>]' "$TMP_DIR/missing-retention.err"
 
 if "${METABRAIN[@]}" get --store "$STORE" 2>"$TMP_DIR/missing-reference.err"; then
     echo "Expected missing reference options to fail" >&2
     exit 1
 fi
-rg -q 'Provide either --id or --path' "$TMP_DIR/missing-reference.err"
-rg -F -q 'Usage: metabrain get [--store <store>] [--id <id>] [--path <path>]' "$TMP_DIR/missing-reference.err"
+rg -q 'Provide exactly one of --id, --path, or a positional path' "$TMP_DIR/missing-reference.err"
+rg -F -q 'Usage: metabrain get [--store <store>] [--id <id>] [--path <path>] [<path>]' "$TMP_DIR/missing-reference.err"

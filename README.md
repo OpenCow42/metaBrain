@@ -35,15 +35,15 @@ swift run metabrain put --store .metabrain/store.leveldb /notes/today "Remember 
 swift run metabrain list --store .metabrain/store.leveldb
 swift run metabrain list --store .metabrain/store.leveldb /notes --recursive --dates
 swift run metabrain tree --store .metabrain/store.leveldb --max-depth 2
-swift run metabrain get --store .metabrain/store.leveldb --path /notes/today
+swift run metabrain get --store .metabrain/store.leveldb /notes/today
 swift run metabrain search --store .metabrain/store.leveldb "lexical store"
-swift run metabrain versions --store .metabrain/store.leveldb --path /notes/today
-swift run metabrain prune --store .metabrain/store.leveldb --path /notes/today --keep-last 3
+swift run metabrain versions --store .metabrain/store.leveldb /notes/today
+swift run metabrain prune --store .metabrain/store.leveldb /notes/today --keep-last 3
 ```
 
 `put` accepts repeated `--tag` and `--meta key=value` options, plus `--body-file`
-for larger UTF-8 text. `get`, `versions`, and `prune` accept either `--path` or
-`--id`.
+for larger UTF-8 text. `get`, `versions`, and `prune` accept a positional
+document path, `--path`, or `--id`.
 
 `list` and `tree` browse the store's virtual folder structure. `list` defaults
 to direct children of `/`, accepts an optional folder path, supports
@@ -87,8 +87,8 @@ Implemented document behavior:
   complete browsing results.
 
 The CLI currently wraps the core store for `init`, `put`, `get`, `search`,
-`list`, `tree`, `versions`, and `prune`. It validates one document reference for
-read/prune commands, one retention option per write/prune command,
+`list`, `tree`, `versions`, and `prune`. It validates exactly one document
+reference for read/prune commands, one retention option per write/prune command,
 non-negative tree depth, and `key=value` metadata syntax.
 
 ## Run The App
