@@ -65,7 +65,11 @@ enum MetaBrainKeyspace {
     }
 
     static func tree(parentPath: DocumentPath, name: String) -> String {
-        "tree/\(parentPath.rawValue)/\(component(name))"
+        "tree/\(component(parentPath.rawValue))/\(component(name))"
+    }
+
+    static func treePrefix(parentPath: DocumentPath) -> String {
+        "tree/\(component(parentPath.rawValue))/"
     }
 
     static func prefix(_ family: KeyFamily) -> String {

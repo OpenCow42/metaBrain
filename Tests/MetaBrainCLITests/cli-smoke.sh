@@ -18,7 +18,16 @@ cd "$ROOT_DIR"
 "${METABRAIN[@]}" | rg -q 'Agent discovery:'
 "${METABRAIN[@]}" --help | rg -q 'Common workflow:'
 "${METABRAIN[@]}" help | rg -q 'metabrain help search'
+"${METABRAIN[@]}" help | rg -q 'metabrain help list'
+"${METABRAIN[@]}" help | rg -q 'metabrain help tree'
+"${METABRAIN[@]}" help init | rg -q 'Create or open a metaBrain store'
+"${METABRAIN[@]}" help put | rg -q 'Create or update a document at a path'
+"${METABRAIN[@]}" help get | rg -q 'Read a document by path or ID'
+"${METABRAIN[@]}" help list | rg -q 'List stored document paths in a folder'
+"${METABRAIN[@]}" help tree | rg -q 'Show the stored document path tree'
 "${METABRAIN[@]}" help search | rg -q 'Search current document content'
+"${METABRAIN[@]}" help versions | rg -q 'List stored versions for a document'
+"${METABRAIN[@]}" help prune | rg -q 'Prune document versions using a retention policy'
 
 if "${METABRAIN[@]}" help missing 2>"$TMP_DIR/help-missing.err"; then
     echo "Expected unknown help topic to fail" >&2
@@ -38,8 +47,26 @@ if "${METABRAIN[@]}" search query --limit 0 2>"$TMP_DIR/search-invalid.err"; the
 fi
 rg -F -q 'Usage: metabrain search [--store <store>] <query>' "$TMP_DIR/search-invalid.err"
 
+if "${METABRAIN[@]}" tree --max-depth=-1 2>"$TMP_DIR/tree-invalid-depth.err"; then
+    echo "Expected invalid tree max depth to fail" >&2
+    exit 1
+fi
+rg -q -- '--max-depth must be zero or greater' "$TMP_DIR/tree-invalid-depth.err"
+
 "${METABRAIN[@]}" init --store "$STORE" | rg -q 'Initialized metaBrain store'
 "${METABRAIN[@]}" put --store "$STORE" /notes/today 'alpha beta searchable memory' --title Today --tag search --meta status=active --meta kind=daily | rg -q '^version: 1$'
+"${METABRAIN[@]}" put --store "$STORE" /notes/archive/final 'archived memory' | rg -q '^version: 1$'
+"${METABRAIN[@]}" list --store "$STORE" | rg -q '^notes/$'
+"${METABRAIN[@]}" list --store "$STORE" --recursive | rg -q '^notes/archive/final$'
+"${METABRAIN[@]}" list --store "$STORE" /notes | rg -q '^today$'
+"${METABRAIN[@]}" list --store "$STORE" /notes --recursive | rg -q '^archive/final$'
+"${METABRAIN[@]}" list --store "$STORE" /notes --recursive --directories-only | rg -q '^archive/$'
+"${METABRAIN[@]}" list --store "$STORE" /notes --dates | rg -q '^today  created=.* updated=.*'
+"${METABRAIN[@]}" tree --store "$STORE" --max-depth 2 | rg -q '^`-- notes/$'
+"${METABRAIN[@]}" tree --store "$STORE" /notes --directories-only | rg -q '^`-- archive/$'
+"${METABRAIN[@]}" list --store "$STORE" /missing | rg -q '^No documents\.$'
+"${METABRAIN[@]}" tree --store "$STORE" /missing | rg -q '^No documents\.$'
+"${METABRAIN[@]}" tree --store "$STORE" --max-depth 0 | rg -q '^/$'
 "${METABRAIN[@]}" get --store "$STORE" --path /notes/today | rg -q 'alpha beta searchable memory'
 "${METABRAIN[@]}" search --store "$STORE" 'alpha beta' --tag search --meta status=active | rg -q '/notes/today'
 "${METABRAIN[@]}" search --store "$STORE" 'alpha beta' --tag missing | rg -q '^No results\.$'
@@ -62,6 +89,7 @@ env METABRAIN_HOME="$TMP_DIR/home-nested" "${METABRAIN[@]}" init --store '~/.met
 
 "${METABRAIN[@]}" put --store "$STORE" /refs/target 'target needle reference' --title Target | rg -q '^version: 1$'
 TARGET_ID="$("${METABRAIN[@]}" get --store "$STORE" --path /refs/target | awk '/^id: / { print $2 }')"
+"${METABRAIN[@]}" get --store "$STORE" --id "$TARGET_ID" | rg -q 'target needle reference'
 "${METABRAIN[@]}" put --store "$STORE" /refs/source 'source needle reference' --ref-id "$TARGET_ID" --ref-path /refs/target --ref-url https://example.com/ref | rg -q '^version: 1$'
 "${METABRAIN[@]}" get --store "$STORE" --path /refs/source | rg -q "references: $TARGET_ID, /refs/target, https://example.com/ref"
 "${METABRAIN[@]}" search --store "$STORE" source --include-linked-documents | rg -q '^linked: [0-9a-f-]+$'

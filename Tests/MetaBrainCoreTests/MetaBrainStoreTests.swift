@@ -995,3 +995,130 @@ private func storeTestCodec<Value: Codable & Sendable>(
         #expect(try await store.search(SearchQuery(text: "indexed", limit: 0)) == [])
     }
 }
+
+@Test func listDirectoryReadsIndexedDirectRecursiveAndDirectoryOnlyEntries() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+
+        #expect(try await store.listDirectory().isEmpty)
+
+        let notes = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/notes"),
+            body: "folder document"
+        ))
+        let today = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/notes/today"),
+            body: "daily note"
+        ))
+        let archived = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/notes/archive/final"),
+            body: "archived note"
+        ))
+        _ = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/refs/source"),
+            body: "reference note"
+        ))
+
+        let rootEntries = try await store.listDirectory()
+        let notesEntry = try #require(rootEntries.first { $0.path == notes.path })
+        let notesChildren = try await store.listDirectory(path: notes.path)
+        let noteDirectories = try await store.listDirectory(
+            path: notes.path,
+            directoriesOnly: true
+        )
+        let recursiveNotes = try await store.listDirectory(path: notes.path, recursive: true)
+        let recursiveDirectories = try await store.listDirectory(
+            path: try DocumentPath("/"),
+            recursive: true,
+            directoriesOnly: true
+        )
+
+        #expect(rootEntries.map(\.path.rawValue) == ["/notes", "/refs"])
+        #expect(notesEntry.hasChildren)
+        #expect(notesEntry.documentID == notes.id)
+        #expect(notesEntry.createdAt == notes.createdAt)
+        #expect(notesEntry.updatedAt == notes.updatedAt)
+        #expect(notesChildren.map(\.path.rawValue) == ["/notes/archive", "/notes/today"])
+        #expect(notesChildren.map(\.hasChildren) == [true, false])
+        #expect(noteDirectories.map(\.path.rawValue) == ["/notes/archive"])
+        #expect(recursiveNotes.map(\.path.rawValue) == [
+            "/notes/archive",
+            "/notes/archive/final",
+            "/notes/today"
+        ])
+        #expect(recursiveNotes.first { $0.path == today.path }?.documentID == today.id)
+        #expect(recursiveNotes.first { $0.path == archived.path }?.documentID == archived.id)
+        #expect(recursiveDirectories.map(\.path.rawValue) == [
+            "/notes",
+            "/notes/archive",
+            "/refs"
+        ])
+    }
+}
+
+@Test func treeHonorsDepthAndDirectoryOnlyOptions() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        _ = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/a/b/c"),
+            body: "deep note"
+        ))
+        _ = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/a/root"),
+            body: "shallow note"
+        ))
+
+        let rootOnly = try await store.tree(TreeQuery(maxDepth: 0))
+        let oneLevel = try await store.tree(TreeQuery(maxDepth: 1))
+        let twoLevels = try await store.tree(TreeQuery(maxDepth: 2))
+        let directoriesOnly = try await store.tree(TreeQuery(directoriesOnly: true))
+
+        #expect(rootOnly == [])
+        #expect(oneLevel.map(\.path.rawValue) == ["/a"])
+        #expect(twoLevels.map(\.path.rawValue) == ["/a", "/a/b", "/a/root"])
+        #expect(directoriesOnly.map(\.path.rawValue) == ["/a", "/a/b"])
+    }
+}
+
+@Test func treeIndexRemovesOldEmptyAncestorsAfterRename() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let created = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/old/path/doc"),
+            body: "before rename"
+        ))
+
+        let renamed = try await store.updateDocument(
+            .documentID(created.id),
+            with: DocumentInput(
+                path: try DocumentPath("/new/path/doc"),
+                body: "after rename"
+            )
+        )
+
+        let rootEntries = try await store.listDirectory()
+        let oldEntries = try await store.listDirectory(path: try DocumentPath("/old"), recursive: true)
+        let newEntries = try await store.listDirectory(path: try DocumentPath("/new/path"))
+
+        #expect(renamed.id == created.id)
+        #expect(rootEntries.map(\.path.rawValue) == ["/new"])
+        #expect(oldEntries == [])
+        #expect(newEntries.map(\.path.rawValue) == ["/new/path/doc"])
+        #expect(newEntries.first?.documentID == created.id)
+    }
+}
+
+@Test func rootPathDocumentDoesNotCreateSyntheticTreeChild() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let root = try DocumentPath("/")
+        let document = try await store.putDocument(DocumentInput(
+            path: root,
+            body: "root document"
+        ))
+
+        #expect(try await store.getDocument(.path(root)) == document)
+        #expect(try await store.listDirectory().isEmpty)
+        #expect(try await store.tree().isEmpty)
+    }
+}

@@ -13,11 +13,16 @@ struct MetaBrainCommand: AsyncParsableCommand {
           metabrain
           metabrain help
           metabrain --help
+          metabrain help list
+          metabrain help tree
           metabrain help search
 
         Common workflow:
           metabrain init --store .metabrain/store.leveldb
           metabrain put /notes/today "Important context" --tag planning --meta source=agent
+          metabrain list
+          metabrain list /notes --recursive --dates
+          metabrain tree --max-depth 2
           metabrain search "Important context" --tag planning
           metabrain get --path /notes/today
 
@@ -34,6 +39,8 @@ struct MetaBrainCommand: AsyncParsableCommand {
             Initialize.self,
             Put.self,
             Get.self,
+            List.self,
+            Tree.self,
             Search.self,
             Versions.self,
             Prune.self
@@ -138,7 +145,7 @@ extension MetaBrainCommand {
             abstract: "Show metaBrain CLI help."
         )
 
-        @Argument(help: "Optional command to inspect: init, put, get, search, versions, or prune.")
+        @Argument(help: "Optional command to inspect: init, put, get, list, tree, search, versions, or prune.")
         var command: String?
 
         func validate() throws {
@@ -147,10 +154,10 @@ extension MetaBrainCommand {
             }
 
             switch command {
-            case "init", "put", "get", "search", "versions", "prune":
+            case "init", "put", "get", "list", "tree", "search", "versions", "prune":
                 return
             default:
-                throw ValidationError("Unknown help topic '\(command)'. Use one of: init, put, get, search, versions, prune.")
+                throw ValidationError("Unknown help topic '\(command)'. Use one of: init, put, get, list, tree, search, versions, prune.")
             }
         }
 
@@ -258,6 +265,90 @@ extension MetaBrainCommand {
             }
 
             printDocument(document)
+        }
+    }
+
+    struct List: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "list",
+            abstract: "List stored document paths in a folder."
+        )
+
+        @OptionGroup var storeOptions: StoreOptions
+
+        @Argument(help: "Folder path to list.")
+        var path = "/"
+
+        @Flag(help: "List all descendants instead of only direct children.")
+        var recursive = false
+
+        @Flag(help: "List only virtual directories.")
+        var directoriesOnly = false
+
+        @Flag(help: "Print created and updated dates for document entries.")
+        var dates = false
+
+        func validate() throws {
+            _ = try DocumentPath(path)
+        }
+
+        func run() async throws {
+            let root = try DocumentPath(path)
+            let entries = try await storeOptions.openStore().listDirectory(
+                path: root,
+                recursive: recursive,
+                directoriesOnly: directoriesOnly
+            )
+
+            guard !entries.isEmpty else {
+                print("No documents.")
+                return
+            }
+
+            for entry in entries {
+                print(formatListEntry(entry, relativeTo: root, recursive: recursive, includeDates: dates))
+            }
+        }
+    }
+
+    struct Tree: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "tree",
+            abstract: "Show the stored document path tree."
+        )
+
+        @OptionGroup var storeOptions: StoreOptions
+
+        @Argument(help: "Folder path to use as the tree root.")
+        var path = "/"
+
+        @Flag(help: "Show only virtual directories.")
+        var directoriesOnly = false
+
+        @Option(help: "Maximum depth below the requested root. Use 0 for only the root.")
+        var maxDepth: Int?
+
+        func validate() throws {
+            _ = try DocumentPath(path)
+            if let maxDepth, maxDepth < 0 {
+                throw ValidationError("--max-depth must be zero or greater.")
+            }
+        }
+
+        func run() async throws {
+            let root = try DocumentPath(path)
+            let entries = try await storeOptions.openStore().tree(TreeQuery(
+                path: root,
+                directoriesOnly: directoriesOnly,
+                maxDepth: maxDepth
+            ))
+
+            if entries.isEmpty, maxDepth != 0 {
+                print("No documents.")
+                return
+            }
+
+            printTree(root: root, entries: entries)
         }
     }
 
@@ -388,14 +479,14 @@ extension MetaBrainCommand {
 private func readBody(argument: String?, filePath: String?) throws -> String {
     try validateBodyInputs(argument: argument, filePath: filePath)
 
-    switch (argument, filePath) {
-    case (.some(let body), nil):
+    if let body = argument {
         return body
-    case (nil, .some(let filePath)):
-        return try String(contentsOf: URL.expandingShellPath(filePath, isDirectory: false), encoding: .utf8)
-    case (nil, nil), (.some, .some):
-        preconditionFailure("Body input validation should reject missing or duplicate body sources.")
     }
+
+    return try String(
+        contentsOf: URL.expandingShellPath(filePath!, isDirectory: false),
+        encoding: .utf8
+    )
 }
 
 private func validateBodyInputs(argument: String?, filePath: String?) throws {
@@ -444,6 +535,76 @@ private func printDocument(_ document: StoredDocument) {
     print(document.body)
 }
 
+private func formatListEntry(
+    _ entry: DocumentTreeEntry,
+    relativeTo root: DocumentPath,
+    recursive: Bool,
+    includeDates: Bool
+) -> String {
+    var output = recursive ? relativePath(entry.path, from: root) : entry.name
+    if entry.hasChildren {
+        output += "/"
+    }
+
+    if includeDates,
+       entry.documentID != nil,
+       let createdAt = entry.createdAt,
+       let updatedAt = entry.updatedAt {
+        output += "  created=\(createdAt.ISO8601Format())  updated=\(updatedAt.ISO8601Format())"
+    }
+
+    return output
+}
+
+private func relativePath(_ path: DocumentPath, from root: DocumentPath) -> String {
+    if root.rawValue == "/" {
+        return String(path.rawValue.dropFirst())
+    }
+
+    let prefix = root.rawValue + "/"
+    return String(path.rawValue.dropFirst(prefix.count))
+}
+
+private func printTree(root: DocumentPath, entries: [DocumentTreeEntry]) {
+    print(root.rawValue == "/" ? "/" : root.name + "/")
+
+    let grouped = Dictionary(grouping: entries) { entry in
+        entry.path.parent!.rawValue
+    }
+    printTreeChildren(
+        of: root,
+        groupedByParent: grouped,
+        prefix: ""
+    )
+}
+
+private func printTreeChildren(
+    of parent: DocumentPath,
+    groupedByParent: [String: [DocumentTreeEntry]],
+    prefix: String
+) {
+    let children = (groupedByParent[parent.rawValue] ?? [])
+        .sorted { $0.path.rawValue < $1.path.rawValue }
+
+    for (index, child) in children.enumerated() {
+        let isLast = index == children.index(before: children.endIndex)
+        let connector = isLast ? "`-- " : "|-- "
+        print(prefix + connector + formatTreeEntry(child))
+
+        if child.hasChildren {
+            printTreeChildren(
+                of: child.path,
+                groupedByParent: groupedByParent,
+                prefix: prefix + (isLast ? "    " : "|   ")
+            )
+        }
+    }
+}
+
+private func formatTreeEntry(_ entry: DocumentTreeEntry) -> String {
+    entry.name + (entry.hasChildren ? "/" : "")
+}
+
 private func parseReferences(
     ids: [String],
     paths: [String],
@@ -488,24 +649,20 @@ private func formatReference(_ reference: DocumentReference) -> String {
 }
 
 private func commandHelpMessage(for command: String?) -> String {
-    switch command {
-    case nil:
+    guard let command else {
         return MetaBrainCommand.helpMessage()
-    case "init":
-        return MetaBrainCommand.Initialize.helpMessage()
-    case "put":
-        return MetaBrainCommand.Put.helpMessage()
-    case "get":
-        return MetaBrainCommand.Get.helpMessage()
-    case "search":
-        return MetaBrainCommand.Search.helpMessage()
-    case "versions":
-        return MetaBrainCommand.Versions.helpMessage()
-    case "prune":
-        return MetaBrainCommand.Prune.helpMessage()
-    case .some(let unknown):
-        preconditionFailure("Unknown help topic '\(unknown)' should be rejected during validation.")
     }
+
+    return [
+        "init": MetaBrainCommand.Initialize.helpMessage(),
+        "put": MetaBrainCommand.Put.helpMessage(),
+        "get": MetaBrainCommand.Get.helpMessage(),
+        "list": MetaBrainCommand.List.helpMessage(),
+        "tree": MetaBrainCommand.Tree.helpMessage(),
+        "search": MetaBrainCommand.Search.helpMessage(),
+        "versions": MetaBrainCommand.Versions.helpMessage(),
+        "prune": MetaBrainCommand.Prune.helpMessage()
+    ][command]!
 }
 
 extension URL {

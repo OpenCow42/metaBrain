@@ -74,6 +74,27 @@ import Testing
     #expect(version.id == "doc-1:3")
 }
 
+@Test func treeModelsExposeStableIdentitiesAndDefaults() throws {
+    let id = try DocumentID(rawValue: "doc-1")
+    let path = try DocumentPath("/notes/today")
+    let entry = DocumentTreeEntry(
+        path: path,
+        name: "today",
+        hasChildren: true,
+        documentID: id,
+        createdAt: Date(timeIntervalSince1970: 1),
+        updatedAt: Date(timeIntervalSince1970: 2)
+    )
+    let query = TreeQuery()
+    let root = try DocumentPath("/")
+
+    #expect(entry.id == "/notes/today")
+    #expect(entry.documentID == id)
+    #expect(query.path == root)
+    #expect(!query.directoriesOnly)
+    #expect(query.maxDepth == nil)
+}
+
 @Test func retentionPolicyValuesModelDocumentVersionStrategies() {
     let policies: [VersionRetentionPolicy] = [
         .keepAll,
@@ -116,7 +137,8 @@ import Testing
     #expect(MetaBrainKeyspace.metadata(key: "source/type", value: "Daily Note", id: id) == "idx/meta/source%2Ftype/daily%20note/doc-a")
     #expect(MetaBrainKeyspace.outboundReference(sourceID: id, targetID: otherID) == "idx/ref/out/doc-a/doc-b")
     #expect(MetaBrainKeyspace.inboundReference(targetID: otherID, sourceID: id) == "idx/ref/in/doc-b/doc-a")
-    #expect(MetaBrainKeyspace.tree(parentPath: try DocumentPath("/notes"), name: "today") == "tree//notes/today")
+    #expect(MetaBrainKeyspace.tree(parentPath: try DocumentPath("/notes"), name: "today") == "tree/%2Fnotes/today")
+    #expect(MetaBrainKeyspace.treePrefix(parentPath: try DocumentPath("/notes")) == "tree/%2Fnotes/")
     #expect(MetaBrainKeyspace.prefix(.documentID) == "doc/id/")
 
     let versionKeys = [10, 2, 1].map { MetaBrainKeyspace.version(id: id, sequence: UInt64($0)) }.sorted()

@@ -32,6 +32,9 @@ swift build
 ```bash
 swift run metabrain init --store .metabrain/store.leveldb
 swift run metabrain put --store .metabrain/store.leveldb /notes/today "Remember the lexical store."
+swift run metabrain list --store .metabrain/store.leveldb
+swift run metabrain list --store .metabrain/store.leveldb /notes --recursive --dates
+swift run metabrain tree --store .metabrain/store.leveldb --max-depth 2
 swift run metabrain get --store .metabrain/store.leveldb --path /notes/today
 swift run metabrain search --store .metabrain/store.leveldb "lexical store"
 swift run metabrain versions --store .metabrain/store.leveldb --path /notes/today
@@ -41,6 +44,13 @@ swift run metabrain prune --store .metabrain/store.leveldb --path /notes/today -
 `put` accepts repeated `--tag` and `--meta key=value` options, plus `--body-file`
 for larger UTF-8 text. `get`, `versions`, and `prune` accept either `--path` or
 `--id`.
+
+`list` and `tree` browse the store's virtual folder structure. `list` defaults
+to direct children of `/`, accepts an optional folder path, supports
+`--recursive`, `--directories-only`, and `--dates`, and prints created/updated
+dates only for document entries. `tree` prints an ASCII tree, accepts an
+optional root path, supports `--directories-only`, and supports
+`--max-depth <n>` where `0` prints only the requested root.
 
 ## Implemented Store Behavior
 
@@ -71,11 +81,15 @@ Implemented document behavior:
 - Resolved internal document references create outbound and inbound edge indexes.
   Unresolved path references and external URLs are stored on the document but do
   not create graph edges.
+- Document writes maintain an explicit `tree/` index for virtual folder
+  discovery. New `list` and `tree` commands read that index directly; stores
+  written before the tree index existed may need to be rebuilt or recreated for
+  complete browsing results.
 
 The CLI currently wraps the core store for `init`, `put`, `get`, `search`,
-`versions`, and `prune`. It validates one document reference for read/prune
-commands, one retention option per write/prune command, and `key=value`
-metadata syntax.
+`list`, `tree`, `versions`, and `prune`. It validates one document reference for
+read/prune commands, one retention option per write/prune command,
+non-negative tree depth, and `key=value` metadata syntax.
 
 ## Run The App
 
