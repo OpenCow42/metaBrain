@@ -221,6 +221,7 @@ extension MetaBrainCommand {
         )
 
         @OptionGroup var storeOptions: StoreOptions
+        @OptionGroup var output: OutputFormatOptions
         @OptionGroup var retention: RetentionOptions
 
         @Argument(help: "Document path.")
@@ -277,10 +278,24 @@ extension MetaBrainCommand {
                 retention: try retention.optionalPolicy()
             )
             let document = try await storeOptions.openStore().putDocument(input)
+            let result = PutOutput(
+                documentID: document.id.rawValue,
+                operation: "put",
+                path: document.path.rawValue,
+                status: document.currentVersion == 1 ? "created" : "updated",
+                version: document.currentVersion
+            )
 
-            print("id: \(document.id.rawValue)")
-            print("path: \(document.path.rawValue)")
-            print("version: \(document.currentVersion)")
+            switch output.format {
+            case .text:
+                print("id: \(document.id.rawValue)")
+                print("path: \(document.path.rawValue)")
+                print("version: \(document.currentVersion)")
+            case .json:
+                try printJSON(result)
+            case .jsonl:
+                try printJSONLine(result)
+            }
         }
     }
 
@@ -596,6 +611,14 @@ private struct InitializeOutput: Encodable {
     let operation: String
     let status: String
     let storePath: String
+}
+
+private struct PutOutput: Encodable {
+    let documentID: String
+    let operation: String
+    let path: String
+    let status: String
+    let version: UInt64
 }
 
 private func readBody(argument: String?, filePath: String?) throws -> String {

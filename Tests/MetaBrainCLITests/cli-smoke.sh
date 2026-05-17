@@ -15,6 +15,31 @@ fi
 
 cd "$ROOT_DIR"
 
+assert_put_json() {
+    local actual="$1"
+    local expected_path="$2"
+    local expected_status="$3"
+    local expected_version="$4"
+    local pattern='^\{"documentID":"[0-9a-f-]+","operation":"put","path":"'"$expected_path"'","status":"'"$expected_status"'","version":'"$expected_version"'\}$'
+
+    if [[ "$actual" == *$'\n'* ]] || ! printf '%s\n' "$actual" | rg -q "$pattern"; then
+        echo "Expected put JSON for $expected_path v$expected_version, got: $actual" >&2
+        exit 1
+    fi
+}
+
+assert_put_text() {
+    local actual="$1"
+    local expected_path="$2"
+    local expected_version="$3"
+    local pattern="^id: [0-9a-f-]+"$'\n'"path: $expected_path"$'\n'"version: $expected_version$"
+
+    if [[ ! "$actual" =~ $pattern ]]; then
+        echo "Expected put text for $expected_path v$expected_version, got: $actual" >&2
+        exit 1
+    fi
+}
+
 "${METABRAIN[@]}" | rg -q 'Agent discovery:'
 "${METABRAIN[@]}" --help | rg -q 'Common workflow:'
 "${METABRAIN[@]}" help | rg -q 'metabrain help search'
@@ -68,9 +93,12 @@ if [[ "$INIT_JSONL" != "$EXPECTED_INIT_JSON" ]]; then
     echo "Expected init JSONL output, got: $INIT_JSONL" >&2
     exit 1
 fi
-"${METABRAIN[@]}" put --store "$STORE" /notes/today 'alpha beta searchable memory' --title Today --tag search --meta status=active --meta kind=daily | rg -q '^version: 1$'
-"${METABRAIN[@]}" put --store "$STORE" /notes/archive/final 'archived memory' | rg -q '^version: 1$'
-"${METABRAIN[@]}" put --store "$STORE" /notes/patchable 'one old patchable memory' --tag patch | rg -q '^version: 1$'
+PUT_TODAY_JSON="$("${METABRAIN[@]}" put --store "$STORE" /notes/today 'alpha beta searchable memory' --title Today --tag search --meta status=active --meta kind=daily)"
+assert_put_json "$PUT_TODAY_JSON" /notes/today created 1
+PUT_ARCHIVE_TEXT="$("${METABRAIN[@]}" put --store "$STORE" --format text /notes/archive/final 'archived memory')"
+assert_put_text "$PUT_ARCHIVE_TEXT" /notes/archive/final 1
+PUT_PATCHABLE_JSONL="$("${METABRAIN[@]}" put --store "$STORE" --format jsonl /notes/patchable 'one old patchable memory' --tag patch)"
+assert_put_json "$PUT_PATCHABLE_JSONL" /notes/patchable created 1
 "${METABRAIN[@]}" dump --store "$STORE" /notes >"$TMP_DIR/dump-notes.jsonl"
 rg -F -q '"path":"/notes/archive/final"' "$TMP_DIR/dump-notes.jsonl"
 rg -F -q '"path":"/notes/today"' "$TMP_DIR/dump-notes.jsonl"
@@ -100,7 +128,7 @@ PATCH
 "${METABRAIN[@]}" get --store "$STORE" /notes/patchable | rg -q 'one fresh patchable memory'
 "${METABRAIN[@]}" search --store "$STORE" fresh --tag patch | rg -q '^/notes/patchable'
 "${METABRAIN[@]}" search --store "$STORE" old --tag patch | rg -q '^No results\.$'
-"${METABRAIN[@]}" put --store "$STORE" /notes/stdin-patch 'stdin old memory' | rg -q '^version: 1$'
+"${METABRAIN[@]}" put --store "$STORE" --format text /notes/stdin-patch 'stdin old memory' | rg -q '^version: 1$'
 STDIN_PATCH_FILE="$TMP_DIR/stdin-patch.diff"
 cat >"$STDIN_PATCH_FILE" <<'PATCH'
 @@ -1 +1 @@
@@ -126,7 +154,8 @@ PATCH
 "${METABRAIN[@]}" get --store "$STORE" --path /notes/today | rg -q 'alpha beta searchable memory'
 "${METABRAIN[@]}" search --store "$STORE" 'alpha beta' --tag search --meta status=active | rg -q '/notes/today'
 "${METABRAIN[@]}" search --store "$STORE" 'alpha beta' --tag missing | rg -q '^No results\.$'
-"${METABRAIN[@]}" put --store "$STORE" /notes/today 'alpha beta updated memory' --keep-last 2 | rg -q '^version: 2$'
+PUT_TODAY_UPDATE_JSON="$("${METABRAIN[@]}" put --store "$STORE" /notes/today 'alpha beta updated memory' --keep-last 2)"
+assert_put_json "$PUT_TODAY_UPDATE_JSON" /notes/today updated 2
 "${METABRAIN[@]}" dump --store "$STORE" /notes/today --versions >"$TMP_DIR/dump-today-versions.jsonl"
 rg -F -q '"version":1' "$TMP_DIR/dump-today-versions.jsonl"
 rg -F -q '"version":2' "$TMP_DIR/dump-today-versions.jsonl"
@@ -148,7 +177,8 @@ rg -F -q 'alpha beta updated memory' "$DUMP_FILE"
 
 BODY_FILE="$TMP_DIR/body.txt"
 printf 'file body with gamma delta searchable terms\n' >"$BODY_FILE"
-"${METABRAIN[@]}" put --store "$STORE" /notes/file --body-file "$BODY_FILE" --keep-all | rg -q '^version: 1$'
+PUT_FILE_JSONL="$("${METABRAIN[@]}" put --store "$STORE" --format jsonl /notes/file --body-file "$BODY_FILE" --keep-all)"
+assert_put_json "$PUT_FILE_JSONL" /notes/file created 1
 "${METABRAIN[@]}" get --store "$STORE" --path /notes/file | rg -q 'file body with gamma delta'
 "${METABRAIN[@]}" search --store "$STORE" gamma --path-prefix /notes --limit 1 | rg -q '^/notes/file'
 "${METABRAIN[@]}" versions --store "$STORE" --path /missing | rg -q '^No versions\.$'
@@ -158,10 +188,10 @@ mkdir -p "$TMP_DIR/home-root" "$TMP_DIR/home-nested"
 env METABRAIN_HOME="$TMP_DIR/home-root" "${METABRAIN[@]}" init --store '~' --format text | rg -q "Initialized metaBrain store at $TMP_DIR/home-root"
 env METABRAIN_HOME="$TMP_DIR/home-nested" "${METABRAIN[@]}" init --store '~/.metabrain/store.leveldb' --format text | rg -q "Initialized metaBrain store at $TMP_DIR/home-nested/.metabrain/store.leveldb"
 
-"${METABRAIN[@]}" put --store "$STORE" /refs/target 'target needle reference' --title Target | rg -q '^version: 1$'
+"${METABRAIN[@]}" put --store "$STORE" --format text /refs/target 'target needle reference' --title Target | rg -q '^version: 1$'
 TARGET_ID="$("${METABRAIN[@]}" get --store "$STORE" --path /refs/target | awk '/^id: / { print $2 }')"
 "${METABRAIN[@]}" get --store "$STORE" --id "$TARGET_ID" | rg -q 'target needle reference'
-"${METABRAIN[@]}" put --store "$STORE" /refs/source 'source needle reference' --ref-id "$TARGET_ID" --ref-path /refs/target --ref-url https://example.com/ref | rg -q '^version: 1$'
+"${METABRAIN[@]}" put --store "$STORE" --format text /refs/source 'source needle reference' --ref-id "$TARGET_ID" --ref-path /refs/target --ref-url https://example.com/ref | rg -q '^version: 1$'
 "${METABRAIN[@]}" get --store "$STORE" --path /refs/source | rg -q "references: $TARGET_ID, /refs/target, https://example.com/ref"
 "${METABRAIN[@]}" search --store "$STORE" source --include-linked-documents | rg -q '^linked: [0-9a-f-]+$'
 "${METABRAIN[@]}" search --store "$STORE" target --include-backlinks | rg -q '^backlinks: [0-9a-f-]+$'
@@ -171,7 +201,7 @@ for _ in {1..650}; do
     printf 'context '
 done >"$LONG_BODY"
 printf 'needle ' >>"$LONG_BODY"
-"${METABRAIN[@]}" put --store "$STORE" /notes/long --body-file "$LONG_BODY" | rg -q '^version: 1$'
+"${METABRAIN[@]}" put --store "$STORE" --format text /notes/long --body-file "$LONG_BODY" | rg -q '^version: 1$'
 "${METABRAIN[@]}" search --store "$STORE" needle --path-prefix /notes/long >"$TMP_DIR/long-search.out"
 rg -q '^context: 0$' "$TMP_DIR/long-search.out"
 rg -q '\.\.\.$' "$TMP_DIR/long-search.out"
