@@ -500,6 +500,10 @@ public final class MetaBrainBrowserModel: ObservableObject {
         }
     }
 
+    public func reportError(_ message: String) {
+        state.errorMessage = message
+    }
+
     public func search(_ text: String, limit: Int = 50) async {
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedText.isEmpty else {
