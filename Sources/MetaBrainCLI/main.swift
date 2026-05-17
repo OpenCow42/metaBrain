@@ -4,10 +4,33 @@ import MetaBrainCore
 
 @main
 struct MetaBrainCommand: AsyncParsableCommand {
+    private static let agentDiscoveryGuide = """
+        metaBrain is a local document memory for agents and tools. Use it to keep
+        durable notes, source snippets, task context, metadata, tags, and links in a
+        searchable store instead of scattering scratch files across a workspace.
+
+        Agent discovery:
+          metabrain
+          metabrain help
+          metabrain --help
+          metabrain help search
+
+        Common workflow:
+          metabrain init --store .metabrain/store.leveldb
+          metabrain put /notes/today "Important context" --tag planning --meta source=agent
+          metabrain search "Important context" --tag planning
+          metabrain get --path /notes/today
+
+        The default store is .metabrain/store.leveldb. Pass --store to any command
+        when a workspace uses a different location.
+        """
+
     static let configuration = CommandConfiguration(
         commandName: "metabrain",
         abstract: "Inspect and update a metaBrain document store.",
+        discussion: agentDiscoveryGuide,
         subcommands: [
+            Help.self,
             Initialize.self,
             Put.self,
             Get.self,
@@ -16,6 +39,10 @@ struct MetaBrainCommand: AsyncParsableCommand {
             Prune.self
         ]
     )
+
+    func run() async throws {
+        print(Self.helpMessage())
+    }
 }
 
 struct StoreOptions: ParsableArguments {
@@ -49,6 +76,10 @@ struct ReferenceOptions: ParsableArguments {
         case (.some, .some):
             throw ValidationError("Use only one of --id or --path.")
         }
+    }
+
+    func validate() throws {
+        _ = try reference()
     }
 }
 
@@ -101,6 +132,33 @@ struct RetentionOptions: ParsableArguments {
 }
 
 extension MetaBrainCommand {
+    struct Help: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "help",
+            abstract: "Show metaBrain CLI help."
+        )
+
+        @Argument(help: "Optional command to inspect: init, put, get, search, versions, or prune.")
+        var command: String?
+
+        func validate() throws {
+            guard let command else {
+                return
+            }
+
+            switch command {
+            case "init", "put", "get", "search", "versions", "prune":
+                return
+            default:
+                throw ValidationError("Unknown help topic '\(command)'. Use one of: init, put, get, search, versions, prune.")
+            }
+        }
+
+        func run() async throws {
+            print(commandHelpMessage(for: command))
+        }
+    }
+
     struct Initialize: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "init",
@@ -150,6 +208,17 @@ extension MetaBrainCommand {
 
         @Option(name: .customLong("ref-url"), help: "Reference an external URL. Repeat for multiple references.")
         var referenceURLs: [String] = []
+
+        func validate() throws {
+            try validateBodyInputs(argument: body, filePath: bodyFile)
+            _ = try retention.optionalPolicy()
+            _ = try parseMetadata(metadataPairs)
+            _ = try parseReferences(
+                ids: referenceIDs,
+                paths: referencePaths,
+                urls: referenceURLs
+            )
+        }
 
         func run() async throws {
             let documentBody = try readBody(argument: body, filePath: bodyFile)
@@ -221,6 +290,14 @@ extension MetaBrainCommand {
         @Flag(help: "Include backlink hints.")
         var includeBacklinks = false
 
+        func validate() throws {
+            if limit <= 0 {
+                throw ValidationError("--limit must be greater than zero.")
+            }
+            _ = try pathPrefix.map(DocumentPath.init)
+            _ = try parseMetadata(metadataPairs)
+        }
+
         func run() async throws {
             let results = try await storeOptions.openStore().search(SearchQuery(
                 text: query,
@@ -291,6 +368,11 @@ extension MetaBrainCommand {
         @OptionGroup var referenceOptions: ReferenceOptions
         @OptionGroup var retention: RetentionOptions
 
+        func validate() throws {
+            try referenceOptions.validate()
+            _ = try retention.requiredPolicy()
+        }
+
         func run() async throws {
             let result = try await storeOptions.openStore().prune(PruneRequest(
                 reference: try referenceOptions.reference(),
@@ -304,11 +386,22 @@ extension MetaBrainCommand {
 }
 
 private func readBody(argument: String?, filePath: String?) throws -> String {
+    try validateBodyInputs(argument: argument, filePath: filePath)
+
     switch (argument, filePath) {
     case (.some(let body), nil):
         return body
     case (nil, .some(let filePath)):
         return try String(contentsOf: URL.expandingShellPath(filePath, isDirectory: false), encoding: .utf8)
+    case (nil, nil), (.some, .some):
+        preconditionFailure("Body input validation should reject missing or duplicate body sources.")
+    }
+}
+
+private func validateBodyInputs(argument: String?, filePath: String?) throws {
+    switch (argument, filePath) {
+    case (.some, nil), (nil, .some):
+        return
     case (nil, nil):
         throw ValidationError("Provide a document body argument or --body-file.")
     case (.some, .some):
@@ -391,6 +484,27 @@ private func formatReference(_ reference: DocumentReference) -> String {
         return path.rawValue
     case .externalURL(let url):
         return url.absoluteString
+    }
+}
+
+private func commandHelpMessage(for command: String?) -> String {
+    switch command {
+    case nil:
+        return MetaBrainCommand.helpMessage()
+    case "init":
+        return MetaBrainCommand.Initialize.helpMessage()
+    case "put":
+        return MetaBrainCommand.Put.helpMessage()
+    case "get":
+        return MetaBrainCommand.Get.helpMessage()
+    case "search":
+        return MetaBrainCommand.Search.helpMessage()
+    case "versions":
+        return MetaBrainCommand.Versions.helpMessage()
+    case "prune":
+        return MetaBrainCommand.Prune.helpMessage()
+    case .some(let unknown):
+        preconditionFailure("Unknown help topic '\(unknown)' should be rejected during validation.")
     }
 }
 

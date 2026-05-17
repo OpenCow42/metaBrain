@@ -15,6 +15,29 @@ fi
 
 cd "$ROOT_DIR"
 
+"${METABRAIN[@]}" | rg -q 'Agent discovery:'
+"${METABRAIN[@]}" --help | rg -q 'Common workflow:'
+"${METABRAIN[@]}" help | rg -q 'metabrain help search'
+"${METABRAIN[@]}" help search | rg -q 'Search current document content'
+
+if "${METABRAIN[@]}" help missing 2>"$TMP_DIR/help-missing.err"; then
+    echo "Expected unknown help topic to fail" >&2
+    exit 1
+fi
+rg -F -q 'Usage: metabrain help [<command>]' "$TMP_DIR/help-missing.err"
+
+if "${METABRAIN[@]}" init --unknown-option 2>"$TMP_DIR/init-invalid.err"; then
+    echo "Expected invalid init option to fail" >&2
+    exit 1
+fi
+rg -F -q 'Usage: metabrain init [--store <store>]' "$TMP_DIR/init-invalid.err"
+
+if "${METABRAIN[@]}" search query --limit 0 2>"$TMP_DIR/search-invalid.err"; then
+    echo "Expected invalid search limit to fail" >&2
+    exit 1
+fi
+rg -F -q 'Usage: metabrain search [--store <store>] <query>' "$TMP_DIR/search-invalid.err"
+
 "${METABRAIN[@]}" init --store "$STORE" | rg -q 'Initialized metaBrain store'
 "${METABRAIN[@]}" put --store "$STORE" /notes/today 'alpha beta searchable memory' --title Today --tag search --meta status=active --meta kind=daily | rg -q '^version: 1$'
 "${METABRAIN[@]}" get --store "$STORE" --path /notes/today | rg -q 'alpha beta searchable memory'
@@ -65,6 +88,7 @@ if "${METABRAIN[@]}" get --store "$STORE" --id abc --path /notes/today 2>"$TMP_D
     exit 1
 fi
 rg -q 'Use only one of --id or --path' "$TMP_DIR/double-reference.err"
+rg -F -q 'Usage: metabrain get [--store <store>] [--id <id>] [--path <path>]' "$TMP_DIR/double-reference.err"
 
 if "${METABRAIN[@]}" get --store "$STORE" --path /missing 2>"$TMP_DIR/not-found.err"; then
     echo "Expected missing document to fail" >&2
@@ -77,12 +101,14 @@ if "${METABRAIN[@]}" put --store "$STORE" /notes/bad body --meta invalid 2>"$TMP
     exit 1
 fi
 rg -q 'Metadata must use key=value syntax' "$TMP_DIR/invalid-meta.err"
+rg -F -q 'Usage: metabrain put [<options>] <path> [<body>]' "$TMP_DIR/invalid-meta.err"
 
 if "${METABRAIN[@]}" put --store "$STORE" /notes/no-body 2>"$TMP_DIR/missing-body.err"; then
     echo "Expected missing body to fail" >&2
     exit 1
 fi
 rg -q 'Provide a document body argument or --body-file' "$TMP_DIR/missing-body.err"
+rg -F -q 'Usage: metabrain put [<options>] <path> [<body>]' "$TMP_DIR/missing-body.err"
 
 if "${METABRAIN[@]}" put --store "$STORE" /notes/double-body body --body-file "$BODY_FILE" 2>"$TMP_DIR/double-body.err"; then
     echo "Expected duplicate body inputs to fail" >&2
@@ -113,15 +139,25 @@ if "${METABRAIN[@]}" put --store "$STORE" /notes/bad-ref body --ref-url relative
     exit 1
 fi
 rg -q 'Reference URLs must be absolute URLs' "$TMP_DIR/bad-ref-url.err"
+rg -F -q 'Usage: metabrain put [<options>] <path> [<body>]' "$TMP_DIR/bad-ref-url.err"
+
+if "${METABRAIN[@]}" versions --store "$STORE" 2>"$TMP_DIR/missing-version-reference.err"; then
+    echo "Expected missing version reference options to fail" >&2
+    exit 1
+fi
+rg -q 'Provide either --id or --path' "$TMP_DIR/missing-version-reference.err"
+rg -F -q 'Usage: metabrain versions [--store <store>] [--id <id>] [--path <path>]' "$TMP_DIR/missing-version-reference.err"
 
 if "${METABRAIN[@]}" prune --store "$STORE" --path /notes/today 2>"$TMP_DIR/missing-retention.err"; then
     echo "Expected missing prune retention policy to fail" >&2
     exit 1
 fi
 rg -q 'Provide one of --keep-all, --keep-last, or --keep-within' "$TMP_DIR/missing-retention.err"
+rg -F -q 'Usage: metabrain prune [--store <store>] [--id <id>] [--path <path>] [--keep-all] [--keep-last <keep-last>] [--keep-within <keep-within>]' "$TMP_DIR/missing-retention.err"
 
 if "${METABRAIN[@]}" get --store "$STORE" 2>"$TMP_DIR/missing-reference.err"; then
     echo "Expected missing reference options to fail" >&2
     exit 1
 fi
 rg -q 'Provide either --id or --path' "$TMP_DIR/missing-reference.err"
+rg -F -q 'Usage: metabrain get [--store <store>] [--id <id>] [--path <path>]' "$TMP_DIR/missing-reference.err"
