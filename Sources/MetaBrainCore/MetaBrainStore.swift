@@ -48,6 +48,7 @@ public enum MetaBrainStoreError: Error, Equatable, Sendable, CustomStringConvert
     case openFailed(path: String, message: String)
     case operationFailed(message: String)
     case pathAlreadyExists(DocumentPath, existingID: DocumentID)
+    case currentVersionCannotBeRemoved(DocumentID, sequence: UInt64)
     case unsupportedRecordSchemaVersion(UInt8)
 
     public var description: String {
@@ -58,6 +59,8 @@ public enum MetaBrainStoreError: Error, Equatable, Sendable, CustomStringConvert
             "LevelDB operation failed: \(message)"
         case .pathAlreadyExists(let path, let existingID):
             "Document path \(path.rawValue) already points to document \(existingID.rawValue)."
+        case .currentVersionCannotBeRemoved(let id, let sequence):
+            "Cannot remove current version \(sequence) of document \(id.rawValue)."
         case .unsupportedRecordSchemaVersion(let version):
             "Unsupported metaBrain record schema version: \(version)"
         }
@@ -342,6 +345,40 @@ public final class MetaBrainStore: Sendable {
             }
 
             return try await self.pruneVersions(id: id, policy: request.policy)
+        }
+    }
+
+    @discardableResult
+    public func deleteDocument(_ reference: DocumentReference) async throws -> Bool {
+        try await writes.run {
+            guard let id = try await self.documentID(for: reference),
+                  let record = try await self.documentRecord(id: id) else {
+                return false
+            }
+
+            try await self.deleteDocumentRecord(record)
+            return true
+        }
+    }
+
+    @discardableResult
+    public func removeVersion(documentID: DocumentID, sequence: UInt64) async throws -> Bool {
+        try await writes.run {
+            guard let record = try await self.documentRecord(id: documentID) else {
+                return false
+            }
+
+            guard record.document.currentVersion != sequence else {
+                throw MetaBrainStoreError.currentVersionCannotBeRemoved(documentID, sequence: sequence)
+            }
+
+            let versionKey = MetaBrainKeyspace.version(id: documentID, sequence: sequence)
+            guard try await self.rawValue(forKey: versionKey) != nil else {
+                return false
+            }
+
+            try await self.deleteRawValue(forKey: versionKey)
+            return true
         }
     }
 
@@ -709,6 +746,44 @@ public final class MetaBrainStore: Sendable {
         }
     }
 
+    private func deleteDocumentRecord(_ record: MetaBrainDocumentRecord) async throws {
+        let document = record.document
+        let staleChunkKeys = try await currentChunkKeys(for: document.id)
+        let staleIndexKeys = try await staleIndexKeys(
+            for: document,
+            staleChunkKeys: staleChunkKeys
+        )
+        let staleReferenceKeys = try await staleReferenceKeys(sourceID: document.id)
+        let staleBacklinkKeys = try await staleBacklinkKeys(targetID: document.id)
+        let versionKeys = try await scanKeys(withPrefix: MetaBrainKeyspace.versionPrefix(id: document.id))
+        let treeUpdate = try await incrementalTreeUpdate(removing: document)
+
+        try await Self.mapLevelDBErrors(path: url.path) {
+            let records = try await currentRecords()
+            try await records.write { batch in
+                for key in staleChunkKeys
+                    + staleIndexKeys
+                    + staleReferenceKeys
+                    + staleBacklinkKeys
+                    + versionKeys {
+                    try batch.deleteValue(forKey: key)
+                }
+
+                try batch.deleteValue(forKey: MetaBrainKeyspace.document(id: document.id))
+                try batch.deleteValue(forKey: MetaBrainKeyspace.documentMetadata(id: document.id))
+                try batch.deleteValue(forKey: MetaBrainKeyspace.documentPath(document.path))
+
+                for key in treeUpdate.removedKeys {
+                    try batch.deleteValue(forKey: key)
+                }
+
+                for record in treeUpdate.records {
+                    try batch.put(record.value, forKey: record.key)
+                }
+            }
+        }
+    }
+
     private func pruneVersions(
         id: DocumentID,
         policy: VersionRetentionPolicy
@@ -870,7 +945,7 @@ public final class MetaBrainStore: Sendable {
     }
 
     private func versionRecords(for id: DocumentID) async throws -> [DocumentVersion] {
-        let prefix = "ver/\(id.rawValue)/"
+        let prefix = MetaBrainKeyspace.versionPrefix(id: id)
 
         return try await Self.mapLevelDBErrors(path: url.path) {
             let records = try await currentRecords()
@@ -967,6 +1042,30 @@ public final class MetaBrainStore: Sendable {
         return (removedKeys, records)
     }
 
+    private func incrementalTreeUpdate(
+        removing document: StoredDocument
+    ) async throws -> (removedKeys: [String], records: [(key: String, value: Data)]) {
+        var removedKeys: [String] = []
+        var records: [(key: String, value: Data)] = []
+
+        for path in Self.treeBranchPaths(for: document.path).sorted(by: { lhs, rhs in
+            lhs.rawValue.count > rhs.rawValue.count
+        }) {
+            let key = MetaBrainKeyspace.tree(parentPath: path.parent!, name: path.name)
+            guard let record = try await treeRecordAfterDelete(
+                for: path,
+                removing: document
+            ) else {
+                removedKeys.append(key)
+                continue
+            }
+
+            records.append((key: key, value: try compressedData(record)))
+        }
+
+        return (removedKeys, records)
+    }
+
     private func treeRecordAfterWrite(
         for path: DocumentPath,
         replacing document: StoredDocument,
@@ -1035,6 +1134,57 @@ public final class MetaBrainStore: Sendable {
         return false
     }
 
+    private func treeRecordAfterDelete(
+        for path: DocumentPath,
+        removing document: StoredDocument
+    ) async throws -> MetaBrainTreeRecord? {
+        let documentAtPath: StoredDocument?
+        if path == document.path {
+            documentAtPath = nil
+        } else if let id = try await documentID(forPath: path),
+                  let record = try await documentRecord(id: id) {
+            documentAtPath = record.document
+        } else {
+            documentAtPath = nil
+        }
+
+        let hasChildren = try await pathHasChildrenAfterDelete(path, removing: document)
+        guard documentAtPath != nil || hasChildren else {
+            return nil
+        }
+
+        return MetaBrainTreeRecord(
+            parentPath: path.parent!,
+            entry: DocumentTreeEntry(
+                path: path,
+                name: path.name,
+                hasChildren: hasChildren,
+                documentID: documentAtPath?.id,
+                createdAt: documentAtPath?.createdAt,
+                updatedAt: documentAtPath?.updatedAt
+            )
+        )
+    }
+
+    private func pathHasChildrenAfterDelete(
+        _ path: DocumentPath,
+        removing document: StoredDocument
+    ) async throws -> Bool {
+        let prefix = MetaBrainKeyspace.documentPathDescendantPrefix(path)
+        for key in try await scanKeys(withPrefix: prefix) {
+            let rawPath = String(key.dropFirst(MetaBrainKeyspace.prefix(.documentPath).count))
+            guard let existingPath = try? DocumentPath(rawPath) else {
+                continue
+            }
+
+            if existingPath != document.path {
+                return true
+            }
+        }
+
+        return false
+    }
+
     private func staleIndexKeys(
         for document: StoredDocument?,
         staleChunkKeys: [String]
@@ -1075,6 +1225,20 @@ public final class MetaBrainStore: Sendable {
             let rawTargetID = String(key.dropFirst(outboundPrefix.count))
             let targetID = try DocumentID(rawValue: rawTargetID)
             keys.insert(MetaBrainKeyspace.inboundReference(targetID: targetID, sourceID: sourceID))
+        }
+
+        return keys.sorted()
+    }
+
+    private func staleBacklinkKeys(targetID: DocumentID) async throws -> [String] {
+        let inboundPrefix = MetaBrainKeyspace.inboundReferencePrefix(targetID: targetID)
+        let inboundKeys = try await scanKeys(withPrefix: inboundPrefix)
+        var keys = Set(inboundKeys)
+
+        for key in inboundKeys {
+            let rawSourceID = String(key.dropFirst(inboundPrefix.count))
+            let sourceID = try DocumentID(rawValue: rawSourceID)
+            keys.insert(MetaBrainKeyspace.outboundReference(sourceID: sourceID, targetID: targetID))
         }
 
         return keys.sorted()

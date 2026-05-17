@@ -24,6 +24,10 @@ enum MetaBrainKeyspace {
         "ver/\(id.rawValue)/\(padded(sequence, width: sequenceWidth))"
     }
 
+    static func versionPrefix(id: DocumentID) -> String {
+        "ver/\(id.rawValue)/"
+    }
+
     static func currentChunk(id: DocumentID, ordinal: UInt32) -> String {
         "chunk/current/\(id.rawValue)/\(padded(UInt64(ordinal), width: ordinalWidth))"
     }

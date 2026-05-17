@@ -83,11 +83,97 @@ private func storeTestCodec<Value: Codable & Sendable>(
     #expect(MetaBrainStoreError.openFailed(path: "/tmp/store", message: "locked").description == "Could not open metaBrain store at /tmp/store: locked")
     #expect(MetaBrainStoreError.operationFailed(message: "write failed").description == "LevelDB operation failed: write failed")
     #expect(MetaBrainStoreError.pathAlreadyExists(path, existingID: id).description == "Document path /taken already points to document doc-1.")
+    #expect(MetaBrainStoreError.currentVersionCannotBeRemoved(id, sequence: 3).description == "Cannot remove current version 3 of document doc-1.")
     #expect(MetaBrainStoreError.unsupportedRecordSchemaVersion(2).description == "Unsupported metaBrain record schema version: 2")
     #expect(MetaBrainStore.storeError(from: .operationFailed("boom"), path: "/tmp/store") == .operationFailed(message: "boom"))
     await #expect(throws: MetaBrainStoreError.operationFailed(message: "boom")) {
         try await MetaBrainStore.mapLevelDBErrors(path: "/tmp/store") {
             throw LevelDBError.operationFailed("boom")
+        }
+    }
+}
+
+@Test func deleteDocumentRemovesDocumentIndexesVersionsAndTreeEntry() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let target = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/refs/delete-target"),
+            body: "target body"
+        ))
+        let source = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/delete/source"),
+            title: "Source",
+            body: "delete needle searchable",
+            tags: ["delete-tag"],
+            metadata: ["status": "delete-me"],
+            references: [.documentID(target.id)],
+            retention: .keepAll
+        ))
+        _ = try await store.putDocument(DocumentInput(
+            path: source.path,
+            title: "Source",
+            body: "delete needle searchable updated",
+            tags: ["delete-tag"],
+            metadata: ["status": "delete-me"],
+            references: [.documentID(target.id)],
+            retention: .keepAll
+        ))
+
+        #expect(try await store.deleteDocument(.path(source.path)) == true)
+
+        #expect(try await store.getDocument(.path(source.path)) == nil)
+        #expect(try await store.listVersions(of: .documentID(source.id)).isEmpty)
+        #expect(try await store.search(SearchQuery(text: "needle")).isEmpty)
+        #expect(try await store.search(SearchQuery(text: "delete", tags: ["delete-tag"])).isEmpty)
+        #expect(try await store.search(SearchQuery(text: "delete", metadata: ["status": "delete-me"])).isEmpty)
+        #expect(try await store.outboundReferences(from: source.id).isEmpty)
+        #expect(try await store.inboundReferences(to: target.id).isEmpty)
+        #expect(try await store.listDirectory(path: try DocumentPath("/delete")).isEmpty)
+        #expect(try await store.deleteDocument(.path(source.path)) == false)
+    }
+}
+
+@Test func deleteDocumentKeepsDirectoryWhenDescendantDocumentsRemain() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let parent = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/topic"),
+            body: "parent"
+        ))
+        let child = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/topic/child"),
+            body: "child"
+        ))
+
+        #expect(try await store.deleteDocument(.documentID(parent.id)) == true)
+
+        let entries = try await store.listDirectory(path: try DocumentPath("/"))
+        let topic = entries.first { $0.path.rawValue == "/topic" }
+        #expect(topic?.documentID == nil)
+        #expect(topic?.hasChildren == true)
+        #expect(try await store.getDocument(.path(child.path)) == child)
+    }
+}
+
+@Test func removeVersionDeletesNonCurrentVersionOnly() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let path = try DocumentPath("/versions/remove")
+        let created = try await store.putDocument(DocumentInput(
+            path: path,
+            body: "v1",
+            retention: .keepAll
+        ))
+        _ = try await store.putDocument(DocumentInput(path: path, body: "v2"))
+        let current = try await store.putDocument(DocumentInput(path: path, body: "v3"))
+
+        #expect(try await store.removeVersion(documentID: created.id, sequence: 2) == true)
+        #expect(try await store.listVersions(of: .documentID(created.id)).map(\.sequence) == [1, 3])
+        #expect(try await store.removeVersion(documentID: created.id, sequence: 2) == false)
+        #expect(try await store.getDocument(.path(path)) == current)
+
+        await #expect(throws: MetaBrainStoreError.currentVersionCannotBeRemoved(created.id, sequence: 3)) {
+            try await store.removeVersion(documentID: created.id, sequence: 3)
         }
     }
 }
