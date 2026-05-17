@@ -69,6 +69,21 @@ struct StoreOptions: ParsableArguments {
         )
         return try MetaBrainStore(url: url)
     }
+
+    func withOpenStore<Result: Sendable>(
+        _ operation: (MetaBrainStore) async throws -> Result
+    ) async throws -> Result {
+        let store = try openStore()
+
+        do {
+            let result = try await operation(store)
+            await store.close()
+            return result
+        } catch {
+            await store.close()
+            throw error
+        }
+    }
 }
 
 enum CLIOutputFormat: String, ExpressibleByArgument {
@@ -201,20 +216,21 @@ extension MetaBrainCommand {
         @OptionGroup var output: OutputFormatOptions
 
         func run() async throws {
-            let store = try storeOptions.openStore()
-            let result = InitializeOutput(
-                operation: "init",
-                status: "initialized",
-                storePath: store.url.path
-            )
+            try await storeOptions.withOpenStore { store in
+                let result = InitializeOutput(
+                    operation: "init",
+                    status: "initialized",
+                    storePath: store.url.path
+                )
 
-            switch output.format {
-            case .text:
-                print("Initialized metaBrain store at \(store.url.path)")
-            case .json:
-                try printJSON(result)
-            case .jsonl:
-                try printJSONLine(result)
+                switch output.format {
+                case .text:
+                    print("Initialized metaBrain store at \(store.url.path)")
+                case .json:
+                    try printJSON(result)
+                case .jsonl:
+                    try printJSONLine(result)
+                }
             }
         }
     }
@@ -282,7 +298,9 @@ extension MetaBrainCommand {
                 ),
                 retention: try retention.optionalPolicy()
             )
-            let document = try await storeOptions.openStore().putDocument(input)
+            let document = try await storeOptions.withOpenStore { store in
+                try await store.putDocument(input)
+            }
             let result = PutOutput(
                 documentID: document.id.rawValue,
                 operation: "put",
@@ -332,46 +350,47 @@ extension MetaBrainCommand {
                 unifiedDiff: try readPatch(filePath: patchFile),
                 retention: try retention.optionalPolicy()
             )
-            let store = try storeOptions.openStore()
 
-            if check {
-                try await store.checkDocumentPatch(request)
-                let result = PatchCheckOutput(
-                    check: true,
+            try await storeOptions.withOpenStore { store in
+                if check {
+                    try await store.checkDocumentPatch(request)
+                    let result = PatchCheckOutput(
+                        check: true,
+                        operation: "patch",
+                        status: "applies",
+                        success: true
+                    )
+
+                    switch output.format {
+                    case .text:
+                        print("patch applies")
+                    case .json:
+                        try printJSON(result)
+                    case .jsonl:
+                        try printJSONLine(result)
+                    }
+                    return
+                }
+
+                let document = try await store.patchDocument(request)
+                let result = PatchOutput(
+                    documentID: document.id.rawValue,
                     operation: "patch",
-                    status: "applies",
-                    success: true
+                    path: document.path.rawValue,
+                    status: "patched",
+                    version: document.currentVersion
                 )
 
                 switch output.format {
                 case .text:
-                    print("patch applies")
+                    print("id: \(document.id.rawValue)")
+                    print("path: \(document.path.rawValue)")
+                    print("version: \(document.currentVersion)")
                 case .json:
                     try printJSON(result)
                 case .jsonl:
                     try printJSONLine(result)
                 }
-                return
-            }
-
-            let document = try await store.patchDocument(request)
-            let result = PatchOutput(
-                documentID: document.id.rawValue,
-                operation: "patch",
-                path: document.path.rawValue,
-                status: "patched",
-                version: document.currentVersion
-            )
-
-            switch output.format {
-            case .text:
-                print("id: \(document.id.rawValue)")
-                print("path: \(document.path.rawValue)")
-                print("version: \(document.currentVersion)")
-            case .json:
-                try printJSON(result)
-            case .jsonl:
-                try printJSONLine(result)
             }
         }
     }
@@ -387,7 +406,11 @@ extension MetaBrainCommand {
         @OptionGroup var output: OutputFormatOptions
 
         func run() async throws {
-            guard let document = try await storeOptions.openStore().getDocument(referenceOptions.reference()) else {
+            let document = try await storeOptions.withOpenStore { store in
+                try await store.getDocument(referenceOptions.reference())
+            }
+
+            guard let document else {
                 throw ValidationError("Document not found.")
             }
 
@@ -429,11 +452,13 @@ extension MetaBrainCommand {
 
         func run() async throws {
             let root = try DocumentPath(path)
-            let entries = try await storeOptions.openStore().listDirectory(
-                path: root,
-                recursive: recursive,
-                directoriesOnly: directoriesOnly
-            )
+            let entries = try await storeOptions.withOpenStore { store in
+                try await store.listDirectory(
+                    path: root,
+                    recursive: recursive,
+                    directoriesOnly: directoriesOnly
+                )
+            }
 
             let outputEntries = entries.map(ListOutput.init)
 
@@ -482,11 +507,13 @@ extension MetaBrainCommand {
 
         func run() async throws {
             let root = try DocumentPath(path)
-            let entries = try await storeOptions.openStore().tree(TreeQuery(
-                path: root,
-                directoriesOnly: directoriesOnly,
-                maxDepth: maxDepth
-            ))
+            let entries = try await storeOptions.withOpenStore { store in
+                try await store.tree(TreeQuery(
+                    path: root,
+                    directoriesOnly: directoriesOnly,
+                    maxDepth: maxDepth
+                ))
+            }
 
             switch output.format {
             case .text:
@@ -544,7 +571,7 @@ extension MetaBrainCommand {
         }
 
         func run() async throws {
-            let results = try await storeOptions.openStore().search(SearchQuery(
+            let searchQuery = SearchQuery(
                 text: query,
                 pathPrefix: try pathPrefix.map(DocumentPath.init),
                 tags: tags,
@@ -552,7 +579,10 @@ extension MetaBrainCommand {
                 includeLinkedDocuments: includeLinkedDocuments,
                 includeBacklinks: includeBacklinks,
                 limit: limit
-            ))
+            )
+            let results = try await storeOptions.withOpenStore { store in
+                try await store.search(searchQuery)
+            }
             let outputResults = results.map(SearchOutput.init)
 
             switch output.format {
@@ -589,10 +619,13 @@ extension MetaBrainCommand {
         }
 
         func run() async throws {
-            let entries = try await storeOptions.openStore().dump(DocumentDumpQuery(
+            let query = DocumentDumpQuery(
                 path: try DocumentPath(path),
                 versionSelection: versions ? .allRetained : .current
-            ))
+            )
+            let entries = try await storeOptions.withOpenStore { store in
+                try await store.dump(query)
+            }
             let outputEntries: [DocumentDumpEntry]
             if let outputDirectory {
                 outputEntries = try DocumentDumpFileWriter().write(
@@ -625,7 +658,9 @@ extension MetaBrainCommand {
         @OptionGroup var output: ListOutputFormatOptions
 
         func run() async throws {
-            let versions = try await storeOptions.openStore().listVersions(of: referenceOptions.reference())
+            let versions = try await storeOptions.withOpenStore { store in
+                try await store.listVersions(of: referenceOptions.reference())
+            }
             let outputVersions = versions.map(VersionsOutput.init)
 
             switch output.format {
@@ -663,10 +698,13 @@ extension MetaBrainCommand {
         }
 
         func run() async throws {
-            let result = try await storeOptions.openStore().prune(PruneRequest(
+            let request = PruneRequest(
                 reference: try referenceOptions.reference(),
                 policy: try retention.requiredPolicy()
-            ))
+            )
+            let result = try await storeOptions.withOpenStore { store in
+                try await store.prune(request)
+            }
 
             let outputResult = PruneOutput(result)
             switch output.format {

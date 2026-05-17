@@ -53,6 +53,29 @@ private func storeTestCodec<Value: Codable & Sendable>(
     }
 }
 
+@Test func closeReleasesStoreLockAndPreventsFurtherUse() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let path = try DocumentPath("/notes/close")
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        try await store.putDocument(DocumentInput(path: path, body: "closed cleanly"))
+
+        await store.close()
+
+        await #expect(throws: MetaBrainStoreError.operationFailed(message: "metaBrain store is closed.")) {
+            try await store.getDocument(.path(path), trackingRead: false)
+        }
+
+        let reopenedStore = try MetaBrainStore(
+            url: fixture.storeURL,
+            options: MetaBrainStoreOptions(createIfMissing: false)
+        )
+
+        let reopenedDocument = try await reopenedStore.getDocument(.path(path), trackingRead: false)
+        await reopenedStore.close()
+        #expect(reopenedDocument?.body == "closed cleanly")
+    }
+}
+
 @Test func storeErrorsHaveActionableDescriptions() async throws {
     let path = try DocumentPath("/taken")
     let id = try DocumentID(rawValue: "doc-1")

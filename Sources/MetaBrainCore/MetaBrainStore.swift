@@ -68,7 +68,7 @@ public final class MetaBrainStore: Sendable {
     public let url: URL
     public let options: MetaBrainStoreOptions
 
-    private let records: LevelDBStore<StringCodec, DataCodec>
+    private let records: MetaBrainStoreDatabase
     private let writes = MetaBrainWriteCoordinator()
     private static let chunkTargetCharacterCount = 4_000
     private static let chunkOverlapCharacterCount = 400
@@ -84,15 +84,24 @@ public final class MetaBrainStore: Sendable {
         self.options = options
 
         do {
-            records = try LevelDBStore(
+            let openedRecords = try LevelDBStore(
                 path: url.path,
                 keyCodec: StringCodec(),
                 valueCodec: DataCodec(),
                 options: options.levelDBOptions
             )
+            records = MetaBrainStoreDatabase(openedRecords)
         } catch let error as LevelDBError {
             throw Self.storeError(from: error, path: url.path)
         }
+    }
+
+    public func close() async {
+        await records.close()
+    }
+
+    private func currentRecords() async throws -> LevelDBStore<StringCodec, DataCodec> {
+        try await records.store()
     }
 
     @discardableResult
@@ -364,12 +373,14 @@ public final class MetaBrainStore: Sendable {
 
     func writeRawValue(_ value: Data, forKey key: String) async throws {
         try await Self.mapLevelDBErrors(path: url.path) {
+            let records = try await currentRecords()
             try await records.put(value, forKey: key)
         }
     }
 
     func deleteRawValue(forKey key: String) async throws {
         try await Self.mapLevelDBErrors(path: url.path) {
+            let records = try await currentRecords()
             try await records.write { batch in
                 try batch.deleteValue(forKey: key)
             }
@@ -378,7 +389,8 @@ public final class MetaBrainStore: Sendable {
 
     func rawValue(forKey key: String) async throws -> Data? {
         try await Self.mapLevelDBErrors(path: url.path) {
-            try await records.value(forKey: key)
+            let records = try await currentRecords()
+            return try await records.value(forKey: key)
         }
     }
 
@@ -653,6 +665,7 @@ public final class MetaBrainStore: Sendable {
         let indexKeys = try await currentIndexKeys(for: document, chunks: chunks)
 
         try await Self.mapLevelDBErrors(path: url.path) {
+            let records = try await currentRecords()
             try await records.write { batch in
                 for key in staleChunkKeys + staleIndexKeys + staleReferenceKeys {
                     try batch.deleteValue(forKey: key)
@@ -715,6 +728,7 @@ public final class MetaBrainStore: Sendable {
         }
 
         try await Self.mapLevelDBErrors(path: url.path) {
+            let records = try await currentRecords()
             try await records.write { batch in
                 for version in prunedVersions {
                     try batch.deleteValue(forKey: MetaBrainKeyspace.version(
@@ -859,7 +873,8 @@ public final class MetaBrainStore: Sendable {
         let prefix = "ver/\(id.rawValue)/"
 
         return try await Self.mapLevelDBErrors(path: url.path) {
-            try await records
+            let records = try await currentRecords()
+            return try await records
                 .scanEncodedPrefix(Data(prefix.utf8), readOptions: Self.bulkReadOptions)
                 .map { try decodeCompressedData($0.value, as: DocumentVersion.self) }
         }
@@ -867,7 +882,8 @@ public final class MetaBrainStore: Sendable {
 
     private func currentChunkRecords(for id: DocumentID) async throws -> [MetaBrainChunkRecord] {
         return try await Self.mapLevelDBErrors(path: url.path) {
-            try await records
+            let records = try await currentRecords()
+            return try await records
                 .scanEncodedPrefix(
                     Data(MetaBrainKeyspace.currentChunkPrefix(id: id).utf8),
                     readOptions: Self.bulkReadOptions
@@ -884,7 +900,8 @@ public final class MetaBrainStore: Sendable {
         let prefix = MetaBrainKeyspace.treePrefix(parentPath: path)
 
         return try await Self.mapLevelDBErrors(path: url.path) {
-            try await records
+            let records = try await currentRecords()
+            return try await records
                 .scanEncodedPrefix(Data(prefix.utf8), readOptions: Self.bulkReadOptions)
                 .map { try decodeCompressedData($0.value, as: MetaBrainTreeRecord.self).entry }
                 .sorted { $0.path.rawValue < $1.path.rawValue }
@@ -1228,7 +1245,8 @@ public final class MetaBrainStore: Sendable {
 
     private func scanKeys(withPrefix prefix: String) async throws -> [String] {
         return try await Self.mapLevelDBErrors(path: url.path) {
-            try await records
+            let records = try await currentRecords()
+            return try await records
                 .scanEncodedPrefixKeys(Data(prefix.utf8), readOptions: Self.bulkReadOptions)
         }
     }
@@ -1518,6 +1536,26 @@ public final class MetaBrainStore: Sendable {
         case .operationFailed(let message):
             .operationFailed(message: message)
         }
+    }
+}
+
+private actor MetaBrainStoreDatabase {
+    private var records: LevelDBStore<StringCodec, DataCodec>?
+
+    init(_ records: LevelDBStore<StringCodec, DataCodec>) {
+        self.records = records
+    }
+
+    func store() throws -> LevelDBStore<StringCodec, DataCodec> {
+        guard let records else {
+            throw MetaBrainStoreError.operationFailed(message: "metaBrain store is closed.")
+        }
+
+        return records
+    }
+
+    func close() {
+        records = nil
     }
 }
 
