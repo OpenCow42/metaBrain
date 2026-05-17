@@ -132,6 +132,28 @@ public final class MetaBrainStore: Sendable {
         return try await versionRecords(for: id)
     }
 
+    public func dump(_ query: DocumentDumpQuery) async throws -> [DocumentDumpEntry] {
+        let documents = try await dumpDocuments(under: query.path)
+
+        switch query.versionSelection {
+        case .current:
+            return documents.map(Self.dumpEntry(for:))
+        case .allRetained:
+            var entries: [DocumentDumpEntry] = []
+            for document in documents {
+                let versions = try await versionRecords(for: document.id)
+                entries += versions.map { version in
+                    Self.dumpEntry(
+                        documentID: document.id,
+                        currentVersion: document.currentVersion,
+                        version: version
+                    )
+                }
+            }
+            return entries
+        }
+    }
+
     public func checkDocumentPatch(_ request: DocumentPatchRequest) async throws {
         _ = try await patchedDocumentInput(for: request)
     }
@@ -333,6 +355,61 @@ public final class MetaBrainStore: Sendable {
                 try DocumentID(rawValue: String(key.dropFirst(prefix.count)))
             }
             .sorted()
+    }
+
+    private func dumpDocuments(under path: DocumentPath) async throws -> [StoredDocument] {
+        var documentIDs: Set<DocumentID> = []
+        var documents: [StoredDocument] = []
+
+        if let document = try await getDocument(.path(path)) {
+            documents.append(document)
+            documentIDs.insert(document.id)
+        }
+
+        for entry in try await listDirectory(path: path, recursive: true) {
+            if let id = entry.documentID,
+               !documentIDs.contains(id),
+               let record = try await documentRecord(id: id) {
+                documents.append(record.document)
+                documentIDs.insert(id)
+            }
+        }
+
+        return documents.sorted { $0.path < $1.path }
+    }
+
+    private static func dumpEntry(for document: StoredDocument) -> DocumentDumpEntry {
+        DocumentDumpEntry(
+            documentID: document.id,
+            path: document.path,
+            title: document.title,
+            body: document.body,
+            version: document.currentVersion,
+            versionCreatedAt: document.updatedAt,
+            isCurrent: true,
+            tags: document.tags,
+            metadata: document.metadata,
+            references: document.references.map(DocumentDumpReference.init)
+        )
+    }
+
+    private static func dumpEntry(
+        documentID: DocumentID,
+        currentVersion: UInt64,
+        version: DocumentVersion
+    ) -> DocumentDumpEntry {
+        DocumentDumpEntry(
+            documentID: documentID,
+            path: version.snapshot.path,
+            title: version.snapshot.title,
+            body: version.snapshot.body,
+            version: version.sequence,
+            versionCreatedAt: version.createdAt,
+            isCurrent: version.sequence == currentVersion,
+            tags: version.snapshot.tags,
+            metadata: version.snapshot.metadata,
+            references: version.snapshot.references.map(DocumentDumpReference.init)
+        )
     }
 
     private func writeNewDocument(_ input: DocumentInput) async throws -> StoredDocument {

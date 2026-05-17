@@ -16,6 +16,7 @@ struct MetaBrainCommand: AsyncParsableCommand {
           metabrain help list
           metabrain help tree
           metabrain help search
+          metabrain help dump
 
         Common workflow:
           metabrain init --store .metabrain/store.leveldb
@@ -26,6 +27,7 @@ struct MetaBrainCommand: AsyncParsableCommand {
           metabrain tree --max-depth 2
           metabrain search "Important context" --tag planning
           metabrain get /notes/today
+          metabrain dump /notes --output-dir ./metabrain-dump
 
         The default store is .metabrain/store.leveldb. Pass --store to any command
         when a workspace uses a different location.
@@ -44,6 +46,7 @@ struct MetaBrainCommand: AsyncParsableCommand {
             List.self,
             Tree.self,
             Search.self,
+            Dump.self,
             Versions.self,
             Prune.self
         ]
@@ -150,7 +153,7 @@ extension MetaBrainCommand {
             abstract: "Show metaBrain CLI help."
         )
 
-        @Argument(help: "Optional command to inspect: init, put, patch, get, list, tree, search, versions, or prune.")
+        @Argument(help: "Optional command to inspect: init, put, patch, get, list, tree, search, dump, versions, or prune.")
         var command: String?
 
         func validate() throws {
@@ -159,10 +162,10 @@ extension MetaBrainCommand {
             }
 
             switch command {
-            case "init", "put", "patch", "get", "list", "tree", "search", "versions", "prune":
+            case "init", "put", "patch", "get", "list", "tree", "search", "dump", "versions", "prune":
                 return
             default:
-                throw ValidationError("Unknown help topic '\(command)'. Use one of: init, put, patch, get, list, tree, search, versions, prune.")
+                throw ValidationError("Unknown help topic '\(command)'. Use one of: init, put, patch, get, list, tree, search, dump, versions, prune.")
             }
         }
 
@@ -473,6 +476,46 @@ extension MetaBrainCommand {
         }
     }
 
+    struct Dump: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "dump",
+            abstract: "Dump stored documents as JSONL and optional UTF-8 files."
+        )
+
+        @OptionGroup var storeOptions: StoreOptions
+
+        @Argument(help: "Document or folder path to dump.")
+        var path: String
+
+        @Flag(help: "Dump every retained version for each selected document.")
+        var versions = false
+
+        @Option(name: .customLong("output-dir"), help: "Directory where UTF-8 body copies should be written.")
+        var outputDirectory: String?
+
+        func validate() throws {
+            _ = try DocumentPath(path)
+        }
+
+        func run() async throws {
+            let entries = try await storeOptions.openStore().dump(DocumentDumpQuery(
+                path: try DocumentPath(path),
+                versionSelection: versions ? .allRetained : .current
+            ))
+            let outputEntries: [DocumentDumpEntry]
+            if let outputDirectory {
+                outputEntries = try DocumentDumpFileWriter().write(
+                    entries,
+                    to: URL.expandingShellPath(outputDirectory, isDirectory: true)
+                )
+            } else {
+                outputEntries = entries
+            }
+
+            try printJSONLines(outputEntries)
+        }
+    }
+
     struct Versions: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "versions",
@@ -570,6 +613,17 @@ private func parseMetadata(_ pairs: [String]) throws -> [String: String] {
         }
 
         metadata[String(parts[0])] = String(parts[1])
+    }
+}
+
+private func printJSONLines(_ entries: [DocumentDumpEntry]) throws {
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .iso8601
+    encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+
+    for entry in entries {
+        let data = try encoder.encode(entry)
+        print(String(decoding: data, as: UTF8.self))
     }
 }
 
@@ -721,10 +775,11 @@ private func commandHelpMessage(for command: String?) -> String {
             "patch": MetaBrainCommand.Patch.helpMessage(),
             "get": MetaBrainCommand.Get.helpMessage(),
             "list": MetaBrainCommand.List.helpMessage(),
-        "tree": MetaBrainCommand.Tree.helpMessage(),
-        "search": MetaBrainCommand.Search.helpMessage(),
-        "versions": MetaBrainCommand.Versions.helpMessage(),
-        "prune": MetaBrainCommand.Prune.helpMessage()
+            "tree": MetaBrainCommand.Tree.helpMessage(),
+            "search": MetaBrainCommand.Search.helpMessage(),
+            "dump": MetaBrainCommand.Dump.helpMessage(),
+            "versions": MetaBrainCommand.Versions.helpMessage(),
+            "prune": MetaBrainCommand.Prune.helpMessage()
     ][command]!
 }
 

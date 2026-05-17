@@ -1558,3 +1558,197 @@ private func storeTestCodec<Value: Codable & Sendable>(
         #expect(try await store.tree().isEmpty)
     }
 }
+
+@Test func dumpCurrentDocumentsIncludesExactPathAndDescendantDocumentsOnly() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let target = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/refs/target"),
+            body: "reference target"
+        ))
+        let notes = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/notes"),
+            title: "Notes",
+            body: "root note é",
+            tags: ["dump"],
+            metadata: ["kind": "folder"],
+            references: [
+                .documentID(target.id),
+                .path(target.path),
+                .externalURL(try #require(URL(string: "https://example.com/dump")))
+            ]
+        ))
+        let archived = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/notes/archive/final"),
+            body: "archived"
+        ))
+        let today = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/notes/today.md"),
+            body: "today"
+        ))
+        _ = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/other"),
+            body: "outside"
+        ))
+
+        let entries = try await store.dump(DocumentDumpQuery(path: try DocumentPath("/notes")))
+
+        #expect(entries.map(\.documentID) == [notes.id, archived.id, today.id])
+        #expect(entries.map(\.path.rawValue) == ["/notes", "/notes/archive/final", "/notes/today.md"])
+        #expect(entries.map(\.version) == [1, 1, 1])
+        #expect(entries.allSatisfy { $0.isCurrent })
+        #expect(entries.first?.title == "Notes")
+        #expect(entries.first?.body == "root note é")
+        #expect(entries.first?.bodyCharacterCount == 11)
+        #expect(entries.first?.bodyUTF8ByteCount == 12)
+        #expect(entries.first?.tags == ["dump"])
+        #expect(entries.first?.metadata == ["kind": "folder"])
+        #expect(entries.first?.references == [
+            DocumentDumpReference(kind: .documentID, value: target.id.rawValue),
+            DocumentDumpReference(kind: .path, value: target.path.rawValue),
+            DocumentDumpReference(kind: .externalURL, value: "https://example.com/dump")
+        ])
+        #expect(entries.first?.fileSystemPath == nil)
+    }
+}
+
+@Test func dumpCanIncludeRootDocumentAndReportsMissingPathAsEmpty() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let root = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/"),
+            body: "root body"
+        ))
+        let child = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/child"),
+            body: "child body"
+        ))
+
+        let rootEntries = try await store.dump(DocumentDumpQuery(path: try DocumentPath("/")))
+        let missingEntries = try await store.dump(DocumentDumpQuery(path: try DocumentPath("/missing")))
+
+        #expect(rootEntries.map(\.documentID) == [root.id, child.id])
+        #expect(rootEntries.map(\.path.rawValue) == ["/", "/child"])
+        #expect(missingEntries.isEmpty)
+    }
+}
+
+@Test func dumpAllRetainedVersionsPreservesVersionSnapshotsAndCurrentFlag() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let target = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/refs/version-target"),
+            body: "target"
+        ))
+        let created = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/history/doc"),
+            title: "Draft",
+            body: "v1",
+            tags: ["old"],
+            metadata: ["stage": "draft"],
+            references: [.documentID(target.id)],
+            retention: .keepAll
+        ))
+        let updated = try await store.updateDocument(
+            .documentID(created.id),
+            with: DocumentInput(
+                path: try DocumentPath("/history/archive/doc"),
+                title: "Final",
+                body: "v2",
+                tags: ["new"],
+                metadata: ["stage": "final"],
+                references: [.path(target.path)]
+            )
+        )
+
+        let entries = try await store.dump(DocumentDumpQuery(
+            path: try DocumentPath("/history/archive"),
+            versionSelection: .allRetained
+        ))
+
+        #expect(entries.map(\.documentID) == [created.id, created.id])
+        #expect(entries.map(\.path.rawValue) == ["/history/doc", "/history/archive/doc"])
+        #expect(entries.map(\.title) == ["Draft", "Final"])
+        #expect(entries.map(\.body) == ["v1", "v2"])
+        #expect(entries.map(\.version) == [1, 2])
+        #expect(entries.map(\.isCurrent) == [false, true])
+        #expect(entries.map(\.tags) == [["old"], ["new"]])
+        #expect(entries.map(\.metadata) == [["stage": "draft"], ["stage": "final"]])
+        #expect(entries.map(\.references) == [
+            [DocumentDumpReference(kind: .documentID, value: target.id.rawValue)],
+            [DocumentDumpReference(kind: .path, value: target.path.rawValue)]
+        ])
+        #expect(entries.last?.versionCreatedAt == updated.updatedAt)
+    }
+}
+
+@Test func dumpFileWriterMirrorsPathsAndWritesVersionedUTF8Copies() throws {
+    let id = try DocumentID(rawValue: "doc-1")
+    let outputDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("MetaBrainDumpWriterTests-\(UUID().uuidString)", isDirectory: true)
+    defer {
+        try? FileManager.default.removeItem(at: outputDirectory)
+    }
+    let utc = TimeZone(secondsFromGMT: 0)!
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = utc
+    let date = try #require(calendar.date(from: DateComponents(
+        timeZone: utc,
+        year: 2026,
+        month: 5,
+        day: 17,
+        hour: 11,
+        minute: 2,
+        second: 3
+    )))
+    let entries = [
+        DocumentDumpEntry(
+            documentID: id,
+            path: try DocumentPath("/notes/readme.md"),
+            title: "Read Me",
+            body: "hello é",
+            version: 7,
+            versionCreatedAt: date,
+            isCurrent: true,
+            tags: [],
+            metadata: [:],
+            references: []
+        ),
+        DocumentDumpEntry(
+            documentID: id,
+            path: try DocumentPath("/"),
+            title: nil,
+            body: "root",
+            version: 2,
+            versionCreatedAt: Date(timeIntervalSince1970: 0),
+            isCurrent: false,
+            tags: [],
+            metadata: [:],
+            references: []
+        ),
+        DocumentDumpEntry(
+            documentID: id,
+            path: try DocumentPath("/bad:name"),
+            title: nil,
+            body: "colon",
+            version: 3,
+            versionCreatedAt: Date(timeIntervalSince1970: 0),
+            isCurrent: false,
+            tags: [],
+            metadata: [:],
+            references: []
+        )
+    ]
+
+    let copied = try DocumentDumpFileWriter().write(entries, to: outputDirectory)
+    let readmeURL = outputDirectory
+        .appendingPathComponent("notes", isDirectory: true)
+        .appendingPathComponent("readme__doc-1__v7__20260517T110203Z.md")
+    let rootURL = outputDirectory.appendingPathComponent("root__doc-1__v2__19700101T000000Z.txt")
+    let colonURL = outputDirectory.appendingPathComponent("bad_name__doc-1__v3__19700101T000000Z.txt")
+
+    #expect(copied.map(\.fileSystemPath) == [readmeURL.path, rootURL.path, colonURL.path])
+    #expect(try String(contentsOf: readmeURL, encoding: .utf8) == "hello é")
+    #expect(try String(contentsOf: rootURL, encoding: .utf8) == "root")
+    #expect(try String(contentsOf: colonURL, encoding: .utf8) == "colon")
+}

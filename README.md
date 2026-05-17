@@ -38,6 +38,7 @@ swift run metabrain list --store .metabrain/store.leveldb /notes --recursive --d
 swift run metabrain tree --store .metabrain/store.leveldb --max-depth 2
 swift run metabrain get --store .metabrain/store.leveldb /notes/today
 swift run metabrain search --store .metabrain/store.leveldb "lexical store"
+swift run metabrain dump --store .metabrain/store.leveldb /notes --output-dir ./metabrain-dump
 swift run metabrain versions --store .metabrain/store.leveldb /notes/today
 swift run metabrain prune --store .metabrain/store.leveldb /notes/today --keep-last 3
 ```
@@ -54,6 +55,13 @@ to direct children of `/`, accepts an optional folder path, supports
 dates only for document entries. `tree` prints an ASCII tree, accepts an
 optional root path, supports `--directories-only`, and supports
 `--max-depth <n>` where `0` prints only the requested root.
+
+`dump` exports a required document or folder path as JSONL, with one line per
+document entry. It includes the exact document at the requested path when one
+exists and all descendant documents below that path. By default it emits current
+documents only; `--versions` emits every retained version for each selected
+current document. `--output-dir <dir>` additionally writes UTF-8 body copies
+using filenames suffixed with the document ID, version, and UTC version date.
 
 ## Implemented Store Behavior
 
@@ -91,9 +99,13 @@ Implemented document behavior:
   discovery. New `list` and `tree` commands read that index directly; stores
   written before the tree index existed may need to be rebuilt or recreated for
   complete browsing results.
+- Dumping a path reads the exact current document plus descendant current
+  documents from the tree index, can expand each selected document to retained
+  full-snapshot versions, and can write platform-neutral UTF-8 filesystem copies
+  with versioned filenames.
 
 The CLI currently wraps the core store for `init`, `put`, `patch`, `get`,
-`search`, `list`, `tree`, `versions`, and `prune`. It validates exactly one
+`search`, `list`, `tree`, `dump`, `versions`, and `prune`. It validates exactly one
 document reference for read/patch/prune commands, one retention option per
 write/patch/prune command, non-negative tree depth, and `key=value` metadata
 syntax.

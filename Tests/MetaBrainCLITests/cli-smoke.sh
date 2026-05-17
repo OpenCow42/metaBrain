@@ -20,6 +20,7 @@ cd "$ROOT_DIR"
 "${METABRAIN[@]}" help | rg -q 'metabrain help search'
 "${METABRAIN[@]}" help | rg -q 'metabrain help list'
 "${METABRAIN[@]}" help | rg -q 'metabrain help tree'
+"${METABRAIN[@]}" help | rg -q 'metabrain help dump'
 "${METABRAIN[@]}" help init | rg -q 'Create or open a metaBrain store'
 "${METABRAIN[@]}" help put | rg -q 'Create or update a document at a path'
 "${METABRAIN[@]}" help patch | rg -q 'Patch a document body with a unified diff'
@@ -27,6 +28,7 @@ cd "$ROOT_DIR"
 "${METABRAIN[@]}" help list | rg -q 'List stored document paths in a folder'
 "${METABRAIN[@]}" help tree | rg -q 'Show the stored document path tree'
 "${METABRAIN[@]}" help search | rg -q 'Search current document content'
+"${METABRAIN[@]}" help dump | rg -q 'Dump stored documents as JSONL'
 "${METABRAIN[@]}" help versions | rg -q 'List stored versions for a document'
 "${METABRAIN[@]}" help prune | rg -q 'Prune document versions using a retention policy'
 
@@ -58,6 +60,19 @@ rg -q -- '--max-depth must be zero or greater' "$TMP_DIR/tree-invalid-depth.err"
 "${METABRAIN[@]}" put --store "$STORE" /notes/today 'alpha beta searchable memory' --title Today --tag search --meta status=active --meta kind=daily | rg -q '^version: 1$'
 "${METABRAIN[@]}" put --store "$STORE" /notes/archive/final 'archived memory' | rg -q '^version: 1$'
 "${METABRAIN[@]}" put --store "$STORE" /notes/patchable 'one old patchable memory' --tag patch | rg -q '^version: 1$'
+"${METABRAIN[@]}" dump --store "$STORE" /notes >"$TMP_DIR/dump-notes.jsonl"
+rg -F -q '"path":"/notes/archive/final"' "$TMP_DIR/dump-notes.jsonl"
+rg -F -q '"path":"/notes/today"' "$TMP_DIR/dump-notes.jsonl"
+rg -F -q '"body":"alpha beta searchable memory"' "$TMP_DIR/dump-notes.jsonl"
+if rg -F -q '"path":"/refs/target"' "$TMP_DIR/dump-notes.jsonl"; then
+    echo "Expected /notes dump to exclude unrelated paths" >&2
+    exit 1
+fi
+"${METABRAIN[@]}" dump --store "$STORE" /missing >"$TMP_DIR/dump-missing.jsonl"
+if [[ -s "$TMP_DIR/dump-missing.jsonl" ]]; then
+    echo "Expected missing dump path to produce no JSONL entries" >&2
+    exit 1
+fi
 PATCH_FILE="$TMP_DIR/patchable.diff"
 cat >"$PATCH_FILE" <<'PATCH'
 --- a/notes/patchable
@@ -101,6 +116,19 @@ PATCH
 "${METABRAIN[@]}" search --store "$STORE" 'alpha beta' --tag search --meta status=active | rg -q '/notes/today'
 "${METABRAIN[@]}" search --store "$STORE" 'alpha beta' --tag missing | rg -q '^No results\.$'
 "${METABRAIN[@]}" put --store "$STORE" /notes/today 'alpha beta updated memory' --keep-last 2 | rg -q '^version: 2$'
+"${METABRAIN[@]}" dump --store "$STORE" /notes/today --versions >"$TMP_DIR/dump-today-versions.jsonl"
+rg -F -q '"version":1' "$TMP_DIR/dump-today-versions.jsonl"
+rg -F -q '"version":2' "$TMP_DIR/dump-today-versions.jsonl"
+rg -F -q '"isCurrent":true' "$TMP_DIR/dump-today-versions.jsonl"
+DUMP_OUTPUT_DIR="$TMP_DIR/dump-files"
+"${METABRAIN[@]}" dump --store "$STORE" /notes/today --output-dir "$DUMP_OUTPUT_DIR" >"$TMP_DIR/dump-today-files.jsonl"
+rg -F -q '"fileSystemPath":"' "$TMP_DIR/dump-today-files.jsonl"
+DUMP_FILE="$(find "$DUMP_OUTPUT_DIR" -type f -name 'today__*__v2__*.txt' | head -n 1)"
+if [[ -z "$DUMP_FILE" || ! -f "$DUMP_FILE" ]]; then
+    echo "Expected dump --output-dir to create a versioned copy" >&2
+    exit 1
+fi
+rg -F -q 'alpha beta updated memory' "$DUMP_FILE"
 "${METABRAIN[@]}" versions --store "$STORE" /notes/today | rg -q '^2 '
 "${METABRAIN[@]}" versions --store "$STORE" --path /notes/today | rg -q '^2 '
 "${METABRAIN[@]}" prune --store "$STORE" /notes/today --keep-last 1 | rg -q '^retained: 1$'
@@ -142,6 +170,12 @@ if "${METABRAIN[@]}" get --store "$STORE" --id bad/id 2>"$TMP_DIR/invalid-id.err
     exit 1
 fi
 rg -q 'invalidDocumentID' "$TMP_DIR/invalid-id.err"
+
+if "${METABRAIN[@]}" dump --store "$STORE" .. 2>"$TMP_DIR/invalid-dump-path.err"; then
+    echo "Expected invalid dump path to fail" >&2
+    exit 1
+fi
+rg -q 'invalidDocumentPath' "$TMP_DIR/invalid-dump-path.err"
 
 if "${METABRAIN[@]}" get --store "$STORE" --id abc --path /notes/today 2>"$TMP_DIR/double-reference.err"; then
     echo "Expected duplicate reference options to fail" >&2

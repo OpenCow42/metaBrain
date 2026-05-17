@@ -29,6 +29,9 @@ contributors toward the calls that can become expensive as a store grows.
   by one write.
 - `D`: total path segments processed while maintaining or traversing tree records.
 - `K`: number of direct children listed for one virtual directory.
+- `D_dump`: number of current documents selected by one dump path.
+- `H_dump`: total body bytes emitted by a dump operation, including expanded
+  retained versions when requested.
 - `S`: total number of LevelDB keys in the store.
 - `X`: number of keys matched by one LevelDB prefix scan.
 - `X_tree`: total `doc/path` descendant keys scanned while maintaining affected
@@ -77,6 +80,8 @@ and [LevelDB options](https://github.com/google/leveldb/blob/main/include/leveld
 | `list` non-recursive | `listDirectory`, `childTreeEntries`, `formatListEntry` | `O(seek(S) + K log K)` | Scans one tree prefix, decodes child records, sorts by display path, and prints them. |
 | `list --recursive` | `listDirectory`, `flattenedTreeEntries`, `childTreeEntries` | `O(A * seek(S) + A log A)` typical, with extra recursive array-copy overhead | Walks directories with many separate prefix scans and materializes the whole subtree. `--directories-only` filters output but still traverses descendants. |
 | `tree` | `tree`, `flattenedTreeEntries`, `printTree` | `O(A * seek(S) + A log A)` typical for an unbounded tree | `--max-depth 0` is `O(1)`. Larger depths scan and materialize the requested subtree, then group and sort for printing. |
+| `dump` current | `dump`, `listDirectory`, `getDocument`, optional `DocumentDumpFileWriter.write` | `O(A * seek(S) + D_dump * B + H_dump)` for the requested subtree | Includes the exact path document plus descendant documents, emits JSONL, and optionally writes UTF-8 body copies. |
+| `dump --versions` | `dump`, `versionRecords`, optional `DocumentDumpFileWriter.write` | `O(A * seek(S) + D_dump * (seek(S) + V log V + H) + H_dump)` | Selects current documents by path, then scans retained full-snapshot versions for each selected document. |
 | `search` | `search`, `filteredDocumentIDs`, `termPostings`, `currentChunkRecords`, scoring, optional edge scans | `O((Q + G + M) * seek(S) + F log F + P log P + B_match + C_match + M * (W^2 + E) + M log M)` | `W` is terms in a scored chunk. `--limit` is applied after collecting, scoring, and sorting all candidates, so it does not cap the initial scan. |
 | `versions` | `listVersions`, `versionRecords` | `O(seek(S) + V log V + H)` | Scans, decodes, sorts, and prints every full-snapshot version for the document. |
 | `prune` | `prune`, `pruneVersions`, `versionRecords`, retention helpers | `O(seek(S) + V log V + H + P_delete)` | Scans and decodes all versions before deciding which version keys to delete. |
@@ -196,6 +201,22 @@ entries by parent and sorts siblings while printing the ASCII tree.
 
 Unbounded `tree` is typically `O(A * seek(S) + A log A)` for the requested
 subtree. `tree --max-depth 0` returns before scanning children and is `O(1)`.
+
+### `dump`
+
+`dump` selects the exact document at the requested path when present, recursively
+walks descendant tree entries, filters virtual directories out of the result,
+sorts selected current documents by path, and emits one JSON object per line.
+
+Current-only dumping decodes each selected current document and writes its body
+to stdout as JSONL, plus optional UTF-8 file copies under `--output-dir`. Its
+cost is dominated by tree traversal and emitted body bytes:
+`O(A * seek(S) + D_dump * B + H_dump)` for the requested subtree.
+
+`dump --versions` keeps the same current-document selection phase, then scans
+and decodes retained full-snapshot versions for every selected document. This
+adds `O(D_dump * (seek(S) + V log V + H))`, and the final stdout/file output
+cost grows with all emitted version bodies.
 
 ### `search`
 
