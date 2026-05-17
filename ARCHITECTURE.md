@@ -140,4 +140,6 @@ Tests should cover:
 - snapshot consistency for multi-key reads
 - clear failure behavior when the store cannot be opened
 
-`MetaBrainCore` and CLI-facing logic should strive for 100% coverage. UI coverage should strive for 80-90%.
+In this `metaBrain` repository, `MetaBrainCore` and CLI-facing logic should
+strive for 100% coverage. UI-app coverage expectations belong in the sibling
+app repository that owns that UI.

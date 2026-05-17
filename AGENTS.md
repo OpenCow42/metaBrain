@@ -26,9 +26,9 @@ These rules apply to the whole `metaBrain` repository. They are here to keep age
 
 Deep testing is a cornerstone of this project's stability.
 
-- Strive for 100% test coverage in the shared library.
-- Strive for 100% test coverage in the CLI library or CLI-facing logic.
-- Strive for 80-90% test coverage in the UI app.
+- For this `metaBrain` repository, strive for 100% test coverage in
+  `MetaBrainCore` and `MetaBrainCLI`.
+- Keep UI-app coverage targets in the sibling app repository that owns that UI.
 - Add tests with behavior changes whenever a test target exists for the touched area.
 - Verify meaningful changes with `swift build`.
 - Run automated tests whenever test targets are available.
@@ -41,9 +41,3 @@ Deep testing is a cornerstone of this project's stability.
 - Keep formatting-only changes separate from behavior changes.
 - Preserve user work already present in the tree.
 - Prefer explicit project documentation over hidden assumptions.
-
-## Multi-Agent Implementation
-
-- Use `ORCHESTRATOR.md` when supervising implementation progress.
-- Use `IMPLEMENTATION_AGENTS.md` for the serial milestone sequence and launch prompt.
-- Do not run milestone agents in parallel unless the project owner explicitly changes the orchestration plan.

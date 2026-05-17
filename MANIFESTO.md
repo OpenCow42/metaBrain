@@ -31,6 +31,9 @@ The public store API should behave like a resource handle, not like plain value 
 
 Deep automated testing is a foundation of this project, not a finishing touch.
 
-The shared library and CLI-facing logic should strive for 100% coverage because they will hold the core storage, indexing, and retrieval guarantees. The UI app should strive for 80-90% coverage so user workflows remain stable while leaving room for pragmatic visual and interaction testing.
+Within this `metaBrain` repository, the shared library and CLI-facing logic
+should strive for 100% coverage because they hold the core storage, indexing,
+and retrieval guarantees. Coverage expectations for sibling applications should
+be defined in those application repositories.
 
 If `metaBrain` becomes a memory layer for AI systems, its failures will be subtle: missed content, broken indexes, corrupted migrations, incomplete retrieval, or misleading metadata. The project should grow with tests that make those failures difficult to introduce and easy to diagnose.

@@ -128,7 +128,11 @@ Open that Xcode project and run the `MetaBrainExplorer` scheme to build a real `
 
 Deep automated testing is a cornerstone of the project.
 
-The shared library and CLI-facing logic should reach and maintain 100% line coverage. The UI app should strive for 80-90% coverage. As the storage layer grows, tests should make subtle failures visible: missed content, broken indexes, corrupted migrations, incomplete retrieval, and misleading metadata.
+Within this `metaBrain` repository, `MetaBrainCore` and `MetaBrainCLI` should
+reach and maintain 100% line coverage. Coverage targets for sibling apps live
+with those app repositories. As the storage layer grows, tests should make
+subtle failures visible: missed content, broken indexes, corrupted migrations,
+incomplete retrieval, and misleading metadata.
 
 ## Verification
 
@@ -190,5 +194,3 @@ store traces. The libFuzzer harness stores expanded corpora and findings under
 - [ARCHITECTURE.md](ARCHITECTURE.md) records the planned compressed document store design.
 - [COMPLEXITY.md](COMPLEXITY.md) estimates the big-O cost of CLI commands and their core store methods.
 - [AGENTS.md](AGENTS.md) defines repository rules for coding agents and contributors.
-- [ORCHESTRATOR.md](ORCHESTRATOR.md) defines the supervising agent role for implementation.
-- [IMPLEMENTATION_AGENTS.md](IMPLEMENTATION_AGENTS.md) defines the serial subagent milestones and launch prompt.
