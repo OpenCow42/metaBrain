@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+rm -f default.profraw
+
 echo "Running Swift tests with coverage..."
 swift test --quiet --enable-code-coverage
 echo "Building coverage-instrumented CLI..."

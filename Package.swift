@@ -27,6 +27,15 @@ let package = Package(
             from: "1.5.0"
         ),
         .package(
+            url: "https://github.com/ordo-one/package-benchmark",
+            from: "1.32.0",
+            traits: []
+        ),
+        .package(
+            url: "https://github.com/x-sheep/swift-property-based.git",
+            from: "1.2.0"
+        ),
+        .package(
             url: "git@github.com:OpenCow42/swift-leveldb.git",
             branch: "main"
         )
@@ -51,10 +60,35 @@ let package = Package(
                 "MetaBrainCore"
             ]
         ),
+        .executableTarget(
+            name: "MetaBrainCoreBenchmarks",
+            dependencies: [
+                "MetaBrainCore",
+                .product(name: "Benchmark", package: "package-benchmark")
+            ],
+            path: "Benchmarks/MetaBrainCoreBenchmarks",
+            plugins: [
+                .plugin(name: "BenchmarkPlugin", package: "package-benchmark")
+            ]
+        ),
+        .executableTarget(
+            name: "MetaBrainCoreFuzzer",
+            dependencies: [
+                "MetaBrainCore"
+            ],
+            path: "Fuzzers/MetaBrainCoreFuzzer"
+        ),
         .testTarget(
             name: "MetaBrainCoreTests",
             dependencies: [
                 "MetaBrainCore"
+            ]
+        ),
+        .testTarget(
+            name: "MetaBrainCoreFuzzTests",
+            dependencies: [
+                "MetaBrainCore",
+                .product(name: "PropertyBased", package: "swift-property-based")
             ]
         )
     ],

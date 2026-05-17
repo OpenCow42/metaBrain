@@ -65,14 +65,14 @@ public enum MetaBrainPatchError: Error, Equatable, Sendable, CustomStringConvert
     }
 }
 
-struct UnifiedTextPatch: Equatable, Sendable {
+package struct UnifiedTextPatch: Equatable, Sendable {
     private var hunks: [UnifiedTextHunk]
 
-    init(_ text: String) throws {
+    package init(_ text: String) throws {
         hunks = try Self.parse(text)
     }
 
-    func applying(to body: String) throws -> String {
+    package func applying(to body: String) throws -> String {
         let original = PatchTextLine.split(body)
         var result: [PatchTextLine] = []
         var cursor = 0

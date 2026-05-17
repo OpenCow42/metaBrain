@@ -253,6 +253,7 @@ private func storeTestCodec<Value: Codable & Sendable>(
 
         let entry = try #require(try await store.getDocumentEntry(.path(path)))
         #expect(entry.document == document)
+        #expect(entry.id == document.id)
         #expect(entry.entryMetadata.access == DocumentAccessCounts(
             readCount: 1,
             patchCount: 0,
@@ -356,6 +357,8 @@ private func storeTestCodec<Value: Codable & Sendable>(
 @Test func missingEntryMetadataSidecarDefaultsWithoutMigration() async throws {
     try await withTemporaryStoreFixture { fixture in
         let store = try MetaBrainStore(url: fixture.storeURL)
+        #expect(try await store.entryMetadata(for: .path(try DocumentPath("/missing"))) == nil)
+
         let document = try await store.putDocument(DocumentInput(
             path: try DocumentPath("/legacy/document"),
             title: "Legacy",
@@ -384,6 +387,39 @@ private func storeTestCodec<Value: Codable & Sendable>(
             patchCount: 0,
             fullWriteCount: 0
         ))
+    }
+}
+
+@Test func entryMetadataAccessCountersSaturateAtUInt64Max() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let document = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/metadata/saturated"),
+            body: "saturated counters"
+        ))
+        let saturatedMetadata = DocumentEntryMetadata(
+            access: DocumentAccessCounts(
+                readCount: .max,
+                patchCount: .max,
+                fullWriteCount: .max
+            )
+        )
+        let data = try storeTestCodec(options: store.options, for: DocumentEntryMetadata.self)
+            .encode(MetaBrainRecordEnvelope(payload: saturatedMetadata))
+
+        try await store.writeRawValue(
+            data,
+            forKey: MetaBrainKeyspace.documentMetadata(id: document.id)
+        )
+
+        #expect(try await store.getDocument(.documentID(document.id)) == document)
+
+        let metadata = try #require(
+            try await store.entryMetadata(for: .documentID(document.id))
+        )
+        #expect(metadata.access.readCount == .max)
+        #expect(metadata.access.patchCount == .max)
+        #expect(metadata.access.fullWriteCount == .max)
     }
 }
 
@@ -1009,6 +1045,41 @@ private func storeTestCodec<Value: Codable & Sendable>(
 
         #expect(results.map(\.documentID) == [document.id])
         #expect(results.map(\.chunkOrdinal) == [1])
+    }
+}
+
+@Test func searchLimitEvictsWeakTailWhenLaterDocumentRanksHigher() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let paths = try [
+            DocumentPath("/search/limit-evict-a"),
+            DocumentPath("/search/limit-evict-b"),
+            DocumentPath("/search/limit-evict-c")
+        ]
+        var created: [StoredDocument] = []
+        for path in paths {
+            created.append(try await store.putDocument(DocumentInput(path: path, body: "placeholder")))
+        }
+        let sorted = created.sorted { $0.id < $1.id }
+        let weakDocuments = sorted.prefix(2)
+        let strongDocument = try #require(sorted.last)
+
+        for document in weakDocuments {
+            _ = try await store.putDocument(DocumentInput(
+                path: document.path,
+                body: "alpha weak"
+            ))
+        }
+        _ = try await store.putDocument(DocumentInput(
+            path: strongDocument.path,
+            body: "alpha beta beta beta"
+        ))
+
+        let results = try await store.search(SearchQuery(text: "alpha beta", limit: 2))
+
+        #expect(results.count == 2)
+        #expect(results.first?.documentID == strongDocument.id)
+        #expect(results.map(\.documentID).contains(strongDocument.id))
     }
 }
 

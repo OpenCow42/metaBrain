@@ -146,6 +146,9 @@ swift build
 swift test
 Scripts/check-coverage.sh
 Tests/MetaBrainCLITests/cli-smoke.sh
+Scripts/run-fuzz-tests.sh
+Scripts/run-fuzzers.sh --max-total-time 10
+swift package benchmark --target MetaBrainCoreBenchmarks
 git diff --check
 ```
 
@@ -153,6 +156,30 @@ git diff --check
 against a coverage-instrumented `metabrain` binary, merges the profiles, prints a
 combined `MetaBrainCore`/`MetaBrainCLI` LLVM coverage report, and fails unless
 both targets report 100.00% line coverage.
+
+## Performance And Fuzz Testing
+
+The repository keeps normal tests deterministic and fast, while heavier
+performance and coverage-guided fuzzing are opt-in.
+
+```bash
+# Deterministic Swift Testing fuzz/property suite.
+swift test --filter MetaBrainCoreFuzzTests
+
+# Extended deterministic fuzz/property run.
+METABRAIN_FUZZ_COUNT=2000 Scripts/run-fuzz-tests.sh
+
+# Swift libFuzzer harness for parser/decoder stress.
+Scripts/run-fuzzers.sh --max-total-time 60
+
+# Informational benchmarks. These do not gate regressions yet.
+swift package benchmark --target MetaBrainCoreBenchmarks
+```
+
+The deterministic fuzz suite uses fixed `Xoshiro` seeds and temporary LevelDB
+stores to stress domain parsing, unified diffs, Codable models, and stateful
+store traces. The libFuzzer harness stores expanded corpora and findings under
+`.build/fuzzing`, leaving generated fuzz artifacts untracked.
 
 ## Project Documents
 
