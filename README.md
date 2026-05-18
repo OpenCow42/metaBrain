@@ -218,3 +218,11 @@ store traces. The libFuzzer harness stores expanded corpora and findings under
 - [ARCHITECTURE.md](ARCHITECTURE.md) records the planned compressed document store design.
 - [COMPLEXITY.md](COMPLEXITY.md) estimates the big-O cost of CLI commands and their core store methods.
 - [AGENTS.md](AGENTS.md) defines repository rules for coding agents and contributors.
+
+## License
+
+`metaBrain` is licensed under the BSD 3-Clause License. See [LICENSE](LICENSE).
+
+Third-party dependencies retain their own licenses, including BSD 3-Clause for
+`swift-leveldb` and its vendored LevelDB source. Zstandard, provided by `zstd`,
+is dual-licensed under BSD or GPLv2; this project uses it under the BSD option.
