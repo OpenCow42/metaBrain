@@ -1,0 +1,67 @@
+# Releasing metaBrain
+
+This document is for maintainers preparing signed `mb` CLI builds.
+
+## Release Helper
+
+The release helper builds a universal macOS binary named `mb` for Apple silicon
+and Intel Macs, signs it with Developer ID, and submits a zip archive to Apple's
+notary service:
+
+```bash
+Scripts/build-release.sh --notary-profile metabrain-notary
+```
+
+Create the notary profile once with:
+
+```bash
+xcrun notarytool store-credentials metabrain-notary \
+  --apple-id you@example.com \
+  --team-id ABCDE12345 \
+  --password app-specific-password
+```
+
+Pass a specific signing certificate with `--identity` or
+`METABRAIN_SIGN_IDENTITY`.
+
+## Local Release Check
+
+For local build checks without Apple signing or notarization credentials, run:
+
+```bash
+Scripts/build-release.sh --skip-sign --skip-notarization
+```
+
+## Useful Options
+
+- `--version <version>` sets the release version label used in the zip filename.
+- `--dist-dir <path>` writes artifacts somewhere other than `./dist`.
+- `--build-root <path>` changes the scratch build root.
+- `--arch <arch>` builds one architecture; repeat it to build multiple.
+- `--entitlements <path>` passes an optional entitlements plist to `codesign`.
+
+The helper also reads these environment variables:
+
+```text
+METABRAIN_SIGN_IDENTITY
+METABRAIN_NOTARY_PROFILE
+METABRAIN_APPLE_ID
+METABRAIN_TEAM_ID
+METABRAIN_APP_PASSWORD
+METABRAIN_ENTITLEMENTS
+METABRAIN_RELEASE_VERSION
+METABRAIN_DIST_DIR
+METABRAIN_RELEASE_BUILD_DIR
+```
+
+## Output
+
+By default, artifacts are written under `dist/`:
+
+```text
+dist/mb-<version>-macos-universal/
+dist/mb-<version>-macos-universal.zip
+```
+
+Standalone CLI zip archives are not stapled. Distribute the notarized zip
+returned by Apple's notary service.
