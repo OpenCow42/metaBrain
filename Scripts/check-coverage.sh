@@ -6,11 +6,11 @@ rm -f default.profraw
 echo "Running Swift tests with coverage..."
 swift test --quiet --enable-code-coverage
 echo "Building coverage-instrumented CLI..."
-swift build --quiet --product metabrain --enable-code-coverage --build-path .build/coverage-cli
+swift build --quiet --product mb --enable-code-coverage --build-path .build/coverage-cli
 
 test_binary="$(find .build -path '*/metaBrainPackageTests.xctest/Contents/MacOS/metaBrainPackageTests' -type f | head -n 1)"
 test_profile="$(find .build -path '*/codecov/default.profdata' -type f | head -n 1)"
-cli_binary="$(find .build/coverage-cli -path '*/debug/metabrain' -type f -perm +111 | head -n 1)"
+cli_binary="$(find .build/coverage-cli -path '*/debug/mb' -type f -perm +111 | head -n 1)"
 cli_codecov_dir="$(dirname "${cli_binary}")/codecov"
 
 if [[ -z "${test_binary}" || -z "${test_profile}" || ! -x "${cli_binary}" ]]; then

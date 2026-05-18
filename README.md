@@ -9,7 +9,7 @@ The goal is to help AI tools store, retrieve, discover, and navigate large bodie
 This repository is a Swift package with two products:
 
 - `MetaBrainCore`: the shared library where storage, indexing, retrieval, and domain behavior should live.
-- `metabrain`: the command-line tool.
+- `mb`: the command-line tool.
 
 The CLI should stay thin. Shared behavior belongs in `MetaBrainCore` so every interface uses the same underlying model.
 
@@ -28,22 +28,40 @@ The planned storage API is an async `MetaBrainStore` final class: one explicit s
 swift build
 ```
 
+## Release The CLI
+
+The release helper builds a universal macOS binary named `mb` for Apple silicon
+and Intel Macs, signs it with Developer ID, and submits a zip archive to Apple's
+notary service:
+
+```bash
+Scripts/build-release.sh --notary-profile metabrain-notary
+```
+
+Create the notary profile once with `xcrun notarytool store-credentials`. Pass a
+specific signing certificate with `--identity` or `METABRAIN_SIGN_IDENTITY`.
+For local build checks without Apple credentials, run:
+
+```bash
+Scripts/build-release.sh --skip-sign --skip-notarization
+```
+
 ## Run The CLI
 
 ```bash
-swift run metabrain init --store .metabrain/store.leveldb
-swift run metabrain put --store .metabrain/store.leveldb /notes/today "Remember the lexical store."
-swift run metabrain patch --store .metabrain/store.leveldb /notes/today --patch-file change.diff
-swift run metabrain list --store .metabrain/store.leveldb
-swift run metabrain list --store .metabrain/store.leveldb /notes --recursive --dates
-swift run metabrain tree --store .metabrain/store.leveldb --max-depth 2
-swift run metabrain get --store .metabrain/store.leveldb /notes/today
-swift run metabrain search --store .metabrain/store.leveldb "lexical store"
-swift run metabrain dump --store .metabrain/store.leveldb /notes --output-dir ./metabrain-dump
-swift run metabrain versions --store .metabrain/store.leveldb /notes/today
-swift run metabrain prune --store .metabrain/store.leveldb /notes/today --keep-last 3
-swift run metabrain remove-version --store .metabrain/store.leveldb /notes/today --sequence 1
-swift run metabrain delete --store .metabrain/store.leveldb /notes/today
+swift run mb init --store .metabrain/store.leveldb
+swift run mb put --store .metabrain/store.leveldb /notes/today "Remember the lexical store."
+swift run mb patch --store .metabrain/store.leveldb /notes/today --patch-file change.diff
+swift run mb list --store .metabrain/store.leveldb
+swift run mb list --store .metabrain/store.leveldb /notes --recursive --dates
+swift run mb tree --store .metabrain/store.leveldb --max-depth 2
+swift run mb get --store .metabrain/store.leveldb /notes/today
+swift run mb search --store .metabrain/store.leveldb "lexical store"
+swift run mb dump --store .metabrain/store.leveldb /notes --output-dir ./metabrain-dump
+swift run mb versions --store .metabrain/store.leveldb /notes/today
+swift run mb prune --store .metabrain/store.leveldb /notes/today --keep-last 3
+swift run mb remove-version --store .metabrain/store.leveldb /notes/today --sequence 1
+swift run mb delete --store .metabrain/store.leveldb /notes/today
 ```
 
 `put` accepts repeated `--tag` and `--meta key=value` options, plus `--body-file`
@@ -166,7 +184,7 @@ git diff --check
 ```
 
 `Scripts/check-coverage.sh` runs SwiftPM test coverage, runs the CLI smoke test
-against a coverage-instrumented `metabrain` binary, merges the profiles, prints a
+against a coverage-instrumented `mb` binary, merges the profiles, prints a
 combined `MetaBrainCore`/`MetaBrainCLI` LLVM coverage report, and fails unless
 both targets report 100.00% line coverage.
 

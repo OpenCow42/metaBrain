@@ -10,35 +10,35 @@ struct MetaBrainCommand: AsyncParsableCommand {
         searchable store instead of scattering scratch files across a workspace.
 
         Agent discovery:
-          metabrain
-          metabrain help
-          metabrain --help
-          metabrain help list
-          metabrain help tree
-          metabrain help search
-          metabrain help dump
-          metabrain help delete
-          metabrain help remove-version
+          mb
+          mb help
+          mb --help
+          mb help list
+          mb help tree
+          mb help search
+          mb help dump
+          mb help delete
+          mb help remove-version
 
         Common workflow:
-          metabrain init --store .metabrain/store.leveldb
-          metabrain put /notes/today "Important context" --tag planning --meta source=agent
-          metabrain patch /notes/today --patch-file change.diff
-          metabrain list
-          metabrain list /notes --recursive --dates
-          metabrain tree --max-depth 2
-          metabrain search "Important context" --tag planning
-          metabrain get /notes/today
-          metabrain dump /notes --output-dir ./metabrain-dump
-          metabrain delete /notes/today
-          metabrain remove-version /notes/today --sequence 1
+          mb init --store .metabrain/store.leveldb
+          mb put /notes/today "Important context" --tag planning --meta source=agent
+          mb patch /notes/today --patch-file change.diff
+          mb list
+          mb list /notes --recursive --dates
+          mb tree --max-depth 2
+          mb search "Important context" --tag planning
+          mb get /notes/today
+          mb dump /notes --output-dir ./metabrain-dump
+          mb delete /notes/today
+          mb remove-version /notes/today --sequence 1
 
         The default store is .metabrain/store.leveldb. Pass --store to any command
         when a workspace uses a different location.
         """
 
     static let configuration = CommandConfiguration(
-        commandName: "metabrain",
+        commandName: "mb",
         abstract: "Inspect and update a metaBrain document store.",
         discussion: agentDiscoveryGuide,
         subcommands: [

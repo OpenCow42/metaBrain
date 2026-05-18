@@ -10,7 +10,7 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 if [[ -n "${METABRAIN_BIN:-}" ]]; then
     METABRAIN=("$METABRAIN_BIN")
 else
-    METABRAIN=(swift run metabrain)
+    METABRAIN=(swift run mb)
 fi
 
 cd "$ROOT_DIR"
@@ -183,10 +183,10 @@ assert_remove_version_json() {
 
 "${METABRAIN[@]}" | rg -q 'Agent discovery:'
 "${METABRAIN[@]}" --help | rg -q 'Common workflow:'
-"${METABRAIN[@]}" help | rg -q 'metabrain help search'
-"${METABRAIN[@]}" help | rg -q 'metabrain help list'
-"${METABRAIN[@]}" help | rg -q 'metabrain help tree'
-"${METABRAIN[@]}" help | rg -q 'metabrain help dump'
+"${METABRAIN[@]}" help | rg -q 'mb help search'
+"${METABRAIN[@]}" help | rg -q 'mb help list'
+"${METABRAIN[@]}" help | rg -q 'mb help tree'
+"${METABRAIN[@]}" help | rg -q 'mb help dump'
 "${METABRAIN[@]}" help init | rg -q 'Create or open a metaBrain store'
 "${METABRAIN[@]}" help put | rg -q 'Create or update a document at a path'
 "${METABRAIN[@]}" help patch | rg -q 'Patch a document body with a unified diff'
@@ -204,7 +204,7 @@ if "${METABRAIN[@]}" help missing 2>"$TMP_DIR/help-missing.err"; then
     echo "Expected unknown help topic to fail" >&2
     exit 1
 fi
-rg -F -q 'Usage: metabrain help [<command>]' "$TMP_DIR/help-missing.err"
+rg -F -q 'Usage: mb help [<command>]' "$TMP_DIR/help-missing.err"
 rg -F -q 'delete' "$TMP_DIR/help-missing.err"
 rg -F -q 'remove-version' "$TMP_DIR/help-missing.err"
 
@@ -212,13 +212,13 @@ if "${METABRAIN[@]}" init --unknown-option 2>"$TMP_DIR/init-invalid.err"; then
     echo "Expected invalid init option to fail" >&2
     exit 1
 fi
-rg -F -q 'Usage: metabrain init [--store <store>] [--format <format>]' "$TMP_DIR/init-invalid.err"
+rg -F -q 'Usage: mb init [--store <store>] [--format <format>]' "$TMP_DIR/init-invalid.err"
 
 if "${METABRAIN[@]}" search query --limit 0 2>"$TMP_DIR/search-invalid.err"; then
     echo "Expected invalid search limit to fail" >&2
     exit 1
 fi
-rg -F -q 'Usage: metabrain search [--store <store>]' "$TMP_DIR/search-invalid.err"
+rg -F -q 'Usage: mb search [--store <store>]' "$TMP_DIR/search-invalid.err"
 rg -F -q '[--format <format>]' "$TMP_DIR/search-invalid.err"
 
 if "${METABRAIN[@]}" tree --max-depth=-1 2>"$TMP_DIR/tree-invalid-depth.err"; then
@@ -672,7 +672,7 @@ if "${METABRAIN[@]}" get --store "$STORE" --id abc --path /notes/today 2>"$TMP_D
     exit 1
 fi
 rg -q 'Provide exactly one of --id, --path, or a positional path' "$TMP_DIR/double-reference.err"
-rg -F -q 'Usage: metabrain get [--store <store>] [--id <id>] [--path <path>] [<path>] [--format <format>]' "$TMP_DIR/double-reference.err"
+rg -F -q 'Usage: mb get [--store <store>] [--id <id>] [--path <path>] [<path>] [--format <format>]' "$TMP_DIR/double-reference.err"
 
 if "${METABRAIN[@]}" get --store "$STORE" --path /notes/today /notes/file 2>"$TMP_DIR/path-and-positional-reference.err"; then
     echo "Expected option path plus positional path to fail" >&2
@@ -697,14 +697,14 @@ if "${METABRAIN[@]}" put --store "$STORE" /notes/bad body --meta invalid 2>"$TMP
     exit 1
 fi
 rg -q 'Metadata must use key=value syntax' "$TMP_DIR/invalid-meta.err"
-rg -F -q 'Usage: metabrain put [<options>] <path> [<body>]' "$TMP_DIR/invalid-meta.err"
+rg -F -q 'Usage: mb put [<options>] <path> [<body>]' "$TMP_DIR/invalid-meta.err"
 
 if "${METABRAIN[@]}" put --store "$STORE" /notes/no-body 2>"$TMP_DIR/missing-body.err"; then
     echo "Expected missing body to fail" >&2
     exit 1
 fi
 rg -q 'Provide a document body argument or --body-file' "$TMP_DIR/missing-body.err"
-rg -F -q 'Usage: metabrain put [<options>] <path> [<body>]' "$TMP_DIR/missing-body.err"
+rg -F -q 'Usage: mb put [<options>] <path> [<body>]' "$TMP_DIR/missing-body.err"
 
 if "${METABRAIN[@]}" put --store "$STORE" /notes/double-body body --body-file "$BODY_FILE" 2>"$TMP_DIR/double-body.err"; then
     echo "Expected duplicate body inputs to fail" >&2
@@ -735,7 +735,7 @@ if "${METABRAIN[@]}" put --store "$STORE" /notes/bad-ref body --ref-url relative
     exit 1
 fi
 rg -q 'Reference URLs must be absolute URLs' "$TMP_DIR/bad-ref-url.err"
-rg -F -q 'Usage: metabrain put [<options>] <path> [<body>]' "$TMP_DIR/bad-ref-url.err"
+rg -F -q 'Usage: mb put [<options>] <path> [<body>]' "$TMP_DIR/bad-ref-url.err"
 
 BAD_PATCH_FILE="$TMP_DIR/bad.patch"
 printf 'not a patch\n' >"$BAD_PATCH_FILE"
@@ -776,28 +776,28 @@ if "${METABRAIN[@]}" versions --store "$STORE" 2>"$TMP_DIR/missing-version-refer
     exit 1
 fi
 rg -q 'Provide exactly one of --id, --path, or a positional path' "$TMP_DIR/missing-version-reference.err"
-rg -F -q 'Usage: metabrain versions [--store <store>] [--id <id>] [--path <path>] [<path>] [--format <format>]' "$TMP_DIR/missing-version-reference.err"
+rg -F -q 'Usage: mb versions [--store <store>] [--id <id>] [--path <path>] [<path>] [--format <format>]' "$TMP_DIR/missing-version-reference.err"
 
 if "${METABRAIN[@]}" delete --store "$STORE" 2>"$TMP_DIR/missing-delete-reference.err"; then
     echo "Expected missing delete reference options to fail" >&2
     exit 1
 fi
 rg -q 'Provide exactly one of --id, --path, or a positional path' "$TMP_DIR/missing-delete-reference.err"
-rg -F -q 'Usage: metabrain delete [--store <store>] [--id <id>] [--path <path>] [<path>] [--format <format>]' "$TMP_DIR/missing-delete-reference.err"
+rg -F -q 'Usage: mb delete [--store <store>] [--id <id>] [--path <path>] [<path>] [--format <format>]' "$TMP_DIR/missing-delete-reference.err"
 
 if "${METABRAIN[@]}" remove-version --store "$STORE" --sequence 1 2>"$TMP_DIR/missing-remove-version-reference.err"; then
     echo "Expected missing remove-version reference options to fail" >&2
     exit 1
 fi
 rg -q 'Provide exactly one of --id, --path, or a positional path' "$TMP_DIR/missing-remove-version-reference.err"
-rg -F -q 'Usage: metabrain remove-version [--store <store>] [--id <id>] [--path <path>] [<path>] [--format <format>] --sequence <sequence>' "$TMP_DIR/missing-remove-version-reference.err"
+rg -F -q 'Usage: mb remove-version [--store <store>] [--id <id>] [--path <path>] [<path>] [--format <format>] --sequence <sequence>' "$TMP_DIR/missing-remove-version-reference.err"
 
 if "${METABRAIN[@]}" remove-version --store "$STORE" /versions/remove-json 2>"$TMP_DIR/missing-remove-version-sequence.err"; then
     echo "Expected missing remove-version sequence to fail" >&2
     exit 1
 fi
 rg -q 'Missing expected (argument|option).*--sequence <sequence>' "$TMP_DIR/missing-remove-version-sequence.err"
-rg -F -q 'Usage: metabrain remove-version [--store <store>] [--id <id>] [--path <path>] [<path>] [--format <format>] --sequence <sequence>' "$TMP_DIR/missing-remove-version-sequence.err"
+rg -F -q 'Usage: mb remove-version [--store <store>] [--id <id>] [--path <path>] [<path>] [--format <format>] --sequence <sequence>' "$TMP_DIR/missing-remove-version-sequence.err"
 
 if "${METABRAIN[@]}" remove-version --store "$STORE" /versions/remove-json --sequence 0 2>"$TMP_DIR/zero-remove-version-sequence.err"; then
     echo "Expected zero remove-version sequence to fail" >&2
@@ -810,11 +810,11 @@ if "${METABRAIN[@]}" prune --store "$STORE" --path /notes/today 2>"$TMP_DIR/miss
     exit 1
 fi
 rg -q 'Provide one of --keep-all, --keep-last, or --keep-within' "$TMP_DIR/missing-retention.err"
-rg -F -q 'Usage: metabrain prune [--store <store>] [--id <id>] [--path <path>] [<path>] [--keep-all] [--keep-last <keep-last>] [--keep-within <keep-within>] [--format <format>]' "$TMP_DIR/missing-retention.err"
+rg -F -q 'Usage: mb prune [--store <store>] [--id <id>] [--path <path>] [<path>] [--keep-all] [--keep-last <keep-last>] [--keep-within <keep-within>] [--format <format>]' "$TMP_DIR/missing-retention.err"
 
 if "${METABRAIN[@]}" get --store "$STORE" 2>"$TMP_DIR/missing-reference.err"; then
     echo "Expected missing reference options to fail" >&2
     exit 1
 fi
 rg -q 'Provide exactly one of --id, --path, or a positional path' "$TMP_DIR/missing-reference.err"
-rg -F -q 'Usage: metabrain get [--store <store>] [--id <id>] [--path <path>] [<path>] [--format <format>]' "$TMP_DIR/missing-reference.err"
+rg -F -q 'Usage: mb get [--store <store>] [--id <id>] [--path <path>] [<path>] [--format <format>]' "$TMP_DIR/missing-reference.err"

@@ -13,7 +13,7 @@ let package = Package(
             targets: ["MetaBrainCore"]
         ),
         .executable(
-            name: "metabrain",
+            name: "mb",
             targets: ["MetaBrainCLI"]
         )
     ],
