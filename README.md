@@ -1,5 +1,8 @@
 # metaBrain
 
+[![Swift Package Index](https://img.shields.io/endpoint?url=https://swiftpackageindex.com/api/packages/OpenCow42/metaBrain/badge?type=swift-versions)](https://swiftpackageindex.com/OpenCow42/metaBrain)
+[![Swift Package Index](https://img.shields.io/endpoint?url=https://swiftpackageindex.com/api/packages/OpenCow42/metaBrain/badge?type=platforms)](https://swiftpackageindex.com/OpenCow42/metaBrain)
+
 `metaBrain` is a local document memory for AI agents and tools.
 
 It gives an agent one durable, searchable place to keep notes, source snippets,
