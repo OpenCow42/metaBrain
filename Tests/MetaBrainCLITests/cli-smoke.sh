@@ -62,6 +62,20 @@ assert_patch_check_json() {
     fi
 }
 
+assert_move_json() {
+    local actual="$1"
+    local expected_from="$2"
+    local expected_path="$3"
+    local expected_status="$4"
+    local expected_version="$5"
+    local pattern='^\{"documentID":"[0-9a-f-]+","from":"'"$expected_from"'","operation":"move","path":"'"$expected_path"'","status":"'"$expected_status"'","version":'"$expected_version"'\}$'
+
+    if [[ "$actual" == *$'\n'* ]] || ! printf '%s\n' "$actual" | rg -q "$pattern"; then
+        echo "Expected move JSON from $expected_from to $expected_path v$expected_version, got: $actual" >&2
+        exit 1
+    fi
+}
+
 assert_get_json() {
     local actual="$1"
     local expected_path="$2"
@@ -187,9 +201,13 @@ assert_remove_version_json() {
 "${METABRAIN[@]}" help | rg -q 'mb help list'
 "${METABRAIN[@]}" help | rg -q 'mb help tree'
 "${METABRAIN[@]}" help | rg -q 'mb help dump'
+"${METABRAIN[@]}" help | rg -q 'mb help move'
 "${METABRAIN[@]}" help init | rg -q 'Create or open a metaBrain store'
 "${METABRAIN[@]}" help put | rg -q 'Create or update a document at a path'
 "${METABRAIN[@]}" help patch | rg -q 'Patch a document body with a unified diff'
+"${METABRAIN[@]}" help move | rg -q 'Move an existing document to a new path without changing its ID'
+"${METABRAIN[@]}" help move | rg -q 'document IDs are preserved'
+"${METABRAIN[@]}" help move | rg -q 'Path references are location aliases'
 "${METABRAIN[@]}" help get | rg -q 'Read a document by path or ID'
 "${METABRAIN[@]}" help list | rg -q 'List stored document paths in a folder'
 "${METABRAIN[@]}" help tree | rg -q 'Show the stored document path tree'
@@ -559,6 +577,39 @@ fi
 "${METABRAIN[@]}" versions --store "$STORE" --path /missing --format text | rg -q '^No versions\.$'
 PRUNE_MISSING_JSON="$("${METABRAIN[@]}" prune --store "$STORE" --path /missing --keep-within 0)"
 assert_prune_json "$PRUNE_MISSING_JSON" 0 0
+
+PUT_MOVE_TARGET_JSON="$("${METABRAIN[@]}" put --store "$STORE" /move/target 'relocation anchor')"
+assert_put_json "$PUT_MOVE_TARGET_JSON" /move/target created 1
+MOVE_TARGET_ID="$(printf '%s\n' "$PUT_MOVE_TARGET_JSON" | sed -E 's/.*"documentID":"([^"]+)".*/\1/')"
+PUT_MOVE_SOURCE_JSON="$("${METABRAIN[@]}" put --store "$STORE" /move/source 'relocated body' --title Move --tag moving --meta kind=move --ref-id "$MOVE_TARGET_ID")"
+assert_put_json "$PUT_MOVE_SOURCE_JSON" /move/source created 1
+MOVE_SOURCE_ID="$(printf '%s\n' "$PUT_MOVE_SOURCE_JSON" | sed -E 's/.*"documentID":"([^"]+)".*/\1/')"
+MOVE_SOURCE_JSON="$("${METABRAIN[@]}" move --store "$STORE" /move/source /move/archive/source)"
+assert_move_json "$MOVE_SOURCE_JSON" /move/source /move/archive/source moved 2
+printf '%s\n' "$MOVE_SOURCE_JSON" | rg -F -q '"documentID":"'"$MOVE_SOURCE_ID"'"'
+if "${METABRAIN[@]}" get --store "$STORE" /move/source 2>"$TMP_DIR/move-old-get.err"; then
+    echo "Expected moved old path get to fail" >&2
+    exit 1
+fi
+rg -q 'Document not found' "$TMP_DIR/move-old-get.err"
+MOVE_SOURCE_GET_JSON="$("${METABRAIN[@]}" get --store "$STORE" /move/archive/source)"
+assert_get_json "$MOVE_SOURCE_GET_JSON" /move/archive/source 'relocated body' 2
+printf '%s\n' "$MOVE_SOURCE_GET_JSON" | rg -F -q '"documentID":"'"$MOVE_SOURCE_ID"'"'
+printf '%s\n' "$MOVE_SOURCE_GET_JSON" | rg -F -q '"title":"Move"'
+printf '%s\n' "$MOVE_SOURCE_GET_JSON" | rg -F -q '"tags":["moving"]'
+printf '%s\n' "$MOVE_SOURCE_GET_JSON" | rg -F -q '"metadata":{"kind":"move"}'
+printf '%s\n' "$MOVE_SOURCE_GET_JSON" | rg -F -q '"references":[{"kind":"documentID","value":"'"$MOVE_TARGET_ID"'"}]'
+MOVE_SOURCE_BY_ID_TEXT="$("${METABRAIN[@]}" move --store "$STORE" --id "$MOVE_SOURCE_ID" /move/archive/source --format text)"
+EXPECTED_MOVE_SOURCE_BY_ID_TEXT='id: '"$MOVE_SOURCE_ID"$'\n''from: /move/archive/source'$'\n''path: /move/archive/source'$'\n''version: 2'$'\n''status: unchanged'
+if [[ "$MOVE_SOURCE_BY_ID_TEXT" != "$EXPECTED_MOVE_SOURCE_BY_ID_TEXT" ]]; then
+    echo "Expected move by ID same path text output, got: $MOVE_SOURCE_BY_ID_TEXT" >&2
+    exit 1
+fi
+if "${METABRAIN[@]}" move --store "$STORE" /move/missing /move/new-missing 2>"$TMP_DIR/move-missing.err"; then
+    echo "Expected missing move source to fail" >&2
+    exit 1
+fi
+rg -F -q 'Document not found: /move/missing.' "$TMP_DIR/move-missing.err"
 
 "${METABRAIN[@]}" put --store "$STORE" --format text /delete/target 'delete target v1 needle' --keep-all | rg -q '^version: 1$'
 "${METABRAIN[@]}" put --store "$STORE" --format text /delete/target 'delete target v2 needle' --keep-all | rg -q '^version: 2$'

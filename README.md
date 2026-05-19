@@ -112,6 +112,7 @@ mb help dump
 - `init` creates or opens a store.
 - `put` creates or updates a document at a path.
 - `patch` applies a single-file unified diff to an existing document body.
+- `move` relocates an existing document to a new path without changing its ID.
 - `get` reads a document by path or stable document ID.
 - `list` lists stored document paths in a virtual folder.
 - `tree` prints the stored document path tree.
@@ -151,7 +152,7 @@ Implemented behavior includes:
 - Async `MetaBrainStore` facade over one explicit store path.
 - Stable lowercase ASCII document IDs.
 - Normalized absolute slash paths.
-- Whole-document writes and path-preserving updates.
+- Whole-document writes, path-preserving updates, and explicit moves.
 - Unified-diff body patches for existing documents.
 - Full-snapshot version history with keep-all, keep-last-N, and time-window
   retention policies.
@@ -161,6 +162,12 @@ Implemented behavior includes:
 - Internal reference indexes for resolved document links.
 - Virtual folder browsing through explicit `tree/` indexes.
 - JSONL subtree dumping with optional versioned body files.
+
+For cross-document relationships, prefer document ID references over path
+references when the relationship is meant to survive reorganization. A move
+preserves the moved document's stable ID, so `--ref-id` links continue to point
+at the same document. Path references are useful location aliases, but stored
+path reference values are not rewritten automatically when a document moves.
 
 ## Development
 

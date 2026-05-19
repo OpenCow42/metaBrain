@@ -79,6 +79,7 @@ and [LevelDB options](https://github.com/google/leveldb/blob/main/include/leveld
 | `put` new document | `putDocument`, `writeNewDocument`, `writeDocumentBatch` | `O(B + T + R + L * seek(S) + X_tree + D)` | Body chunking now advances indices incrementally. Tree maintenance touches only the new path branch instead of rebuilding the whole tree index. |
 | `put` existing document | `putDocument`, `writeDocumentUpdate`, `writeDocumentBatch`, retention helpers | `O(B + B_old + T + T_old + R + R_old + V log V + H + L * seek(S) + X_tree + D)` | Updates delete stale chunks/indexes/references, may scan all versions for retention, and update only old/new tree branches. |
 | `patch` | `checkDocumentPatch`/`patchDocument`, unified diff parsing, `writeDocumentUpdate`, `writeDocumentBatch`, retention helpers | `O(P_patch + B_old + B + T + T_old + R + R_old + V log V + H + L * seek(S) + X_tree + D)` for writes; `O(P_patch + B_old)` for `--check` | Patch is partial at the CLI layer, but writes still store a full next document snapshot and rebuild current chunks/indexes. |
+| `move` | `moveDocument`, `writeDocumentUpdate`, `writeDocumentBatch`, retention helpers | `O(B + B_old + T + T_old + R + R_old + V log V + H + L * seek(S) + X_tree + D)` | Resolves an existing document, preserves its stable ID and content fields, writes a new path alias, removes the old path alias, and updates affected tree branches. |
 | `get` | `getDocument`, `documentID(for:)`, `documentRecord(id:)`, `printDocument` | `O(seek(S) + B)` | Decoding and printing the stored document body dominate once the point lookup succeeds. |
 | `list` non-recursive | `listDirectory`, `childTreeEntries`, `formatListEntry` | `O(seek(S) + K log K)` | Scans one tree prefix, decodes child records, sorts by display path, and prints them. |
 | `list --recursive` | `listDirectory`, `flattenedTreeEntries`, `childTreeEntries` | `O(A * seek(S) + A log A)` typical, with extra recursive array-copy overhead | Walks directories with many separate prefix scans and materializes the whole subtree. `--directories-only` filters output but still traverses descendants. |
@@ -190,6 +191,26 @@ cost about the same as whole-body updates.
 `get` resolves a path or ID with `getDocument(_:)`, decodes the stored document,
 and prints it. Complexity is `O(seek(S) + B)` because outputting the body
 dominates once the point lookup succeeds.
+
+### `move`
+
+`move` resolves an existing path or ID with `moveDocument(_:to:)`, then writes a
+new full-snapshot version with the same document ID, body, title, tags,
+metadata, and stored references at the destination path. It fails when the
+source document is missing and does not upsert. Moving to the current path is a
+no-op.
+
+Like other full-document updates, a real move rewrites current chunks and
+indexes, removes the old path alias, writes the new path alias, updates only the
+affected old/new virtual tree branches, stores a retained version according to
+the document's retention policy, and may prune historical versions. Complexity
+is the same shape as an existing-document `put`:
+`O(B + B_old + T + T_old + R + R_old + V log V + H + L * seek(S) + X_tree + D)`.
+
+Stable document ID references remain valid across a move because the document ID
+is preserved. Stored path references are not rewritten automatically; if a
+source document stores a path reference to the old location, that value remains
+old until that source document is explicitly rewritten.
 
 ### `list`
 

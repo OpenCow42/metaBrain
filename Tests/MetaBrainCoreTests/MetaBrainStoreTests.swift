@@ -82,6 +82,7 @@ private func storeTestCodec<Value: Codable & Sendable>(
 
     #expect(MetaBrainStoreError.openFailed(path: "/tmp/store", message: "locked").description == "Could not open metaBrain store at /tmp/store: locked")
     #expect(MetaBrainStoreError.operationFailed(message: "write failed").description == "LevelDB operation failed: write failed")
+    #expect(MetaBrainStoreError.documentNotFound("/missing").description == "Document not found: /missing.")
     #expect(MetaBrainStoreError.pathAlreadyExists(path, existingID: id).description == "Document path /taken already points to document doc-1.")
     #expect(MetaBrainStoreError.currentVersionCannotBeRemoved(id, sequence: 3).description == "Cannot remove current version 3 of document doc-1.")
     #expect(MetaBrainStoreError.unsupportedRecordSchemaVersion(2).description == "Unsupported metaBrain record schema version: 2")
@@ -676,6 +677,121 @@ private func storeTestCodec<Value: Codable & Sendable>(
         #expect(try await store.getDocument(.path(oldPath)) == nil)
         #expect(try await store.getDocument(.path(newPath)) == renamed)
         #expect(try await store.getDocument(.documentID(created.id)) == renamed)
+    }
+}
+
+@Test func moveDocumentPreservesIdentityContentAndIDBasedRelationships() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let target = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/refs/target"),
+            body: "target"
+        ))
+        let source = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/notes/source"),
+            title: "Source",
+            body: "source body",
+            tags: ["move"],
+            metadata: ["kind": "test"],
+            references: [.documentID(target.id)]
+        ))
+        let backlink = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/refs/backlink"),
+            body: "backlink",
+            references: [.documentID(source.id)]
+        ))
+        let destinationPath = try DocumentPath("/archive/source")
+
+        let result = try await store.moveDocument(
+            .path(source.path),
+            to: destinationPath
+        )
+        let moved = result.document
+
+        #expect(result.sourcePath == source.path)
+        #expect(result.destinationPath == moved.path)
+        #expect(result.moved)
+        #expect(moved.id == source.id)
+        #expect(moved.path == destinationPath)
+        #expect(moved.title == source.title)
+        #expect(moved.body == source.body)
+        #expect(moved.tags == source.tags)
+        #expect(moved.metadata == source.metadata)
+        #expect(moved.references == source.references)
+        #expect(moved.currentVersion == 2)
+        #expect(try await store.getDocument(.path(source.path)) == nil)
+        #expect(try await store.getDocument(.path(moved.path)) == moved)
+        #expect(try await store.getDocument(.documentID(source.id)) == moved)
+        #expect(try await store.outboundReferences(from: source.id) == [target.id])
+        #expect(try await store.inboundReferences(to: source.id) == [backlink.id])
+    }
+}
+
+@Test func moveDocumentDoesNotRewritePathReferencesToMovedDocument() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let target = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/refs/path-target"),
+            body: "target"
+        ))
+        let source = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/refs/path-source"),
+            body: "source",
+            references: [.path(target.path)]
+        ))
+
+        _ = try await store.moveDocument(
+            .documentID(target.id),
+            to: try DocumentPath("/refs/moved-target")
+        )
+        let reloadedSource = try #require(try await store.getDocument(.documentID(source.id)))
+
+        #expect(reloadedSource.references == [.path(try DocumentPath("/refs/path-target"))])
+        #expect(try await store.inboundReferences(to: target.id) == [source.id])
+
+        _ = try await store.putDocument(DocumentInput(
+            path: source.path,
+            body: source.body,
+            references: reloadedSource.references
+        ))
+
+        #expect(try await store.outboundReferences(from: source.id) == [])
+        #expect(try await store.inboundReferences(to: target.id) == [])
+    }
+}
+
+@Test func moveDocumentMissingReferenceThrowsWithoutCreatingDestination() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let missingPath = try DocumentPath("/missing/source")
+        let destinationPath = try DocumentPath("/missing/destination")
+
+        do {
+            _ = try await store.moveDocument(.path(missingPath), to: destinationPath)
+            Issue.record("Expected missing source move to fail.")
+        } catch let error as MetaBrainStoreError {
+            #expect(error == .documentNotFound(missingPath.rawValue))
+        } catch {
+            Issue.record("Expected MetaBrainStoreError.documentNotFound, got \(error).")
+        }
+
+        #expect(try await store.getDocument(.path(destinationPath)) == nil)
+    }
+}
+
+@Test func moveDocumentToSamePathIsNoop() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let document = try await store.putDocument(DocumentInput(
+            path: try DocumentPath("/same/path"),
+            body: "same"
+        ))
+
+        let result = try await store.moveDocument(.documentID(document.id), to: document.path)
+
+        #expect(!result.moved)
+        #expect(result.document == document)
+        #expect(try await store.listVersions(of: .documentID(document.id)).map(\.sequence) == [1])
     }
 }
 

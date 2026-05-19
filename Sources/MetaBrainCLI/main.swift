@@ -17,6 +17,7 @@ struct MetaBrainCommand: AsyncParsableCommand {
           mb help tree
           mb help search
           mb help dump
+          mb help move
           mb help delete
           mb help remove-version
 
@@ -24,6 +25,7 @@ struct MetaBrainCommand: AsyncParsableCommand {
           mb init --store .metabrain/store.leveldb
           mb put /notes/today "Important context" --tag planning --meta source=agent
           mb patch /notes/today --patch-file change.diff
+          mb move /notes/today /notes/archive/today
           mb list
           mb list /notes --recursive --dates
           mb tree --max-depth 2
@@ -46,6 +48,7 @@ struct MetaBrainCommand: AsyncParsableCommand {
             Initialize.self,
             Put.self,
             Patch.self,
+            Move.self,
             Get.self,
             List.self,
             Tree.self,
@@ -191,7 +194,7 @@ extension MetaBrainCommand {
             abstract: "Show metaBrain CLI help."
         )
 
-        @Argument(help: "Optional command to inspect: init, put, patch, get, list, tree, search, dump, versions, prune, delete, or remove-version.")
+        @Argument(help: "Optional command to inspect: init, put, patch, move, get, list, tree, search, dump, versions, prune, delete, or remove-version.")
         var command: String?
 
         func validate() throws {
@@ -200,10 +203,10 @@ extension MetaBrainCommand {
             }
 
             switch command {
-            case "init", "put", "patch", "get", "list", "tree", "search", "dump", "versions", "prune", "delete", "remove-version":
+            case "init", "put", "patch", "move", "get", "list", "tree", "search", "dump", "versions", "prune", "delete", "remove-version":
                 return
             default:
-                throw ValidationError("Unknown help topic '\(command)'. Use one of: init, put, patch, get, list, tree, search, dump, versions, prune, delete, remove-version.")
+                throw ValidationError("Unknown help topic '\(command)'. Use one of: init, put, patch, move, get, list, tree, search, dump, versions, prune, delete, remove-version.")
             }
         }
 
@@ -398,6 +401,77 @@ extension MetaBrainCommand {
                     try printJSONLine(result)
                 }
             }
+        }
+    }
+
+    struct Move: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "move",
+            abstract: "Move an existing document to a new path without changing its ID.",
+            discussion: """
+            Document identity is stable across moves. Cross-document relationships are
+            safest when expressed with --ref-id because document IDs are preserved when
+            paths change. Path references are location aliases; they are not rewritten
+            automatically when another document moves.
+            """
+        )
+
+        @OptionGroup var storeOptions: StoreOptions
+        @OptionGroup var output: OutputFormatOptions
+
+        @Option(help: "Document ID to move. When provided, pass only the destination path as an argument.")
+        var id: String?
+
+        @Argument(help: "Source and destination paths, or just the destination path when --id is provided.")
+        var paths: [String] = []
+
+        func validate() throws {
+            if id == nil {
+                guard paths.count == 2 else {
+                    throw ValidationError("Provide a source path and a destination path, or use --id with one destination path.")
+                }
+            } else {
+                guard paths.count == 1 else {
+                    throw ValidationError("Use --id with exactly one destination path.")
+                }
+            }
+
+            _ = try sourceReference()
+            _ = try destinationPath()
+        }
+
+        func run() async throws {
+            let reference = try sourceReference()
+            let destination = try destinationPath()
+            let result = try await storeOptions.withOpenStore { store in
+                try await store.moveDocument(reference, to: destination)
+            }
+            let outputResult = MoveOutput(result)
+
+            switch output.format {
+            case .text:
+                print("id: \(result.document.id.rawValue)")
+                print("from: \(result.sourcePath.rawValue)")
+                print("path: \(result.document.path.rawValue)")
+                print("version: \(result.document.currentVersion)")
+                print("status: \(outputResult.status)")
+            case .json:
+                try printJSON(outputResult)
+            case .jsonl:
+                try printJSONLine(outputResult)
+            }
+        }
+
+        private func sourceReference() throws -> DocumentReference {
+            if let id {
+                return .documentID(try DocumentID(rawValue: id))
+            }
+
+            return .path(try DocumentPath(paths[0]))
+        }
+
+        private func destinationPath() throws -> DocumentPath {
+            try DocumentPath(id == nil ? paths[1] : paths[0])
         }
     }
 
@@ -830,6 +904,24 @@ private struct PatchCheckOutput: Encodable {
     let operation: String
     let status: String
     let success: Bool
+}
+
+private struct MoveOutput: Encodable {
+    let documentID: String
+    let from: String
+    let operation: String
+    let path: String
+    let status: String
+    let version: UInt64
+
+    init(_ result: DocumentMoveResult) {
+        documentID = result.document.id.rawValue
+        from = result.sourcePath.rawValue
+        operation = "move"
+        path = result.document.path.rawValue
+        status = result.moved ? "moved" : "unchanged"
+        version = result.document.currentVersion
+    }
 }
 
 private struct PruneOutput: Encodable {
@@ -1390,6 +1482,7 @@ private func commandHelpMessage(for command: String?) -> String {
             "init": MetaBrainCommand.Initialize.helpMessage(),
             "put": MetaBrainCommand.Put.helpMessage(),
             "patch": MetaBrainCommand.Patch.helpMessage(),
+            "move": MetaBrainCommand.Move.helpMessage(),
             "get": MetaBrainCommand.Get.helpMessage(),
             "list": MetaBrainCommand.List.helpMessage(),
             "tree": MetaBrainCommand.Tree.helpMessage(),
