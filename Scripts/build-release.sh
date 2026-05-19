@@ -232,8 +232,9 @@ release_name="${PRODUCT_NAME}-${VERSION}-macos-universal"
 release_dir="${DIST_DIR}/${release_name}"
 binary_path="${release_dir}/${PRODUCT_NAME}"
 archive_path="${DIST_DIR}/${release_name}.zip"
+checksum_path="${archive_path}.sha256"
 
-rm -rf "${release_dir}" "${archive_path}"
+rm -rf "${release_dir}" "${archive_path}" "${checksum_path}"
 mkdir -p "${release_dir}"
 
 if [[ "${#arch_binaries[@]}" -eq 1 ]]; then
@@ -280,5 +281,17 @@ else
   echo "Skipping notarization."
 fi
 
+echo "Writing SHA-256 checksum..."
+if command -v shasum >/dev/null 2>&1; then
+  (
+    cd "${DIST_DIR}"
+    shasum -a 256 "$(basename "${archive_path}")" > "${checksum_path}"
+  )
+else
+  checksum="$(swift package compute-checksum "${archive_path}")"
+  printf '%s  %s\n' "${checksum}" "$(basename "${archive_path}")" > "${checksum_path}"
+fi
+
 echo "Release binary: ${binary_path}"
 echo "Release archive: ${archive_path}"
+echo "Release checksum: ${checksum_path}"

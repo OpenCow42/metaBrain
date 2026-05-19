@@ -61,7 +61,12 @@ By default, artifacts are written under `dist/`:
 ```text
 dist/mb-<version>-macos-universal/
 dist/mb-<version>-macos-universal.zip
+dist/mb-<version>-macos-universal.zip.sha256
 ```
 
 Standalone CLI zip archives are not stapled. Distribute the notarized zip
 returned by Apple's notary service.
+
+Upload both the zip and `.sha256` file to the GitHub release. Homebrew formula
+updates can use the zip URL and the SHA-256 value from either the checksum file
+or GitHub's release asset digest.
