@@ -272,7 +272,7 @@ fi
 echo "Creating notarization archive..."
 (
   cd "${DIST_DIR}"
-  ditto -c -k --keepParent "${release_name}" "${archive_path}"
+  COPYFILE_DISABLE=1 ditto -c -k --norsrc --keepParent "${release_name}" "${archive_path}"
 )
 
 if [[ "${SKIP_NOTARIZATION}" -eq 0 ]]; then
