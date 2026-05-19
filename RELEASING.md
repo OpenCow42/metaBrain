@@ -60,6 +60,9 @@ By default, artifacts are written under `dist/`:
 
 ```text
 dist/mb-<version>-macos-universal/
+dist/mb-<version>-macos-universal/bin/mb
+dist/mb-<version>-macos-universal/README.md
+dist/mb-<version>-macos-universal/LICENSE
 dist/mb-<version>-macos-universal.zip
 dist/mb-<version>-macos-universal.zip.sha256
 ```

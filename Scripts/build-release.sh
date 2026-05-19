@@ -230,12 +230,12 @@ done
 
 release_name="${PRODUCT_NAME}-${VERSION}-macos-universal"
 release_dir="${DIST_DIR}/${release_name}"
-binary_path="${release_dir}/${PRODUCT_NAME}"
+binary_path="${release_dir}/bin/${PRODUCT_NAME}"
 archive_path="${DIST_DIR}/${release_name}.zip"
 checksum_path="${archive_path}.sha256"
 
 rm -rf "${release_dir}" "${archive_path}" "${checksum_path}"
-mkdir -p "${release_dir}"
+mkdir -p "${release_dir}/bin"
 
 if [[ "${#arch_binaries[@]}" -eq 1 ]]; then
   install -m 0755 "${arch_binaries[0]}" "${binary_path}"
@@ -244,6 +244,9 @@ else
   lipo -create "${arch_binaries[@]}" -output "${binary_path}"
   chmod 0755 "${binary_path}"
 fi
+
+install -m 0644 "${ROOT_DIR}/README.md" "${release_dir}/README.md"
+install -m 0644 "${ROOT_DIR}/LICENSE" "${release_dir}/LICENSE"
 
 lipo -info "${binary_path}"
 
