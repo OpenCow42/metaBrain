@@ -47,6 +47,7 @@ public struct MetaBrainStoreOptions: Equatable, Sendable {
 public enum MetaBrainStoreError: Error, Equatable, Sendable, CustomStringConvertible {
     case openFailed(path: String, message: String)
     case operationFailed(message: String)
+    case documentNotFound(String)
     case pathAlreadyExists(DocumentPath, existingID: DocumentID)
     case currentVersionCannotBeRemoved(DocumentID, sequence: UInt64)
     case unsupportedRecordSchemaVersion(UInt8)
@@ -57,6 +58,8 @@ public enum MetaBrainStoreError: Error, Equatable, Sendable, CustomStringConvert
             "Could not open metaBrain store at \(path): \(message)"
         case .operationFailed(let message):
             "LevelDB operation failed: \(message)"
+        case .documentNotFound(let reference):
+            "Document not found: \(reference)."
         case .pathAlreadyExists(let path, let existingID):
             "Document path \(path.rawValue) already points to document \(existingID.rawValue)."
         case .currentVersionCannotBeRemoved(let id, let sequence):
@@ -129,6 +132,48 @@ public final class MetaBrainStore: Sendable {
             }
 
             return try await self.writeDocumentUpdate(id: id, input: input)
+        }
+    }
+
+    @discardableResult
+    public func moveDocument(
+        _ reference: DocumentReference,
+        to destinationPath: DocumentPath
+    ) async throws -> DocumentMoveResult {
+        try await writes.run {
+            guard let id = try await self.documentID(for: reference),
+                  let existingRecord = try await self.documentRecord(id: id) else {
+                throw MetaBrainStoreError.documentNotFound(Self.referenceDescription(reference))
+            }
+
+            let existing = existingRecord.document
+            guard existing.path != destinationPath else {
+                return DocumentMoveResult(
+                    document: existing,
+                    sourcePath: existing.path,
+                    destinationPath: destinationPath,
+                    moved: false
+                )
+            }
+
+            let moved = try await self.writeDocumentUpdate(
+                id: id,
+                input: DocumentInput(
+                    path: destinationPath,
+                    title: existing.title,
+                    body: existing.body,
+                    tags: existing.tags,
+                    metadata: existing.metadata,
+                    references: existing.references
+                )
+            )
+
+            return DocumentMoveResult(
+                document: moved,
+                sourcePath: existing.path,
+                destinationPath: destinationPath,
+                moved: true
+            )
         }
     }
 
@@ -1699,6 +1744,17 @@ public final class MetaBrainStore: Sendable {
             .openFailed(path: path, message: message)
         case .operationFailed(let message):
             .operationFailed(message: message)
+        }
+    }
+
+    private static func referenceDescription(_ reference: DocumentReference) -> String {
+        switch reference {
+        case .documentID(let id):
+            id.rawValue
+        case .path(let path):
+            path.rawValue
+        case .externalURL(let url):
+            url.absoluteString
         }
     }
 }

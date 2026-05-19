@@ -60,6 +60,12 @@ Documents are text-first records with metadata and references.
 - Store references between documents as first-class edges.
 - Allow unresolved path references and external URL references.
 
+When a relationship should survive path reorganization, callers should prefer a
+document ID reference. Moving a document preserves its stable ID and updates its
+path alias, but it does not rewrite stored path references in other documents.
+Path references are therefore best treated as location aliases rather than
+durable identity links.
+
 Versioning should store full snapshots for v1. This is intentionally simple, reliable, and compatible with compression. Delta storage can be added later behind the same version API if measurements justify it.
 
 Retention should be configurable:

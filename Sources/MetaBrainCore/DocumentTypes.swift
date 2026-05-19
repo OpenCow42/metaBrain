@@ -170,6 +170,25 @@ public struct StoredDocument: Codable, Equatable, Sendable, Identifiable {
     }
 }
 
+public struct DocumentMoveResult: Codable, Equatable, Sendable {
+    public var document: StoredDocument
+    public var sourcePath: DocumentPath
+    public var destinationPath: DocumentPath
+    public var moved: Bool
+
+    public init(
+        document: StoredDocument,
+        sourcePath: DocumentPath,
+        destinationPath: DocumentPath,
+        moved: Bool
+    ) {
+        self.document = document
+        self.sourcePath = sourcePath
+        self.destinationPath = destinationPath
+        self.moved = moved
+    }
+}
+
 public struct DocumentAccessCounts: Codable, Equatable, Sendable {
     public var readCount: UInt64
     public var patchCount: UInt64
