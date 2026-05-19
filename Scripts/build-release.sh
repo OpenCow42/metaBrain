@@ -271,8 +271,8 @@ fi
 
 echo "Creating notarization archive..."
 (
-  cd "${release_dir}"
-  ditto -c -k --keepParent "${PRODUCT_NAME}" "${archive_path}"
+  cd "${DIST_DIR}"
+  ditto -c -k --keepParent "${release_name}" "${archive_path}"
 )
 
 if [[ "${SKIP_NOTARIZATION}" -eq 0 ]]; then
