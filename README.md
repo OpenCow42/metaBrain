@@ -110,10 +110,11 @@ mb patch /tasks/release-checklist --patch-file change.diff
 mb patch /tasks/release-checklist --patch-file change.diff --check
 ```
 
-Export a subtree as JSONL, optionally with UTF-8 body files:
+Export a subtree as JSON, optionally with UTF-8 body files:
 
 ```bash
 mb dump /tasks --output-dir ./metabrain-dump
+mb dump /tasks --format jsonl
 ```
 
 Inspect history and prune retained versions:
@@ -143,7 +144,7 @@ mb help dump
 - `list` lists stored document paths in a virtual folder.
 - `tree` prints the stored document path tree.
 - `search` searches current document content with optional filters.
-- `dump` exports documents as JSONL and optional body files.
+- `dump` exports documents as JSON and optional body files.
 - `versions` lists retained snapshots for a document.
 - `prune` applies a retention policy to document versions.
 - `delete` removes a current document and all retained versions.
@@ -187,7 +188,7 @@ Implemented behavior includes:
 - Tag, metadata, and path-prefix search filters.
 - Internal reference indexes for resolved document links.
 - Virtual folder browsing through explicit `tree/` indexes.
-- JSONL subtree dumping with optional versioned body files.
+- JSON subtree dumping with optional versioned body files.
 
 For cross-document relationships, prefer document ID references over path
 references when the relationship is meant to survive reorganization. A move

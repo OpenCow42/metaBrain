@@ -115,12 +115,12 @@ struct OutputFormatOptions: ParsableArguments {
 
 struct TextOutputFormatOptions: ParsableArguments {
     @Option(help: "Output format: text, json, or jsonl.")
-    var format: CLIOutputFormat = .text
+    var format: CLIOutputFormat = .json
 }
 
 struct ListOutputFormatOptions: ParsableArguments {
     @Option(help: "Output format: text, json, or jsonl.")
-    var format: CLIOutputFormat = .jsonl
+    var format: CLIOutputFormat = .json
 }
 
 struct ReferenceOptions: ParsableArguments {
@@ -691,7 +691,7 @@ extension MetaBrainCommand {
     struct Dump: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "dump",
-            abstract: "Dump stored documents as JSONL and optional UTF-8 files."
+            abstract: "Dump stored documents as JSON and optional UTF-8 files."
         )
 
         @OptionGroup var storeOptions: StoreOptions
