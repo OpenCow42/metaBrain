@@ -2,6 +2,50 @@
 
 import PackageDescription
 
+let benchmarkDependencies: [Package.Dependency]
+let benchmarkTargets: [Target]
+
+#if os(Windows)
+benchmarkDependencies = []
+benchmarkTargets = []
+#else
+benchmarkDependencies = [
+    .package(
+        url: "https://github.com/ordo-one/package-benchmark",
+        from: "1.32.0",
+        traits: []
+    )
+]
+benchmarkTargets = [
+    .executableTarget(
+        name: "MetaBrainCoreBenchmarks",
+        dependencies: [
+            "MetaBrainCore",
+            .product(name: "Benchmark", package: "package-benchmark")
+        ],
+        path: "Benchmarks/MetaBrainCoreBenchmarks",
+        plugins: [
+            .plugin(name: "BenchmarkPlugin", package: "package-benchmark")
+        ]
+    )
+]
+#endif
+
+let packageDependencies: [Package.Dependency] = [
+    .package(
+        url: "https://github.com/apple/swift-argument-parser.git",
+        from: "1.5.0"
+    ),
+    .package(
+        url: "https://github.com/x-sheep/swift-property-based.git",
+        from: "1.2.0"
+    ),
+    .package(
+        url: "git@github.com:OpenCow42/swift-leveldb.git",
+        branch: "main"
+    )
+] + benchmarkDependencies
+
 let package = Package(
     name: "metaBrain",
     platforms: [
@@ -17,25 +61,7 @@ let package = Package(
             targets: ["MetaBrainCLI"]
         )
     ],
-    dependencies: [
-        .package(
-            url: "https://github.com/apple/swift-argument-parser.git",
-            from: "1.5.0"
-        ),
-        .package(
-            url: "https://github.com/ordo-one/package-benchmark",
-            from: "1.32.0",
-            traits: []
-        ),
-        .package(
-            url: "https://github.com/x-sheep/swift-property-based.git",
-            from: "1.2.0"
-        ),
-        .package(
-            url: "git@github.com:OpenCow42/swift-leveldb.git",
-            branch: "main"
-        )
-    ],
+    dependencies: packageDependencies,
     targets: [
         .target(
             name: "MetaBrainCore",
@@ -48,17 +74,6 @@ let package = Package(
             dependencies: [
                 "MetaBrainCore",
                 .product(name: "ArgumentParser", package: "swift-argument-parser")
-            ]
-        ),
-        .executableTarget(
-            name: "MetaBrainCoreBenchmarks",
-            dependencies: [
-                "MetaBrainCore",
-                .product(name: "Benchmark", package: "package-benchmark")
-            ],
-            path: "Benchmarks/MetaBrainCoreBenchmarks",
-            plugins: [
-                .plugin(name: "BenchmarkPlugin", package: "package-benchmark")
             ]
         ),
         .executableTarget(
@@ -81,6 +96,6 @@ let package = Package(
                 .product(name: "PropertyBased", package: "swift-property-based")
             ]
         ),
-    ],
+    ] + benchmarkTargets,
     swiftLanguageModes: [.v6]
 )

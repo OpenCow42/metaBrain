@@ -1,5 +1,5 @@
 {
-  "originHash" : "e3458b81a148603747377cb88c67c86a5553b08c03152366d42fdb5ac3ade6c5",
+  "originHash" : "7ccfd10e7dfdbee9d490d5b5c20a1cc046bdb600e2442263cf9876f8abc58690",
   "pins" : [
     {
       "identity" : "hdrhistogram-swift",
@@ -43,7 +43,7 @@
       "location" : "git@github.com:OpenCow42/swift-leveldb.git",
       "state" : {
         "branch" : "main",
-        "revision" : "0f7f66f63bbd7f35f9606d4983a5d1c456a9ca71"
+        "revision" : "96b47cbe13de624b3ca824eb4ed36ae38fb468b2"
       }
     },
     {
@@ -62,15 +62,6 @@
       "state" : {
         "revision" : "edaffedcd90339544fefb2f045f3fa988d94c794",
         "version" : "1.2.0"
-      }
-    },
-    {
-      "identity" : "swift-runtime-interposer",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/ordo-one/swift-runtime-interposer.git",
-      "state" : {
-        "revision" : "7fd519fa3947bc8d29495f60fc8b6580ec361b5d",
-        "version" : "1.0.0"
       }
     },
     {
