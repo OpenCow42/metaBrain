@@ -2,6 +2,10 @@ import ArgumentParser
 import Foundation
 import MetaBrainCore
 
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
+
 @main
 struct MetaBrainCommand: AsyncParsableCommand {
     private static let agentDiscoveryGuide = """
@@ -20,8 +24,10 @@ struct MetaBrainCommand: AsyncParsableCommand {
           mb help move
           mb help delete
           mb help remove-version
+          mb help version
 
         Common workflow:
+          mb version
           mb init --store .metabrain/store.leveldb
           mb put /notes/today "Important context" --tag planning --meta source=agent
           mb patch /notes/today --patch-file change.diff
@@ -57,7 +63,8 @@ struct MetaBrainCommand: AsyncParsableCommand {
             Versions.self,
             Prune.self,
             Delete.self,
-            RemoveVersion.self
+            RemoveVersion.self,
+            Version.self
         ]
     )
 
@@ -104,6 +111,11 @@ enum CLIOutputFormat: String, ExpressibleByArgument {
 struct OutputFormatOptions: ParsableArguments {
     @Option(help: "Output format: text, json, or jsonl.")
     var format: CLIOutputFormat = .json
+}
+
+struct TextOutputFormatOptions: ParsableArguments {
+    @Option(help: "Output format: text, json, or jsonl.")
+    var format: CLIOutputFormat = .text
 }
 
 struct ListOutputFormatOptions: ParsableArguments {
@@ -194,7 +206,7 @@ extension MetaBrainCommand {
             abstract: "Show metaBrain CLI help."
         )
 
-        @Argument(help: "Optional command to inspect: init, put, patch, move, get, list, tree, search, dump, versions, prune, delete, or remove-version.")
+        @Argument(help: "Optional command to inspect: init, put, patch, move, get, list, tree, search, dump, versions, prune, delete, remove-version, or version.")
         var command: String?
 
         func validate() throws {
@@ -203,10 +215,10 @@ extension MetaBrainCommand {
             }
 
             switch command {
-            case "init", "put", "patch", "move", "get", "list", "tree", "search", "dump", "versions", "prune", "delete", "remove-version":
+            case "init", "put", "patch", "move", "get", "list", "tree", "search", "dump", "versions", "prune", "delete", "remove-version", "version":
                 return
             default:
-                throw ValidationError("Unknown help topic '\(command)'. Use one of: init, put, patch, move, get, list, tree, search, dump, versions, prune, delete, remove-version.")
+                throw ValidationError("Unknown help topic '\(command)'. Use one of: init, put, patch, move, get, list, tree, search, dump, versions, prune, delete, remove-version, version.")
             }
         }
 
@@ -875,6 +887,76 @@ extension MetaBrainCommand {
             }
         }
     }
+
+    struct Version: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "version",
+            abstract: "Print the metaBrain version and check GitHub releases."
+        )
+
+        @OptionGroup var output: TextOutputFormatOptions
+
+        @Flag(name: .customLong("no-release-check"), help: "Skip the GitHub latest release check.")
+        var noReleaseCheck = false
+
+        @Option(name: .customLong("release-api-url"), help: "GitHub latest release API URL.")
+        var releaseAPIURL = "https://api.github.com/repos/OpenCow42/metaBrain/releases/latest"
+
+        @Option(name: .customLong("release-check-timeout"), help: "Seconds to wait for the GitHub release check.")
+        var releaseCheckTimeout: TimeInterval = 5
+
+        func validate() throws {
+            guard releaseCheckTimeout > 0 else {
+                throw ValidationError("--release-check-timeout must be greater than zero.")
+            }
+
+            guard URL(string: releaseAPIURL)?.scheme != nil else {
+                throw ValidationError("--release-api-url must be an absolute URL.")
+            }
+        }
+
+        func run() async throws {
+            let currentTag = currentSoftwareTag()
+            let releaseCheck: ReleaseCheckOutput?
+
+            if noReleaseCheck {
+                releaseCheck = nil
+            } else {
+                releaseCheck = await checkLatestRelease(
+                    currentTag: currentTag,
+                    releaseAPIURL: releaseAPIURL,
+                    timeout: releaseCheckTimeout
+                )
+            }
+
+            let result = VersionOutput(
+                currentTag: currentTag,
+                releaseCheck: releaseCheck
+            )
+
+            switch output.format {
+            case .text:
+                print("version: \(currentTag)")
+                if let releaseCheck {
+                    print("latest: \(releaseCheck.latestTag ?? "unknown")")
+                    print("updateAvailable: \(releaseCheck.updateAvailable.map(String.init) ?? "unknown")")
+                    print("releaseCheck: \(releaseCheck.status)")
+                    if let htmlURL = releaseCheck.htmlURL {
+                        print("releaseURL: \(htmlURL)")
+                    }
+                    if let message = releaseCheck.message {
+                        print("message: \(message)")
+                    }
+                } else {
+                    print("releaseCheck: skipped")
+                }
+            case .json:
+                try printJSON(result)
+            case .jsonl:
+                try printJSONLine(result)
+            }
+        }
+    }
 }
 
 private struct InitializeOutput: Encodable {
@@ -965,6 +1047,40 @@ private struct RemoveVersionOutput: Encodable {
         self.removed = removed
         self.sequence = sequence
         status = "completed"
+    }
+}
+
+private struct VersionOutput: Encodable {
+    let currentTag: String
+    let releaseCheck: ReleaseCheckOutput?
+
+    private enum CodingKeys: String, CodingKey {
+        case currentTag
+        case releaseCheck
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(currentTag, forKey: .currentTag)
+        try container.encode(releaseCheck, forKey: .releaseCheck)
+    }
+}
+
+private struct ReleaseCheckOutput: Encodable {
+    let htmlURL: String?
+    let latestTag: String?
+    let message: String?
+    let status: String
+    let updateAvailable: Bool?
+}
+
+private struct GitHubReleaseResponse: Decodable {
+    let htmlURL: String?
+    let tagName: String
+
+    private enum CodingKeys: String, CodingKey {
+        case htmlURL = "html_url"
+        case tagName = "tag_name"
     }
 }
 
@@ -1491,8 +1607,144 @@ private func commandHelpMessage(for command: String?) -> String {
             "versions": MetaBrainCommand.Versions.helpMessage(),
             "prune": MetaBrainCommand.Prune.helpMessage(),
             "delete": MetaBrainCommand.Delete.helpMessage(),
-            "remove-version": MetaBrainCommand.RemoveVersion.helpMessage()
+            "remove-version": MetaBrainCommand.RemoveVersion.helpMessage(),
+            "version": MetaBrainCommand.Version.helpMessage()
     ][command]!
+}
+
+private func currentSoftwareTag() -> String {
+    if let override = ProcessInfo.processInfo.environment["METABRAIN_VERSION"],
+       !override.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        return override
+    }
+
+    if let tag = gitTagFromCurrentCheckout() {
+        return tag
+    }
+
+    return "1.1.1"
+}
+
+private func gitTagFromCurrentCheckout() -> String? {
+    guard FileManager.default.fileExists(atPath: "Package.swift") else {
+        return nil
+    }
+
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+    process.arguments = ["git", "describe", "--tags", "--abbrev=0"]
+
+    let output = Pipe()
+    process.standardOutput = output
+    process.standardError = Pipe()
+
+    do {
+        try process.run()
+        process.waitUntilExit()
+    } catch {
+        return nil
+    }
+
+    guard process.terminationStatus == 0 else {
+        return nil
+    }
+
+    let data = output.fileHandleForReading.readDataToEndOfFile()
+    let tag = String(decoding: data, as: UTF8.self)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    return tag.isEmpty ? nil : tag
+}
+
+private func checkLatestRelease(
+    currentTag: String,
+    releaseAPIURL: String,
+    timeout: TimeInterval
+) async -> ReleaseCheckOutput {
+    guard let url = URL(string: releaseAPIURL) else {
+        return ReleaseCheckOutput(
+            htmlURL: nil,
+            latestTag: nil,
+            message: "Invalid GitHub releases URL.",
+            status: "failed",
+            updateAvailable: nil
+        )
+    }
+
+    var request = URLRequest(url: url, timeoutInterval: timeout)
+    request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+    request.setValue("metaBrain-cli", forHTTPHeaderField: "User-Agent")
+
+    do {
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            return ReleaseCheckOutput(
+                htmlURL: nil,
+                latestTag: nil,
+                message: "GitHub releases response was not HTTP.",
+                status: "failed",
+                updateAvailable: nil
+            )
+        }
+
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            return ReleaseCheckOutput(
+                htmlURL: nil,
+                latestTag: nil,
+                message: "GitHub releases request returned HTTP \(httpResponse.statusCode).",
+                status: "failed",
+                updateAvailable: nil
+            )
+        }
+
+        let release = try JSONDecoder().decode(GitHubReleaseResponse.self, from: data)
+        let updateAvailable = isReleaseTag(release.tagName, newerThan: currentTag)
+        return ReleaseCheckOutput(
+            htmlURL: release.htmlURL,
+            latestTag: release.tagName,
+            message: nil,
+            status: "checked",
+            updateAvailable: updateAvailable
+        )
+    } catch {
+        return ReleaseCheckOutput(
+            htmlURL: nil,
+            latestTag: nil,
+            message: error.localizedDescription,
+            status: "failed",
+            updateAvailable: nil
+        )
+    }
+}
+
+private func isReleaseTag(_ candidate: String, newerThan current: String) -> Bool {
+    let candidateParts = semanticVersionParts(candidate)
+    let currentParts = semanticVersionParts(current)
+
+    if candidateParts.count == 3, currentParts.count == 3 {
+        return candidateParts.lexicographicallyPrecedes(currentParts) == false && candidateParts != currentParts
+    }
+
+    return candidate != current
+}
+
+private func semanticVersionParts(_ tag: String) -> [Int] {
+    let normalized = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
+    let core = normalized.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false)[0]
+    let parts = core.split(separator: ".", omittingEmptySubsequences: false)
+
+    guard parts.count == 3 else {
+        return []
+    }
+
+    var numbers: [Int] = []
+    for part in parts {
+        guard let number = Int(part) else {
+            return []
+        }
+        numbers.append(number)
+    }
+
+    return numbers
 }
 
 extension URL {

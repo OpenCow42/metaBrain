@@ -202,7 +202,9 @@ assert_remove_version_json() {
 "${METABRAIN[@]}" help | rg -q 'mb help tree'
 "${METABRAIN[@]}" help | rg -q 'mb help dump'
 "${METABRAIN[@]}" help | rg -q 'mb help move'
+"${METABRAIN[@]}" help | rg -q 'mb help version'
 "${METABRAIN[@]}" help init | rg -q 'Create or open a metaBrain store'
+"${METABRAIN[@]}" help version | rg -q 'Print the metaBrain version and check GitHub releases'
 "${METABRAIN[@]}" help put | rg -q 'Create or update a document at a path'
 "${METABRAIN[@]}" help patch | rg -q 'Patch a document body with a unified diff'
 "${METABRAIN[@]}" help move | rg -q 'Move an existing document to a new path without changing its ID'
@@ -217,6 +219,16 @@ assert_remove_version_json() {
 "${METABRAIN[@]}" help prune | rg -q 'Prune document versions using a retention policy'
 "${METABRAIN[@]}" help delete | rg -q 'Delete a document and all retained versions'
 "${METABRAIN[@]}" help remove-version | rg -q 'Remove one retained historical document version'
+VERSION_TEXT="$(METABRAIN_VERSION=9.8.7 "${METABRAIN[@]}" version --no-release-check)"
+if [[ "$VERSION_TEXT" != $'version: 9.8.7\nreleaseCheck: skipped' ]]; then
+    echo "Expected version text output without release check, got: $VERSION_TEXT" >&2
+    exit 1
+fi
+VERSION_JSON="$(METABRAIN_VERSION=9.8.7 "${METABRAIN[@]}" version --no-release-check --format json)"
+if [[ "$VERSION_JSON" != '{"currentTag":"9.8.7","releaseCheck":null}' ]]; then
+    echo "Expected version JSON output without release check, got: $VERSION_JSON" >&2
+    exit 1
+fi
 
 if "${METABRAIN[@]}" help missing 2>"$TMP_DIR/help-missing.err"; then
     echo "Expected unknown help topic to fail" >&2

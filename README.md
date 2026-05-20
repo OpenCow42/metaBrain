@@ -126,6 +126,7 @@ mb prune /tasks/release-checklist --keep-last 5
 Ask the CLI what it can do:
 
 ```bash
+mb version
 mb --help
 mb help search
 mb help dump
@@ -133,6 +134,7 @@ mb help dump
 
 ## Commands
 
+- `version` prints the current release tag and checks GitHub for newer releases.
 - `init` creates or opens a store.
 - `put` creates or updates a document at a path.
 - `patch` applies a single-file unified diff to an existing document body.
