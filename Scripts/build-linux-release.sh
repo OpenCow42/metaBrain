@@ -21,7 +21,7 @@ Build Ubuntu/Linux release artifacts for the mb CLI:
   - SHA-256 checksum files for both artifacts
 
 Options:
-  --version <version>    Release version, for example 1.1.1.
+  --version <version>    Release version, for example 1.1.2.
   --tag <tag>            GitHub release tag. Defaults to the version.
   --dist-dir <path>      Output directory. Defaults to ./dist.
   --build-root <path>    Build scratch root. Defaults to ./.build/release-linux.
@@ -34,7 +34,7 @@ Environment aliases:
   METABRAIN_RELEASE_BUILD_DIR, METABRAIN_GITHUB_REPO
 
 Example:
-  Scripts/build-linux-release.sh --version 1.1.1 --upload
+  Scripts/build-linux-release.sh --version 1.1.2 --upload
 USAGE
 }
 
