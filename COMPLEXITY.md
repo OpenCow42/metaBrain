@@ -135,9 +135,8 @@ and [LevelDB options](https://github.com/google/leveldb/blob/main/include/leveld
 
 ### `version`
 
-`version` resolves the current CLI tag from `METABRAIN_VERSION`, the current
-metaBrain checkout's nearest Git tag, or the bundled release fallback. It does
-not open the document store.
+`version` resolves the current CLI tag from `METABRAIN_VERSION` or the bundled
+release version. It does not open the document store.
 
 By default, it also fetches GitHub's latest release endpoint once with a bounded
 timeout and compares semantic release tags. Passing `--no-release-check` keeps

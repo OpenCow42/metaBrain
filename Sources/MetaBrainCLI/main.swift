@@ -1618,41 +1618,7 @@ private func currentSoftwareTag() -> String {
         return override
     }
 
-    if let tag = gitTagFromCurrentCheckout() {
-        return tag
-    }
-
-    return "1.1.1"
-}
-
-private func gitTagFromCurrentCheckout() -> String? {
-    guard FileManager.default.fileExists(atPath: "Package.swift") else {
-        return nil
-    }
-
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-    process.arguments = ["git", "describe", "--tags", "--abbrev=0"]
-
-    let output = Pipe()
-    process.standardOutput = output
-    process.standardError = Pipe()
-
-    do {
-        try process.run()
-        process.waitUntilExit()
-    } catch {
-        return nil
-    }
-
-    guard process.terminationStatus == 0 else {
-        return nil
-    }
-
-    let data = output.fileHandleForReading.readDataToEndOfFile()
-    let tag = String(decoding: data, as: UTF8.self)
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-    return tag.isEmpty ? nil : tag
+    return "1.1.2"
 }
 
 private func checkLatestRelease(

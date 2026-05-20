@@ -7,6 +7,12 @@ they are uploaded or referenced from Homebrew. Do not publish a macOS archive
 that was built with `--skip-sign` or `--skip-notarization`; those flags are only
 for local smoke checks.
 
+## Before Release
+
+Before cutting a new release, update the bundled version returned by
+`currentSoftwareTag()` in `Sources/MetaBrainCLI/main.swift` to the release tag.
+This keeps `mb version` accurate before the tag exists and in installed builds.
+
 ## macOS Release
 
 The release helper builds a universal macOS binary named `mb` for Apple silicon
@@ -15,7 +21,7 @@ notary service:
 
 ~~~bash
 Scripts/build-release.sh \
-  --version 1.1.1 \
+  --version 1.1.2 \
   --identity <developer-id-sha-or-name> \
   --notary-profile metabrain-notary
 ~~~
@@ -92,11 +98,11 @@ Verify the uploaded macOS asset:
 ~~~bash
 tmp="$(mktemp -d)"
 cd "$tmp"
-gh release download 1.1.1 --repo OpenCow42/metaBrain --pattern 'mb-1.1.1-macos-universal.zip*'
-shasum -a 256 -c mb-1.1.1-macos-universal.zip.sha256
-unzip -q mb-1.1.1-macos-universal.zip
-codesign --verify --verbose mb-1.1.1-macos-universal/bin/mb
-mb-1.1.1-macos-universal/bin/mb --help
+gh release download 1.1.2 --repo OpenCow42/metaBrain --pattern 'mb-1.1.2-macos-universal.zip*'
+shasum -a 256 -c mb-1.1.2-macos-universal.zip.sha256
+unzip -q mb-1.1.2-macos-universal.zip
+codesign --verify --verbose mb-1.1.2-macos-universal/bin/mb
+mb-1.1.2-macos-universal/bin/mb --help
 ~~~
 
 ## macOS Helper Options
@@ -128,7 +134,7 @@ helper. The binary is built with a statically linked Swift standard library so
 the package does not require Swift to be installed on end-user machines.
 
 ~~~bash
-Scripts/build-linux-release.sh --version 1.1.1
+Scripts/build-linux-release.sh --version 1.1.2
 ~~~
 
 This writes:
@@ -143,7 +149,7 @@ dist/metabrain_<version>_amd64.deb.sha256
 To create or update the GitHub release and upload artifacts, run:
 
 ~~~bash
-Scripts/build-linux-release.sh --version 1.1.1 --upload
+Scripts/build-linux-release.sh --version 1.1.2 --upload
 ~~~
 
 The upload mode requires GitHub CLI authentication and infers the repository
@@ -153,10 +159,10 @@ GitHub remote.
 Verify the generated artifacts before upload:
 
 ~~~bash
-sha256sum -c dist/mb-1.1.1-linux-x86_64.tar.gz.sha256
-sha256sum -c dist/metabrain_1.1.1_amd64.deb.sha256
-tar -tzf dist/mb-1.1.1-linux-x86_64.tar.gz
-dpkg-deb -I dist/metabrain_1.1.1_amd64.deb
+sha256sum -c dist/mb-1.1.2-linux-x86_64.tar.gz.sha256
+sha256sum -c dist/metabrain_1.1.2_amd64.deb.sha256
+tar -tzf dist/mb-1.1.2-linux-x86_64.tar.gz
+dpkg-deb -I dist/metabrain_1.1.2_amd64.deb
 ~~~
 
 ## Ubuntu APT Repository
