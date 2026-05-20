@@ -22,6 +22,30 @@ Install from the public OpenCow42 Homebrew tap:
 brew tap OpenCow42/tap && brew install mb
 ```
 
+## Install On Ubuntu
+
+Install from the public OpenCow42 APT repository on Ubuntu 24.04 or 26.04.
+The package name is `metabrain`, and it installs the `mb` command.
+
+Ubuntu 24.04:
+
+```bash
+echo 'deb [trusted=yes] https://opencow42.github.io/apt-repo ubuntu24.04 main' | sudo tee /etc/apt/sources.list.d/opencow.list
+sudo apt update
+sudo apt install metabrain
+```
+
+Ubuntu 26.04:
+
+```bash
+echo 'deb [trusted=yes] https://opencow42.github.io/apt-repo ubuntu26.04 main' | sudo tee /etc/apt/sources.list.d/opencow.list
+sudo apt update
+sudo apt install metabrain
+```
+
+The current Ubuntu package is published for `amd64`. The repository uses
+`trusted=yes` until signed APT metadata is available.
+
 ## Why Try It
 
 - **One local memory per workspace.** The default store lives at
@@ -37,7 +61,7 @@ brew tap OpenCow42/tap && brew install mb
 
 ## Requirements
 
-- macOS 15 or newer
+- macOS 15 or newer, or Ubuntu 24.04 / 26.04 on amd64
 - Swift 6.3 or newer when building from source
 
 ## Build From Source
