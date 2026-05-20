@@ -214,7 +214,7 @@ assert_remove_version_json() {
 "${METABRAIN[@]}" help list | rg -q 'List stored document paths in a folder'
 "${METABRAIN[@]}" help tree | rg -q 'Show the stored document path tree'
 "${METABRAIN[@]}" help search | rg -q 'Search current document content'
-"${METABRAIN[@]}" help dump | rg -q 'Dump stored documents as JSON'
+"${METABRAIN[@]}" help dump | rg -q 'Dump stored documents as JSONL'
 "${METABRAIN[@]}" help versions | rg -q 'List stored versions for a document'
 "${METABRAIN[@]}" help prune | rg -q 'Prune document versions using a retention policy'
 "${METABRAIN[@]}" help delete | rg -q 'Delete a document and all retained versions'
@@ -296,43 +296,37 @@ PUT_ARCHIVE_TEXT="$("${METABRAIN[@]}" put --store "$STORE" --format text /notes/
 assert_put_text "$PUT_ARCHIVE_TEXT" /notes/archive/final 1
 PUT_PATCHABLE_JSONL="$("${METABRAIN[@]}" put --store "$STORE" --format jsonl /notes/patchable 'one old patchable memory' --tag patch)"
 assert_put_json "$PUT_PATCHABLE_JSONL" /notes/patchable created 1
-DUMP_NOTES_DEFAULT_JSON="$("${METABRAIN[@]}" dump --store "$STORE" /notes)"
-assert_line_count "$DUMP_NOTES_DEFAULT_JSON" 1
-printf '%s\n' "$DUMP_NOTES_DEFAULT_JSON" | rg -q '^\[.*\]$'
-printf '%s\n' "$DUMP_NOTES_DEFAULT_JSON" >"$TMP_DIR/dump-notes.json"
-rg -F -q '"path":"/notes/archive/final"' "$TMP_DIR/dump-notes.json"
-rg -F -q '"path":"/notes/today"' "$TMP_DIR/dump-notes.json"
-rg -F -q '"body":"alpha beta searchable memory"' "$TMP_DIR/dump-notes.json"
-rg -F -q '"references":[]' "$TMP_DIR/dump-notes.json"
-rg -q '"documentID":"[0-9a-f-]+"' "$TMP_DIR/dump-notes.json"
-if rg -F -q '"path":"/refs/target"' "$TMP_DIR/dump-notes.json"; then
+DUMP_NOTES_DEFAULT_JSONL="$("${METABRAIN[@]}" dump --store "$STORE" /notes)"
+assert_line_count "$DUMP_NOTES_DEFAULT_JSONL" 3
+printf '%s\n' "$DUMP_NOTES_DEFAULT_JSONL" >"$TMP_DIR/dump-notes.jsonl"
+rg -F -q '"path":"/notes/archive/final"' "$TMP_DIR/dump-notes.jsonl"
+rg -F -q '"path":"/notes/today"' "$TMP_DIR/dump-notes.jsonl"
+rg -F -q '"body":"alpha beta searchable memory"' "$TMP_DIR/dump-notes.jsonl"
+rg -F -q '"references":[]' "$TMP_DIR/dump-notes.jsonl"
+rg -q '"documentID":"[0-9a-f-]+"' "$TMP_DIR/dump-notes.jsonl"
+if rg -F -q '"path":"/refs/target"' "$TMP_DIR/dump-notes.jsonl"; then
     echo "Expected /notes dump to exclude unrelated paths" >&2
     exit 1
 fi
 DUMP_NOTES_TEXT="$("${METABRAIN[@]}" dump --store "$STORE" /notes --format text)"
-assert_line_count "$DUMP_NOTES_TEXT" 3
-printf '%s\n' "$DUMP_NOTES_TEXT" | rg -F -q '"path":"/notes/today"'
-if [[ "$DUMP_NOTES_TEXT" == "$DUMP_NOTES_DEFAULT_JSON" ]]; then
-    echo "Expected dump text output to stay JSONL-shaped, got default JSON instead: $DUMP_NOTES_TEXT" >&2
+if [[ "$DUMP_NOTES_TEXT" != "$DUMP_NOTES_DEFAULT_JSONL" ]]; then
+    echo "Expected dump text output to match legacy JSONL output, got: $DUMP_NOTES_TEXT" >&2
     exit 1
 fi
 DUMP_NOTES_JSONL="$("${METABRAIN[@]}" dump --store "$STORE" /notes --format jsonl)"
-assert_line_count "$DUMP_NOTES_JSONL" 3
-if [[ "$DUMP_NOTES_JSONL" != "$DUMP_NOTES_TEXT" ]]; then
-    echo "Expected explicit dump JSONL output to match text output, got: $DUMP_NOTES_JSONL" >&2
+if [[ "$DUMP_NOTES_JSONL" != "$DUMP_NOTES_DEFAULT_JSONL" ]]; then
+    echo "Expected explicit dump JSONL output to match default output, got: $DUMP_NOTES_JSONL" >&2
     exit 1
 fi
 DUMP_NOTES_JSON="$("${METABRAIN[@]}" dump --store "$STORE" /notes --format json)"
-if [[ "$DUMP_NOTES_JSON" != "$DUMP_NOTES_DEFAULT_JSON" ]]; then
-    echo "Expected explicit dump JSON output to match default JSON output, got: $DUMP_NOTES_JSON" >&2
-    exit 1
-fi
+assert_line_count "$DUMP_NOTES_JSON" 1
+printf '%s\n' "$DUMP_NOTES_JSON" | rg -q '^\[.*\]$'
 printf '%s\n' "$DUMP_NOTES_JSON" | rg -F -q '"path":"/notes/archive/final"'
 printf '%s\n' "$DUMP_NOTES_JSON" | rg -F -q '"path":"/notes/today"'
 printf '%s\n' "$DUMP_NOTES_JSON" | rg -F -q '"body":"alpha beta searchable memory"'
-DUMP_MISSING_DEFAULT_JSON="$("${METABRAIN[@]}" dump --store "$STORE" /missing)"
-if [[ "$DUMP_MISSING_DEFAULT_JSON" != "[]" ]]; then
-    echo "Expected missing dump path to produce default empty JSON array, got: $DUMP_MISSING_DEFAULT_JSON" >&2
+DUMP_MISSING_DEFAULT_JSONL="$("${METABRAIN[@]}" dump --store "$STORE" /missing)"
+if [[ -n "$DUMP_MISSING_DEFAULT_JSONL" ]]; then
+    echo "Expected missing dump path to produce no default JSONL entries, got: $DUMP_MISSING_DEFAULT_JSONL" >&2
     exit 1
 fi
 DUMP_MISSING_JSONL="$("${METABRAIN[@]}" dump --store "$STORE" /missing --format jsonl)"
@@ -361,17 +355,17 @@ assert_patch_check_json "$PATCH_CHECK_JSON"
 PATCH_WRITE_JSON="$("${METABRAIN[@]}" patch --store "$STORE" /notes/patchable --patch-file "$PATCH_FILE")"
 assert_patch_write_json "$PATCH_WRITE_JSON" /notes/patchable 2
 "${METABRAIN[@]}" get --store "$STORE" /notes/patchable | rg -q 'one fresh patchable memory'
-SEARCH_PATCH_DEFAULT_JSON="$("${METABRAIN[@]}" search --store "$STORE" fresh --tag patch)"
-assert_line_count "$SEARCH_PATCH_DEFAULT_JSON" 1
-printf '%s\n' "$SEARCH_PATCH_DEFAULT_JSON" | rg -q '^\[.*\]$'
-printf '%s\n' "$SEARCH_PATCH_DEFAULT_JSON" | rg -F -q '"path":"/notes/patchable"'
-printf '%s\n' "$SEARCH_PATCH_DEFAULT_JSON" | rg -F -q 'fresh'
+SEARCH_PATCH_DEFAULT_JSONL="$("${METABRAIN[@]}" search --store "$STORE" fresh --tag patch)"
+assert_search_jsonl_result "$SEARCH_PATCH_DEFAULT_JSONL" /notes/patchable fresh
 SEARCH_PATCH_EXPLICIT_JSONL="$("${METABRAIN[@]}" search --store "$STORE" fresh --tag patch --format jsonl)"
-assert_search_jsonl_result "$SEARCH_PATCH_EXPLICIT_JSONL" /notes/patchable fresh
+if [[ "$SEARCH_PATCH_EXPLICIT_JSONL" != "$SEARCH_PATCH_DEFAULT_JSONL" ]]; then
+    echo "Expected explicit search JSONL to match default JSONL output, got: $SEARCH_PATCH_EXPLICIT_JSONL" >&2
+    exit 1
+fi
 "${METABRAIN[@]}" search --store "$STORE" fresh --tag patch --format text | rg -q '^/notes/patchable'
-SEARCH_OLD_DEFAULT_JSON="$("${METABRAIN[@]}" search --store "$STORE" old --tag patch)"
-if [[ "$SEARCH_OLD_DEFAULT_JSON" != "[]" ]]; then
-    echo "Expected default search JSON with no results to produce [], got: $SEARCH_OLD_DEFAULT_JSON" >&2
+SEARCH_OLD_DEFAULT_JSONL="$("${METABRAIN[@]}" search --store "$STORE" old --tag patch)"
+if [[ -n "$SEARCH_OLD_DEFAULT_JSONL" ]]; then
+    echo "Expected default search JSONL with no results to produce no output, got: $SEARCH_OLD_DEFAULT_JSONL" >&2
     exit 1
 fi
 SEARCH_OLD_JSON="$("${METABRAIN[@]}" search --store "$STORE" old --tag patch --format json)"
@@ -408,15 +402,16 @@ assert_patch_check_json "$PATCH_JSONL_CHECK"
 PATCH_JSONL_WRITE="$("${METABRAIN[@]}" patch --store "$STORE" /notes/jsonl-patch --patch-file "$JSONL_PATCH_FILE" --format jsonl)"
 assert_patch_write_json "$PATCH_JSONL_WRITE" /notes/jsonl-patch 2
 "${METABRAIN[@]}" get --store "$STORE" /notes/jsonl-patch | rg -q 'jsonl fresh memory'
-LIST_ROOT_JSON="$("${METABRAIN[@]}" list --store "$STORE")"
-assert_line_count "$LIST_ROOT_JSON" 1
-printf '%s\n' "$LIST_ROOT_JSON" | rg -q '^\[.*\]$'
-printf '%s\n' "$LIST_ROOT_JSON" | rg -q '"hasChildren":true.*"name":"notes".*"path":"/notes"'
+LIST_ROOT_JSONL="$("${METABRAIN[@]}" list --store "$STORE")"
+assert_line_count "$LIST_ROOT_JSONL" 1
+printf '%s\n' "$LIST_ROOT_JSONL" | rg -q '^\{.*"hasChildren":true.*"name":"notes".*"path":"/notes".*\}$'
 LIST_ROOT_TEXT="$("${METABRAIN[@]}" list --store "$STORE" --format text)"
 printf '%s\n' "$LIST_ROOT_TEXT" | rg -q '^notes/$'
 LIST_ROOT_EXPLICIT_JSONL="$("${METABRAIN[@]}" list --store "$STORE" --format jsonl)"
-assert_line_count "$LIST_ROOT_EXPLICIT_JSONL" 1
-printf '%s\n' "$LIST_ROOT_EXPLICIT_JSONL" | rg -q '^\{.*"hasChildren":true.*"name":"notes".*"path":"/notes".*\}$'
+if [[ "$LIST_ROOT_EXPLICIT_JSONL" != "$LIST_ROOT_JSONL" ]]; then
+    echo "Expected explicit list JSONL to match default JSONL output, got: $LIST_ROOT_EXPLICIT_JSONL" >&2
+    exit 1
+fi
 LIST_NOTES_JSON="$("${METABRAIN[@]}" list --store "$STORE" /notes --format json)"
 assert_line_count "$LIST_NOTES_JSON" 1
 printf '%s\n' "$LIST_NOTES_JSON" | rg -q '^\[.*\]$'
@@ -434,33 +429,24 @@ printf '%s\n' "$LIST_NOTES_JSONL" | rg -F -q '"path":"/notes/archive"'
 "${METABRAIN[@]}" list --store "$STORE" /notes --recursive --directories-only | rg -F -q '"path":"/notes/archive"'
 "${METABRAIN[@]}" list --store "$STORE" /notes --format text --recursive --directories-only | rg -q '^archive/$'
 "${METABRAIN[@]}" list --store "$STORE" /notes --format text --dates | rg -q '^today  created=.* updated=.*'
-TREE_ROOT_DEFAULT_JSON="$("${METABRAIN[@]}" tree --store "$STORE")"
-assert_line_count "$TREE_ROOT_DEFAULT_JSON" 1
-printf '%s\n' "$TREE_ROOT_DEFAULT_JSON" | rg -q '^\[.*\]$'
-printf '%s\n' "$TREE_ROOT_DEFAULT_JSON" | rg -F -q '"kind":"root"'
-printf '%s\n' "$TREE_ROOT_DEFAULT_JSON" | rg -F -q '"path":"/notes/today"'
+TREE_ROOT_JSONL="$("${METABRAIN[@]}" tree --store "$STORE")"
+printf '%s\n' "$TREE_ROOT_JSONL" | rg -F -q '{"createdAt":null,"documentID":null,"hasChildren":true,"kind":"root","name":"/","path":"/","updatedAt":null}'
+printf '%s\n' "$TREE_ROOT_JSONL" | rg -F -q '{"createdAt":null,"documentID":null,"hasChildren":true,"kind":"entry","name":"notes","path":"/notes","updatedAt":null}'
+printf '%s\n' "$TREE_ROOT_JSONL" | rg -q '^\{"createdAt":"[^"]+","documentID":"[0-9a-f-]+","hasChildren":false,"kind":"entry","name":"today","path":"/notes/today","updatedAt":"[^"]+"\}$'
 TREE_ROOT_JSON="$("${METABRAIN[@]}" tree --store "$STORE" --format json)"
-if [[ "$TREE_ROOT_JSON" != "$TREE_ROOT_DEFAULT_JSON" ]]; then
-    echo "Expected explicit tree JSON to match default JSON output, got: $TREE_ROOT_JSON" >&2
+assert_line_count "$TREE_ROOT_JSON" 1
+printf '%s\n' "$TREE_ROOT_JSON" | rg -q '^\[.*\]$'
+printf '%s\n' "$TREE_ROOT_JSON" | rg -F -q '"kind":"root"'
+printf '%s\n' "$TREE_ROOT_JSON" | rg -F -q '"path":"/notes/today"'
+TREE_ROOT_EXPLICIT_JSONL="$("${METABRAIN[@]}" tree --store "$STORE" --format jsonl)"
+if [[ "$TREE_ROOT_EXPLICIT_JSONL" != "$TREE_ROOT_JSONL" ]]; then
+    echo "Expected explicit tree JSONL to match default JSONL output, got: $TREE_ROOT_EXPLICIT_JSONL" >&2
     exit 1
 fi
-TREE_ROOT_EXPLICIT_JSONL="$("${METABRAIN[@]}" tree --store "$STORE" --format jsonl)"
-printf '%s\n' "$TREE_ROOT_EXPLICIT_JSONL" | rg -F -q '{"createdAt":null,"documentID":null,"hasChildren":true,"kind":"root","name":"/","path":"/","updatedAt":null}'
-printf '%s\n' "$TREE_ROOT_EXPLICIT_JSONL" | rg -F -q '{"createdAt":null,"documentID":null,"hasChildren":true,"kind":"entry","name":"notes","path":"/notes","updatedAt":null}'
-printf '%s\n' "$TREE_ROOT_EXPLICIT_JSONL" | rg -q '^\{"createdAt":"[^"]+","documentID":"[0-9a-f-]+","hasChildren":false,"kind":"entry","name":"today","path":"/notes/today","updatedAt":"[^"]+"\}$'
 TREE_TEXT="$("${METABRAIN[@]}" tree --store "$STORE" --format text --max-depth 2)"
 printf '%s\n' "$TREE_TEXT" | rg -q '^/$'
 printf '%s\n' "$TREE_TEXT" | rg -q '^`-- notes/$'
-TREE_DIRECTORIES_JSON="$("${METABRAIN[@]}" tree --store "$STORE" /notes --directories-only)"
-assert_line_count "$TREE_DIRECTORIES_JSON" 1
-printf '%s\n' "$TREE_DIRECTORIES_JSON" | rg -q '^\[.*\]$'
-printf '%s\n' "$TREE_DIRECTORIES_JSON" | rg -F -q '"kind":"root","name":"notes","path":"/notes"'
-printf '%s\n' "$TREE_DIRECTORIES_JSON" | rg -F -q '"kind":"entry","name":"archive","path":"/notes/archive"'
-if printf '%s\n' "$TREE_DIRECTORIES_JSON" | rg -F -q '"path":"/notes/today"'; then
-    echo "Expected tree --directories-only to exclude documents" >&2
-    exit 1
-fi
-TREE_DIRECTORIES_JSONL="$("${METABRAIN[@]}" tree --store "$STORE" /notes --directories-only --format jsonl)"
+TREE_DIRECTORIES_JSONL="$("${METABRAIN[@]}" tree --store "$STORE" /notes --directories-only)"
 assert_line_count "$TREE_DIRECTORIES_JSONL" 2
 printf '%s\n' "$TREE_DIRECTORIES_JSONL" | rg -F -q '"kind":"root","name":"notes","path":"/notes"'
 printf '%s\n' "$TREE_DIRECTORIES_JSONL" | rg -F -q '"kind":"entry","name":"archive","path":"/notes/archive"'
@@ -471,18 +457,17 @@ fi
 "${METABRAIN[@]}" tree --store "$STORE" /notes --format text --directories-only | rg -q '^`-- archive/$'
 TREE_MAX_DEPTH_ZERO_JSONL="$("${METABRAIN[@]}" tree --store "$STORE" --max-depth 0)"
 assert_line_count "$TREE_MAX_DEPTH_ZERO_JSONL" 1
-printf '%s\n' "$TREE_MAX_DEPTH_ZERO_JSONL" | rg -F -q '[{"createdAt":null,"documentID":null,"hasChildren":false,"kind":"root","name":"/","path":"/","updatedAt":null}]'
+printf '%s\n' "$TREE_MAX_DEPTH_ZERO_JSONL" | rg -F -q '{"createdAt":null,"documentID":null,"hasChildren":false,"kind":"root","name":"/","path":"/","updatedAt":null}'
 TREE_MAX_DEPTH_TWO_JSONL="$("${METABRAIN[@]}" tree --store "$STORE" --max-depth 2)"
-assert_line_count "$TREE_MAX_DEPTH_TWO_JSONL" 1
-printf '%s\n' "$TREE_MAX_DEPTH_TWO_JSONL" | rg -q '^\[.*\]$'
+assert_line_count "$TREE_MAX_DEPTH_TWO_JSONL" 7
 printf '%s\n' "$TREE_MAX_DEPTH_TWO_JSONL" | rg -F -q '"path":"/notes/archive"'
 if printf '%s\n' "$TREE_MAX_DEPTH_TWO_JSONL" | rg -F -q '"path":"/notes/archive/final"'; then
     echo "Expected tree --max-depth 2 to exclude deeper descendants" >&2
     exit 1
 fi
 LIST_MISSING_DEFAULT="$("${METABRAIN[@]}" list --store "$STORE" /missing)"
-if [[ "$LIST_MISSING_DEFAULT" != "[]" ]]; then
-    echo "Expected missing list path to produce default empty JSON array, got: $LIST_MISSING_DEFAULT" >&2
+if [[ -n "$LIST_MISSING_DEFAULT" ]]; then
+    echo "Expected missing list path to produce no default JSONL output, got: $LIST_MISSING_DEFAULT" >&2
     exit 1
 fi
 LIST_MISSING_JSON="$("${METABRAIN[@]}" list --store "$STORE" /missing --format json)"
@@ -497,8 +482,8 @@ if [[ -n "$LIST_MISSING_JSONL" ]]; then
 fi
 "${METABRAIN[@]}" list --store "$STORE" /missing --format text | rg -q '^No documents\.$'
 TREE_MISSING_DEFAULT="$("${METABRAIN[@]}" tree --store "$STORE" /missing)"
-if [[ "$TREE_MISSING_DEFAULT" != "[]" ]]; then
-    echo "Expected missing tree path to produce default empty JSON array, got: $TREE_MISSING_DEFAULT" >&2
+if [[ -n "$TREE_MISSING_DEFAULT" ]]; then
+    echo "Expected missing tree path to produce no default JSONL output, got: $TREE_MISSING_DEFAULT" >&2
     exit 1
 fi
 TREE_MISSING_JSON="$("${METABRAIN[@]}" tree --store "$STORE" /missing --format json)"
@@ -515,27 +500,23 @@ fi
 "${METABRAIN[@]}" tree --store "$STORE" --format text --max-depth 0 | rg -q '^/$'
 TREE_MISSING_MAX_DEPTH_ZERO="$("${METABRAIN[@]}" tree --store "$STORE" /missing --max-depth 0)"
 assert_line_count "$TREE_MISSING_MAX_DEPTH_ZERO" 1
-printf '%s\n' "$TREE_MISSING_MAX_DEPTH_ZERO" | rg -F -q '[{"createdAt":null,"documentID":null,"hasChildren":false,"kind":"root","name":"missing","path":"/missing","updatedAt":null}]'
+printf '%s\n' "$TREE_MISSING_MAX_DEPTH_ZERO" | rg -F -q '{"createdAt":null,"documentID":null,"hasChildren":false,"kind":"root","name":"missing","path":"/missing","updatedAt":null}'
 "${METABRAIN[@]}" get --store "$STORE" --format text /notes/today | rg -q 'alpha beta searchable memory'
 "${METABRAIN[@]}" get --store "$STORE" --format text --path /notes/today | rg -q 'alpha beta searchable memory'
-SEARCH_FILTERED_DEFAULT_JSON="$("${METABRAIN[@]}" search --store "$STORE" 'alpha beta' --tag search --tag daily --meta status=active --meta kind=daily)"
-assert_line_count "$SEARCH_FILTERED_DEFAULT_JSON" 1
-printf '%s\n' "$SEARCH_FILTERED_DEFAULT_JSON" | rg -q '^\[.*\]$'
-printf '%s\n' "$SEARCH_FILTERED_DEFAULT_JSON" | rg -F -q '"path":"/notes/today"'
-printf '%s\n' "$SEARCH_FILTERED_DEFAULT_JSON" | rg -F -q '"title":"Today"'
+SEARCH_FILTERED_JSONL="$("${METABRAIN[@]}" search --store "$STORE" 'alpha beta' --tag search --tag daily --meta status=active --meta kind=daily)"
+assert_search_jsonl_result "$SEARCH_FILTERED_JSONL" /notes/today 'alpha beta'
+printf '%s\n' "$SEARCH_FILTERED_JSONL" | rg -F -q '"title":"Today"'
 SEARCH_FILTERED_TEXT="$("${METABRAIN[@]}" search --store "$STORE" 'alpha beta' --tag search --tag daily --meta status=active --meta kind=daily --format text)"
 printf '%s\n' "$SEARCH_FILTERED_TEXT" | rg -q '/notes/today'
 printf '%s\n' "$SEARCH_FILTERED_TEXT" | rg -q '^title: Today$'
 SEARCH_FILTERED_JSON="$("${METABRAIN[@]}" search --store "$STORE" 'alpha beta' --tag search --tag daily --meta status=active --meta kind=daily --format json)"
-if [[ "$SEARCH_FILTERED_JSON" != "$SEARCH_FILTERED_DEFAULT_JSON" ]]; then
-    echo "Expected explicit search JSON to match default JSON output, got: $SEARCH_FILTERED_JSON" >&2
-    exit 1
-fi
+assert_line_count "$SEARCH_FILTERED_JSON" 1
+printf '%s\n' "$SEARCH_FILTERED_JSON" | rg -q '^\[.*\]$'
 printf '%s\n' "$SEARCH_FILTERED_JSON" | rg -F -q '"path":"/notes/today"'
 printf '%s\n' "$SEARCH_FILTERED_JSON" | rg -F -q '"title":"Today"'
-SEARCH_MISSING_TAG_JSON="$("${METABRAIN[@]}" search --store "$STORE" 'alpha beta' --tag missing)"
-if [[ "$SEARCH_MISSING_TAG_JSON" != "[]" ]]; then
-    echo "Expected filtered search with no results to produce default empty JSON array, got: $SEARCH_MISSING_TAG_JSON" >&2
+SEARCH_MISSING_TAG_JSONL="$("${METABRAIN[@]}" search --store "$STORE" 'alpha beta' --tag missing)"
+if [[ -n "$SEARCH_MISSING_TAG_JSONL" ]]; then
+    echo "Expected filtered search with no results to produce no default JSONL output, got: $SEARCH_MISSING_TAG_JSONL" >&2
     exit 1
 fi
 "${METABRAIN[@]}" search --store "$STORE" 'alpha beta' --tag missing --format text | rg -q '^No results\.$'
@@ -554,26 +535,20 @@ if [[ -z "$DUMP_FILE" || ! -f "$DUMP_FILE" ]]; then
     exit 1
 fi
 rg -F -q 'alpha beta updated memory' "$DUMP_FILE"
-VERSIONS_TODAY_DEFAULT_JSON="$("${METABRAIN[@]}" versions --store "$STORE" /notes/today)"
-assert_line_count "$VERSIONS_TODAY_DEFAULT_JSON" 1
-printf '%s\n' "$VERSIONS_TODAY_DEFAULT_JSON" | rg -q '^\[.*\]$'
-printf '%s\n' "$VERSIONS_TODAY_DEFAULT_JSON" | rg -F -q '"sequence":1'
-printf '%s\n' "$VERSIONS_TODAY_DEFAULT_JSON" | rg -F -q '"sequence":2'
+VERSIONS_TODAY_DEFAULT_JSONL="$("${METABRAIN[@]}" versions --store "$STORE" /notes/today)"
+assert_versions_jsonl "$VERSIONS_TODAY_DEFAULT_JSONL" /notes/today 2
+printf '%s\n' "$VERSIONS_TODAY_DEFAULT_JSONL" | rg -F -q '"sequence":1'
+printf '%s\n' "$VERSIONS_TODAY_DEFAULT_JSONL" | rg -F -q '"sequence":2'
 VERSIONS_TODAY_EXPLICIT_JSONL="$("${METABRAIN[@]}" versions --store "$STORE" --path /notes/today --format jsonl)"
 assert_versions_jsonl "$VERSIONS_TODAY_EXPLICIT_JSONL" /notes/today 2
-VERSIONS_TODAY_BY_ID_JSON="$("${METABRAIN[@]}" versions --store "$STORE" --id "$GET_TODAY_ID")"
-if [[ "$VERSIONS_TODAY_BY_ID_JSON" != "$VERSIONS_TODAY_DEFAULT_JSON" ]]; then
-    echo "Expected versions by ID default JSON to match path default JSON, got: $VERSIONS_TODAY_BY_ID_JSON" >&2
-    exit 1
-fi
+VERSIONS_TODAY_BY_ID_JSONL="$("${METABRAIN[@]}" versions --store "$STORE" --id "$GET_TODAY_ID")"
+assert_versions_jsonl "$VERSIONS_TODAY_BY_ID_JSONL" /notes/today 2
 VERSIONS_TODAY_TEXT="$("${METABRAIN[@]}" versions --store "$STORE" /notes/today --format text)"
 printf '%s\n' "$VERSIONS_TODAY_TEXT" | rg -q '^1 [^ ]+ path=/notes/today pinned=false$'
 printf '%s\n' "$VERSIONS_TODAY_TEXT" | rg -q '^2 [^ ]+ path=/notes/today pinned=false$'
 VERSIONS_TODAY_JSON="$("${METABRAIN[@]}" versions --store "$STORE" /notes/today --format json)"
-if [[ "$VERSIONS_TODAY_JSON" != "$VERSIONS_TODAY_DEFAULT_JSON" ]]; then
-    echo "Expected explicit versions JSON to match default JSON output, got: $VERSIONS_TODAY_JSON" >&2
-    exit 1
-fi
+assert_line_count "$VERSIONS_TODAY_JSON" 1
+printf '%s\n' "$VERSIONS_TODAY_JSON" | rg -q '^\[.*\]$'
 printf '%s\n' "$VERSIONS_TODAY_JSON" | rg -q '"documentID":"[0-9a-f-]+"'
 printf '%s\n' "$VERSIONS_TODAY_JSON" | rg -F -q '"path":"/notes/today"'
 printf '%s\n' "$VERSIONS_TODAY_JSON" | rg -F -q '"sequence":1'
@@ -598,15 +573,12 @@ printf 'file body with gamma delta searchable terms\n' >"$BODY_FILE"
 PUT_FILE_JSONL="$("${METABRAIN[@]}" put --store "$STORE" --format jsonl /notes/file --body-file "$BODY_FILE" --keep-all)"
 assert_put_json "$PUT_FILE_JSONL" /notes/file created 1
 "${METABRAIN[@]}" get --store "$STORE" --path /notes/file | rg -q 'file body with gamma delta'
-SEARCH_LIMIT_JSON="$("${METABRAIN[@]}" search --store "$STORE" gamma --path-prefix /notes --limit 1)"
-assert_line_count "$SEARCH_LIMIT_JSON" 1
-printf '%s\n' "$SEARCH_LIMIT_JSON" | rg -q '^\[.*\]$'
-printf '%s\n' "$SEARCH_LIMIT_JSON" | rg -F -q '"path":"/notes/file"'
-printf '%s\n' "$SEARCH_LIMIT_JSON" | rg -F -q 'gamma'
+SEARCH_LIMIT_JSONL="$("${METABRAIN[@]}" search --store "$STORE" gamma --path-prefix /notes --limit 1)"
+assert_search_jsonl_result "$SEARCH_LIMIT_JSONL" /notes/file gamma
 "${METABRAIN[@]}" search --store "$STORE" gamma --path-prefix /notes --limit 1 --format text | rg -q '^/notes/file'
-VERSIONS_MISSING_DEFAULT_JSON="$("${METABRAIN[@]}" versions --store "$STORE" --path /missing)"
-if [[ "$VERSIONS_MISSING_DEFAULT_JSON" != "[]" ]]; then
-    echo "Expected missing versions default JSON array to be [], got: $VERSIONS_MISSING_DEFAULT_JSON" >&2
+VERSIONS_MISSING_DEFAULT_JSONL="$("${METABRAIN[@]}" versions --store "$STORE" --path /missing)"
+if [[ -n "$VERSIONS_MISSING_DEFAULT_JSONL" ]]; then
+    echo "Expected missing versions default JSONL to emit no stdout, got: $VERSIONS_MISSING_DEFAULT_JSONL" >&2
     exit 1
 fi
 VERSIONS_MISSING_JSONL="$("${METABRAIN[@]}" versions --store "$STORE" --path /missing --format jsonl)"
@@ -669,12 +641,12 @@ if "${METABRAIN[@]}" get --store "$STORE" /delete/target 2>"$TMP_DIR/delete-get.
 fi
 rg -q 'Document not found' "$TMP_DIR/delete-get.err"
 VERSIONS_DELETED="$("${METABRAIN[@]}" versions --store "$STORE" /delete/target)"
-if [[ "$VERSIONS_DELETED" != "[]" ]]; then
+if [[ -n "$VERSIONS_DELETED" ]]; then
     echo "Expected deleted document to have no retained versions, got: $VERSIONS_DELETED" >&2
     exit 1
 fi
 SEARCH_DELETED="$("${METABRAIN[@]}" search --store "$STORE" 'delete target needle' --path-prefix /delete)"
-if [[ "$SEARCH_DELETED" != "[]" ]]; then
+if [[ -n "$SEARCH_DELETED" ]]; then
     echo "Expected deleted document to be absent from search, got: $SEARCH_DELETED" >&2
     exit 1
 fi
@@ -728,17 +700,13 @@ TARGET_ID="$("${METABRAIN[@]}" get --store "$STORE" --format text --path /refs/t
 "${METABRAIN[@]}" put --store "$STORE" --format text /refs/source 'source needle reference' --ref-id "$TARGET_ID" --ref-path /refs/target --ref-url https://example.com/ref | rg -q '^version: 1$'
 "${METABRAIN[@]}" get --store "$STORE" --path /refs/source | rg -F -q '"references":[{"kind":"documentID","value":"'"$TARGET_ID"'"},{"kind":"path","value":"/refs/target"},{"kind":"externalURL","value":"https://example.com/ref"}]'
 "${METABRAIN[@]}" get --store "$STORE" --format text --path /refs/source | rg -q "references: $TARGET_ID, /refs/target, https://example.com/ref"
-SEARCH_LINKED_JSON="$("${METABRAIN[@]}" search --store "$STORE" source --include-linked-documents)"
-assert_line_count "$SEARCH_LINKED_JSON" 1
-printf '%s\n' "$SEARCH_LINKED_JSON" | rg -q '^\[.*\]$'
-printf '%s\n' "$SEARCH_LINKED_JSON" | rg -F -q '"path":"/refs/source"'
-printf '%s\n' "$SEARCH_LINKED_JSON" | rg -F -q '"linkedDocuments":[{"kind":"documentID","value":"'"$TARGET_ID"'"}]'
+SEARCH_LINKED_JSONL="$("${METABRAIN[@]}" search --store "$STORE" source --include-linked-documents)"
+assert_search_jsonl_result "$SEARCH_LINKED_JSONL" /refs/source source
+printf '%s\n' "$SEARCH_LINKED_JSONL" | rg -F -q '"linkedDocuments":[{"kind":"documentID","value":"'"$TARGET_ID"'"}]'
 "${METABRAIN[@]}" search --store "$STORE" source --include-linked-documents --format text | rg -q '^linked: [0-9a-f-]+$'
-SEARCH_BACKLINKS_JSON="$("${METABRAIN[@]}" search --store "$STORE" target --include-backlinks)"
-assert_line_count "$SEARCH_BACKLINKS_JSON" 1
-printf '%s\n' "$SEARCH_BACKLINKS_JSON" | rg -q '^\[.*\]$'
-printf '%s\n' "$SEARCH_BACKLINKS_JSON" | rg -F -q '"path":"/refs/target"'
-printf '%s\n' "$SEARCH_BACKLINKS_JSON" | rg -q '"backlinks":\[\{"kind":"documentID","value":"[0-9a-f-]+"\}\]'
+SEARCH_BACKLINKS_JSONL="$("${METABRAIN[@]}" search --store "$STORE" target --include-backlinks)"
+assert_search_jsonl_result "$SEARCH_BACKLINKS_JSONL" /refs/target target
+printf '%s\n' "$SEARCH_BACKLINKS_JSONL" | rg -q '"backlinks":\[\{"kind":"documentID","value":"[0-9a-f-]+"\}\]'
 "${METABRAIN[@]}" search --store "$STORE" target --include-backlinks --format text | rg -q '^backlinks: [0-9a-f-]+$'
 
 LONG_BODY="$TMP_DIR/long-body.txt"
@@ -750,12 +718,10 @@ printf 'needle ' >>"$LONG_BODY"
 "${METABRAIN[@]}" search --store "$STORE" needle --path-prefix /notes/long --format text >"$TMP_DIR/long-search.out"
 rg -q '^context: 0$' "$TMP_DIR/long-search.out"
 rg -q '\.\.\.$' "$TMP_DIR/long-search.out"
-SEARCH_CONTEXT_JSON="$("${METABRAIN[@]}" search --store "$STORE" needle --path-prefix /notes/long)"
-assert_line_count "$SEARCH_CONTEXT_JSON" 1
-printf '%s\n' "$SEARCH_CONTEXT_JSON" | rg -q '^\[.*\]$'
-printf '%s\n' "$SEARCH_CONTEXT_JSON" | rg -F -q '"path":"/notes/long"'
-printf '%s\n' "$SEARCH_CONTEXT_JSON" | rg -F -q '"context":[{"ordinal":0,'
-printf '%s\n' "$SEARCH_CONTEXT_JSON" | rg -F -q '"text":"'
+SEARCH_CONTEXT_JSONL="$("${METABRAIN[@]}" search --store "$STORE" needle --path-prefix /notes/long)"
+assert_search_jsonl_result "$SEARCH_CONTEXT_JSONL" /notes/long needle
+printf '%s\n' "$SEARCH_CONTEXT_JSONL" | rg -F -q '"context":[{"ordinal":0,'
+printf '%s\n' "$SEARCH_CONTEXT_JSONL" | rg -F -q '"text":"'
 
 if "${METABRAIN[@]}" get --store "$STORE" --id bad/id 2>"$TMP_DIR/invalid-id.err"; then
     echo "Expected invalid ID syntax to fail" >&2
