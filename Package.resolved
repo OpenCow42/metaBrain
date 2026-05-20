@@ -1,5 +1,5 @@
 {
-  "originHash" : "cd94eca6517056a0c6cbd0f847d6fb9bf16bf01986c2b7f3e4b5827c4af91c33",
+  "originHash" : "e3458b81a148603747377cb88c67c86a5553b08c03152366d42fdb5ac3ade6c5",
   "pins" : [
     {
       "identity" : "hdrhistogram-swift",
@@ -62,6 +62,15 @@
       "state" : {
         "revision" : "edaffedcd90339544fefb2f045f3fa988d94c794",
         "version" : "1.2.0"
+      }
+    },
+    {
+      "identity" : "swift-runtime-interposer",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/ordo-one/swift-runtime-interposer.git",
+      "state" : {
+        "revision" : "7fd519fa3947bc8d29495f60fc8b6580ec361b5d",
+        "version" : "1.0.0"
       }
     },
     {

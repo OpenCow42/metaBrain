@@ -45,6 +45,14 @@ require_tool() {
   fi
 }
 
+write_checksum() {
+  local path="$1"
+  (
+    cd "$(dirname "$path")"
+    sha256sum "$(basename "$path")"
+  ) > "${path}.sha256"
+}
+
 infer_repo() {
   local remote
   remote="$(git remote get-url origin 2>/dev/null || true)"
@@ -180,7 +188,7 @@ install -m 0644 README.md "$archive_dir/README.md"
 install -m 0644 LICENSE "$archive_dir/LICENSE"
 
 tar -C "$BUILD_ROOT" -czf "$archive_path" "$archive_name"
-sha256sum "$archive_path" > "${archive_path}.sha256"
+write_checksum "$archive_path"
 
 install -d "$deb_root/DEBIAN" "$deb_root/usr/bin" "$deb_root/usr/share/doc/$PACKAGE_NAME"
 install -m 0755 "$archive_dir/bin/$PRODUCT_NAME" "$deb_root/usr/bin/$PRODUCT_NAME"
@@ -203,7 +211,7 @@ Description: AI-native local memory store CLI
 EOF
 
 dpkg-deb --root-owner-group --build "$deb_root" "$deb_path"
-sha256sum "$deb_path" > "${deb_path}.sha256"
+write_checksum "$deb_path"
 
 echo "Built artifacts:"
 printf '  %s\n' "$archive_path" "${archive_path}.sha256" "$deb_path" "${deb_path}.sha256"
