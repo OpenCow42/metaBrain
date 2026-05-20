@@ -73,3 +73,31 @@ returned by Apple's notary service.
 Upload both the zip and `.sha256` file to the GitHub release. Homebrew formula
 updates can use the zip URL and the SHA-256 value from either the checksum file
 or GitHub's release asset digest.
+
+## Linux / Ubuntu Release
+
+Ubuntu release artifacts are built on Linux with a statically linked Swift
+standard library:
+
+~~~bash
+Scripts/build-linux-release.sh --version 1.1.1
+~~~
+
+This writes:
+
+~~~text
+dist/mb-<version>-linux-x86_64.tar.gz
+dist/mb-<version>-linux-x86_64.tar.gz.sha256
+dist/metabrain_<version>_amd64.deb
+dist/metabrain_<version>_amd64.deb.sha256
+~~~
+
+To create or update the GitHub release and upload artifacts, run:
+
+~~~bash
+Scripts/build-linux-release.sh --version 1.1.1 --upload
+~~~
+
+The upload mode requires GitHub CLI authentication and infers the repository
+from `origin`. Pass `--repo owner/name` when building from a checkout without a
+GitHub remote.
