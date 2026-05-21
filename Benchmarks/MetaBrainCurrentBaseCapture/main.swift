@@ -315,13 +315,16 @@ struct MetaBrainCurrentBaseCapture {
             let family = keyFamily(for: key)
             families[family, default: KeyFamilyStats()].record(keyBytes: key.utf8.count, valueBytes: value.count)
         }
+        ensureKnownFamilies(&families)
 
         return StoreStats(
             directoryBytes: directoryByteSize(storeURL),
             keyCount: keyCount,
             keyBytes: keyBytes,
             valueBytes: valueBytes,
-            families: families
+            families: families,
+            attribution: StoreAttribution(families: families),
+            topFamiliesByValueBytes: topFamiliesByValueBytes(families)
         )
     }
 
@@ -338,7 +341,10 @@ struct MetaBrainCurrentBaseCapture {
         "doc/meta/",
         "doc/path/",
         "ver/",
+        "chain/",
+        "segment/",
         "chunk/current/",
+        "chunk/",
         "idx/term/",
         "idx/tag/",
         "idx/meta/",
@@ -346,6 +352,35 @@ struct MetaBrainCurrentBaseCapture {
         "idx/ref/in/",
         "tree/",
     ]
+
+    private static func ensureKnownFamilies(_ families: inout [String: KeyFamilyStats]) {
+        for prefix in keyFamilyPrefixes {
+            if families[prefix] == nil {
+                families[prefix] = KeyFamilyStats()
+            }
+        }
+        if families["other"] == nil {
+            families["other"] = KeyFamilyStats()
+        }
+    }
+
+    private static func topFamiliesByValueBytes(
+        _ families: [String: KeyFamilyStats]
+    ) -> [KeyFamilySummary] {
+        families
+            .map { family, stats in
+                KeyFamilySummary(family: family, stats: stats)
+            }
+            .sorted {
+                if $0.valueBytes == $1.valueBytes {
+                    return $0.family < $1.family
+                }
+
+                return $0.valueBytes > $1.valueBytes
+            }
+            .prefix(8)
+            .map { $0 }
+    }
 
     private static func directoryByteSize(_ url: URL) -> Int {
         guard FileManager.default.fileExists(atPath: url.path) else {
@@ -427,14 +462,19 @@ private struct StoreStats: Codable {
     var keyBytes: Int
     var valueBytes: Int
     var families: [String: KeyFamilyStats]
+    var attribution: StoreAttribution
+    var topFamiliesByValueBytes: [KeyFamilySummary]
 
     static func empty(directoryBytes: Int) -> StoreStats {
-        StoreStats(
+        let families: [String: KeyFamilyStats] = [:]
+        return StoreStats(
             directoryBytes: directoryBytes,
             keyCount: 0,
             keyBytes: 0,
             valueBytes: 0,
-            families: [:]
+            families: families,
+            attribution: StoreAttribution(families: families),
+            topFamiliesByValueBytes: []
         )
     }
 }
@@ -448,6 +488,93 @@ private struct KeyFamilyStats: Codable {
         keyCount += 1
         self.keyBytes += keyBytes
         self.valueBytes += valueBytes
+    }
+}
+
+private struct StoreAttribution: Codable {
+    var documentRecords: KeyGroupStats
+    var pathAliases: KeyGroupStats
+    var retainedVersions: KeyGroupStats
+    var v1CurrentChunks: KeyGroupStats
+    var markIIChains: KeyGroupStats
+    var markIISegments: KeyGroupStats
+    var markIIChunks: KeyGroupStats
+    var markIITotal: KeyGroupStats
+    var termIndex: KeyGroupStats
+    var tagIndex: KeyGroupStats
+    var metadataIndex: KeyGroupStats
+    var referenceIndexes: KeyGroupStats
+    var treeIndex: KeyGroupStats
+    var indexTotal: KeyGroupStats
+    var other: KeyGroupStats
+
+    init(families: [String: KeyFamilyStats]) {
+        documentRecords = KeyGroupStats(families: ["doc/id/", "doc/meta/"], in: families)
+        pathAliases = KeyGroupStats(families: ["doc/path/"], in: families)
+        retainedVersions = KeyGroupStats(families: ["ver/"], in: families)
+        v1CurrentChunks = KeyGroupStats(families: ["chunk/current/"], in: families)
+        markIIChains = KeyGroupStats(families: ["chain/"], in: families)
+        markIISegments = KeyGroupStats(families: ["segment/"], in: families)
+        markIIChunks = KeyGroupStats(families: ["chunk/"], in: families)
+        markIITotal = KeyGroupStats.combining([markIIChains, markIISegments, markIIChunks])
+        termIndex = KeyGroupStats(families: ["idx/term/"], in: families)
+        tagIndex = KeyGroupStats(families: ["idx/tag/"], in: families)
+        metadataIndex = KeyGroupStats(families: ["idx/meta/"], in: families)
+        referenceIndexes = KeyGroupStats(families: ["idx/ref/out/", "idx/ref/in/"], in: families)
+        treeIndex = KeyGroupStats(families: ["tree/"], in: families)
+        indexTotal = KeyGroupStats.combining([
+            termIndex,
+            tagIndex,
+            metadataIndex,
+            referenceIndexes,
+            treeIndex,
+        ])
+        other = KeyGroupStats(families: ["other"], in: families)
+    }
+}
+
+private struct KeyGroupStats: Codable {
+    var keyCount: Int
+    var keyBytes: Int
+    var valueBytes: Int
+
+    init(families names: [String], in families: [String: KeyFamilyStats]) {
+        self = Self.combining(names.map { name in
+            let stats = families[name, default: KeyFamilyStats()]
+            return KeyGroupStats(
+                keyCount: stats.keyCount,
+                keyBytes: stats.keyBytes,
+                valueBytes: stats.valueBytes
+            )
+        })
+    }
+
+    private init(keyCount: Int, keyBytes: Int, valueBytes: Int) {
+        self.keyCount = keyCount
+        self.keyBytes = keyBytes
+        self.valueBytes = valueBytes
+    }
+
+    static func combining(_ groups: [KeyGroupStats]) -> KeyGroupStats {
+        KeyGroupStats(
+            keyCount: groups.reduce(0) { $0 + $1.keyCount },
+            keyBytes: groups.reduce(0) { $0 + $1.keyBytes },
+            valueBytes: groups.reduce(0) { $0 + $1.valueBytes }
+        )
+    }
+}
+
+private struct KeyFamilySummary: Codable {
+    var family: String
+    var keyCount: Int
+    var keyBytes: Int
+    var valueBytes: Int
+
+    init(family: String, stats: KeyFamilyStats) {
+        self.family = family
+        keyCount = stats.keyCount
+        keyBytes = stats.keyBytes
+        valueBytes = stats.valueBytes
     }
 }
 
