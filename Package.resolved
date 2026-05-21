@@ -1,24 +1,6 @@
 {
-  "originHash" : "7ccfd10e7dfdbee9d490d5b5c20a1cc046bdb600e2442263cf9876f8abc58690",
+  "originHash" : "dfa4aba6f69008c090ab2a36addb7106b01b74d4bf6a298b7dab8572f774052d",
   "pins" : [
-    {
-      "identity" : "hdrhistogram-swift",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/HdrHistogram/hdrhistogram-swift.git",
-      "state" : {
-        "revision" : "c2e1210df04b4fff47e53f2f9dad9cc45ae15d63",
-        "version" : "0.2.0"
-      }
-    },
-    {
-      "identity" : "package-benchmark",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/ordo-one/package-benchmark",
-      "state" : {
-        "revision" : "873f6fd4c3ccbbe6e6f43626c0189c8e68368db6",
-        "version" : "1.32.0"
-      }
-    },
     {
       "identity" : "swift-argument-parser",
       "kind" : "remoteSourceControl",
@@ -29,30 +11,12 @@
       }
     },
     {
-      "identity" : "swift-atomics",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/apple/swift-atomics.git",
-      "state" : {
-        "revision" : "b601256eab081c0f92f059e12818ac1d4f178ff7",
-        "version" : "1.3.0"
-      }
-    },
-    {
       "identity" : "swift-leveldb",
       "kind" : "remoteSourceControl",
       "location" : "git@github.com:OpenCow42/swift-leveldb.git",
       "state" : {
         "branch" : "main",
-        "revision" : "96b47cbe13de624b3ca824eb4ed36ae38fb468b2"
-      }
-    },
-    {
-      "identity" : "swift-numerics",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/apple/swift-numerics",
-      "state" : {
-        "revision" : "0c0290ff6b24942dadb83a929ffaaa1481df04a2",
-        "version" : "1.1.1"
+        "revision" : "4432f66a1dbe381b20e4aea06bf5a99c0df9ff6a"
       }
     },
     {
@@ -62,24 +26,6 @@
       "state" : {
         "revision" : "edaffedcd90339544fefb2f045f3fa988d94c794",
         "version" : "1.2.0"
-      }
-    },
-    {
-      "identity" : "swift-system",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/apple/swift-system.git",
-      "state" : {
-        "revision" : "7c6ad0fc39d0763e0b699210e4124afd5041c5df",
-        "version" : "1.6.4"
-      }
-    },
-    {
-      "identity" : "texttable",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/ordo-one/TextTable.git",
-      "state" : {
-        "revision" : "a27a07300cf4ae322e0079ca0a475c5583dd575f",
-        "version" : "0.0.2"
       }
     },
     {
