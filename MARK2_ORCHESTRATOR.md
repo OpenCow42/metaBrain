@@ -13,6 +13,8 @@ own one bounded task at a time.
 The orchestrator must:
 
 - keep [MARK2_TASKS.md](MARK2_TASKS.md) current;
+- keep [MARK2_PROGRESS.md](MARK2_PROGRESS.md) current at each orchestration
+  step;
 - launch or assign only one implementation subtask at a time unless the work is
   explicitly read-only and cannot conflict;
 - provide each subagent a narrow task packet based on [MARK2_SUBAGENT.md](MARK2_SUBAGENT.md);
@@ -31,6 +33,8 @@ The active requirements are:
 - [COMPLEXITY.md](COMPLEXITY.md): command/core cost model and complexity guards;
 - [AGENTS.md](AGENTS.md): repository-wide agent, commit, and testing rules;
 - [MARK2_TASKS.md](MARK2_TASKS.md): serial implementation queue.
+- [MARK2_PROGRESS.md](MARK2_PROGRESS.md): append-only orchestration and subagent
+  progress ledger.
 
 If code and specs disagree, the orchestrator should decide whether the code is
 wrong or the spec needs a deliberate update. Silent drift is not allowed.
@@ -50,6 +54,10 @@ Use this loop for each task:
 7. Update docs or task state when behavior, complexity, or test coverage changes.
 8. Commit the completed logical change with a detailed Conventional Commit.
 9. Move to the next task only after the tree is clean.
+
+The orchestrator must add a [MARK2_PROGRESS.md](MARK2_PROGRESS.md) entry at each
+step of this loop. Entries should identify the task, actor, current state,
+validation status, commit hash when present, and the next planned action.
 
 The orchestrator should favor small, serial changes even when the feature is
 large. Mark II touches storage, indexing, migration, and CLI compatibility; each
@@ -80,6 +88,7 @@ Every subagent should receive:
 - tests to add or update;
 - validation commands to run;
 - expected final report format from [MARK2_SUBAGENT.md](MARK2_SUBAGENT.md).
+- progress reporting requirements from [MARK2_PROGRESS.md](MARK2_PROGRESS.md).
 
 The packet should also state: "You are not alone in the codebase. Do not revert
 edits made by others. Keep the change scoped to this task."

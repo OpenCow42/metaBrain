@@ -14,6 +14,8 @@ a precise handoff to the orchestrator.
 - Add or update tests with every behavior change.
 - Update [COMPLEXITY.md](COMPLEXITY.md) when scan patterns or asymptotic behavior
   change.
+- Add progress entries to [MARK2_PROGRESS.md](MARK2_PROGRESS.md) as the assigned
+  task moves through implementation, validation, review, or blockage.
 - Prefer small local helpers over broad refactors.
 - Do not mark the task complete if validation did not run.
 
@@ -32,6 +34,7 @@ Non-goals:
 Required tests:
 Validation commands:
 Expected final report:
+Progress reporting:
 ```
 
 The subagent should ask for clarification only when the task cannot be completed
@@ -47,8 +50,13 @@ safely from the packet and the repository context.
 6. Run broader validation if the change touches shared storage, indexing,
    migration, or CLI compatibility.
 7. Update docs only when the implementation changes the agreed model.
-8. Return a concise final report with files changed, tests run, and residual
+8. Update [MARK2_PROGRESS.md](MARK2_PROGRESS.md) with validation status and
+   review handoff state.
+9. Return a concise final report with files changed, tests run, and residual
    risks.
+
+Subagents should also add progress entries when they receive the task, start
+implementation, discover a blocker, start validation, and finish validation.
 
 ## Validation Expectations
 
@@ -107,6 +115,7 @@ Tests run:
 Validation result:
 Docs updated:
 Complexity impact:
+Progress entries:
 Follow-ups or risks:
 ```
 
@@ -123,6 +132,8 @@ A task is ready for orchestrator review when:
 - the full automated test suite passes, including full `swift test`;
 - touched `MetaBrainCore` and CLI-facing behavior remains at 100% coverage, or
   any exception is explicitly reported for orchestrator approval;
+- [MARK2_PROGRESS.md](MARK2_PROGRESS.md) has entries for the task's current
+  state, validation result, and review handoff;
 - the final report names all changed files;
 - unresolved risks are explicit;
 - the working tree contains no generated artifacts unrelated to the task.

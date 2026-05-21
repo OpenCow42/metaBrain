@@ -6,7 +6,8 @@ keep this file current as tasks move from `pending` to `active`, `review`, and
 
 Each task should be assigned to one subagent or completed directly by the
 orchestrator. Do not start a dependent task until its prerequisites are committed
-and validated.
+and validated. Progress for every task state transition should be recorded in
+[MARK2_PROGRESS.md](MARK2_PROGRESS.md).
 
 ## Milestones
 
@@ -28,6 +29,7 @@ Goal:
 Allowed scope:
 Validation:
 Done when:
+Progress:
 ```
 
 ## Global Validation Gate
@@ -39,6 +41,9 @@ Every task inherits this validation gate in addition to its task-specific checks
 - if the coverage command is unavailable or a temporary gap is unavoidable, the
   subagent must report the exact exception and the orchestrator must record a
   follow-up before marking the task `done`.
+- every task must have [MARK2_PROGRESS.md](MARK2_PROGRESS.md) entries for task
+  assignment, implementation start, validation start/result, review handoff, and
+  commit or deferral before being marked `done`.
 
 ## M0 Baseline And Fixture Groundwork
 
