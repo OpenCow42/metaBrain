@@ -62,7 +62,12 @@ Copy-Item -Force (Join-Path $PackageRoot "LICENSE") (Join-Path $stageDir "LICENS
 Compress-Archive -Path (Join-Path $stageDir "*") -DestinationPath $zipPath -Force
 
 $hash = (Get-FileHash -Algorithm SHA256 $zipPath).Hash.ToLowerInvariant()
-"$hash  $(Split-Path -Leaf $zipPath)" | Set-Content -Path $checksumPath -Encoding ASCII
+$checksumLine = "$hash  $(Split-Path -Leaf $zipPath)" + [char]10
+[System.IO.File]::WriteAllText(
+    $checksumPath,
+    $checksumLine,
+    [System.Text.UTF8Encoding]::new($false)
+)
 
 [pscustomobject]@{
     Binary = $BinaryPath
