@@ -175,8 +175,10 @@ Mark II chunking is format-aware:
 - Markdown uses `swift-markdown` to choose block or section boundaries while
   preserving exact source text.
 - Markdown front matter is both an exact `markdownFrontMatter` chunk and
-  namespaced derived metadata when parseable. The chunk text is the source of
-  truth; explicit document metadata wins over derived front matter fields.
+  namespaced derived metadata when parseable. Mark II `2.0.0` extracts only a
+  small YAML subset: simple keys, scalar values, inline string arrays, and block
+  string arrays. The chunk text is the source of truth; explicit document
+  metadata wins over derived front matter fields.
 - Markdown parsing is advisory. If parsing or source mapping fails, keep the
   document format as Markdown, record fallback metadata, and chunk with safe
   plain-text-style paragraph, line-group, and bounded-window rules.

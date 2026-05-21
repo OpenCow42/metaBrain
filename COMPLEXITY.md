@@ -437,8 +437,9 @@ Keep Mark II complexity under control with these implementation constraints:
   rejecting writes.
 - Treat Markdown front matter as both exact text and derived metadata. Store it
   as a normal `markdownFrontMatter` chunk, but only parse and reindex derived
-  `frontmatter.*` fields when that chunk changes. Localized patches elsewhere
-  should not rescan the full document for front matter metadata.
+  `frontmatter.*` fields when that chunk changes. The `2.0.0` extractor should
+  stay a bounded simple-subset parser, not a full YAML engine. Localized patches
+  elsewhere should not rescan the full document for front matter metadata.
 - Keep manifest segment size tunable. Start with `256` chunk pointers per
   segment, then benchmark and tune before merging the Mark II PR.
 - Keep chunk token counts bounded. Format-aware chunkers must split or force

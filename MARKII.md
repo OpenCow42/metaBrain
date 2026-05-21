@@ -433,6 +433,27 @@ chunk still stores and reconstructs exactly, while derived metadata extraction i
 skipped or marked with a diagnostic. A malformed front matter block must not
 block `put`, `get`, `patch`, `search`, or `dump`.
 
+For Mark II `2.0.0`, derived metadata extraction should support a small,
+explicit YAML front matter subset rather than full YAML:
+
+- front matter must begin at byte offset `0` with a line containing exactly
+  `---`;
+- front matter closes at the next line containing exactly `---` or `...`;
+- keys are simple identifiers such as `title`, `tags`, `status`, and `date`;
+- values can be plain strings, quoted strings, booleans, numbers, or dates
+  stored as strings unless the existing metadata model has a compatible typed
+  field;
+- inline string arrays such as `tags: [swift, notes]` are supported;
+- block string arrays such as `tags:` followed by indented `- swift` entries are
+  supported.
+
+Nested maps, anchors, aliases, custom YAML tags, multiline scalar blocks, and
+other complex YAML features are not extracted in `2.0.0`. Encountering
+unsupported YAML should preserve the front matter chunk exactly, skip derived
+metadata extraction for the unsupported fields or the whole block, and record a
+short diagnostic. It should not require adding a full YAML parser dependency for
+the first Mark II release.
+
 Patches that change the `markdownFrontMatter` chunk should refresh only the
 derived front matter metadata and indexes affected by that chunk. Patches outside
 front matter should not require rescanning or reindexing the derived front matter
@@ -727,6 +748,11 @@ Add focused tests for:
   extracted into namespaced derived metadata when parseable.
 - Front matter parse failures preserve exact text, skip or diagnose derived
   metadata extraction, and do not block normal document operations.
+- Front matter extraction supports only the documented Mark II `2.0.0` subset:
+  simple keys, scalar values, inline string arrays, and block string arrays.
+- Unsupported YAML front matter features, such as nested maps, anchors, aliases,
+  custom tags, and multiline scalar blocks, preserve exact text and fall back
+  without rejecting the document.
 - Explicit document metadata wins over derived front matter metadata when field
   names overlap.
 - Markdown parse/source-mapping failure falls back to plain-text-style chunking,
