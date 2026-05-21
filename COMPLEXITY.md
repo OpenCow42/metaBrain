@@ -344,6 +344,8 @@ Additional provisional notation:
 - `B_delta`: text bytes inside changed chunks, plus immediate boundary context.
 - `T_delta`: distinct indexed terms inside changed chunks.
 - `R_delta`: references added or removed by changed chunks.
+- `FM_delta`: derived front matter metadata fields added, changed, or removed by
+  changed chunks.
 - `J`: structural parse work for a format-aware chunker. For Markdown and JSON
   this is generally `O(B)` for a full body or `O(B_delta)` for localized work;
   JSONL line validation is `O(B_delta)`. If Markdown semantic parsing fails,
@@ -379,10 +381,10 @@ Provisional command/core costs:
 
 | Operation shape | Expected Mark II complexity | What changes from v1 |
 | --- | --- | --- |
-| New `put` | `O(J + B + H_sha + T + R + C2 + S2 + L * seek(S) + X_tree + D)` | Initial writes still parse, hash, segment, and index the whole body. Mark II adds segment/manifest metadata overhead. |
-| Full-body update | `O(J + B + H_sha + B_old + C2 + C_old + S2 + T_delta + R_delta + retention_work + H2 + L * seek(S) + X_tree + D)` | Worst case remains whole-document work, but unchanged chunks and segments should be reused instead of rewritten. |
-| Localized patch write | target `O(P_patch + B_delta + J_delta + H_sha + C_delta + S_delta * P_seg + T_delta + R_delta + M_chain + M_segment + retention_work)` | Required hashing should cover changed chunks, changed segments, and the manifest root, not force a full-file scan. The main desired win: cost should track changed chunks and changed segments, not full body size. |
-| Untargeted compatible `patch` | best case like localized patch after mapping hunks to chunks and segments; fallback `O(P_patch + B + J + C2 + S2 + T_delta + R_delta + M_chain + M_segment)` | CLI stays stable. Internals should infer affected chunks from diff hunks when safe, and fall back deliberately when not. |
+| New `put` | `O(J + B + H_sha + T + R + FM_delta + C2 + S2 + L * seek(S) + X_tree + D)` | Initial writes still parse, hash, segment, and index the whole body. Mark II adds segment/manifest metadata overhead. |
+| Full-body update | `O(J + B + H_sha + B_old + C2 + C_old + S2 + T_delta + R_delta + FM_delta + retention_work + H2 + L * seek(S) + X_tree + D)` | Worst case remains whole-document work, but unchanged chunks and segments should be reused instead of rewritten. |
+| Localized patch write | target `O(P_patch + B_delta + J_delta + H_sha + C_delta + S_delta * P_seg + T_delta + R_delta + FM_delta + M_chain + M_segment + retention_work)` | Required hashing should cover changed chunks, changed segments, and the manifest root, not force a full-file scan. The main desired win: cost should track changed chunks and changed segments, not full body size. |
+| Untargeted compatible `patch` | best case like localized patch after mapping hunks to chunks and segments; fallback `O(P_patch + B + J + C2 + S2 + T_delta + R_delta + FM_delta + M_chain + M_segment)` | CLI stays stable. Internals should infer affected chunks from diff hunks when safe, and fall back deliberately when not. |
 | `patch --check` | target `O(P_patch + B_delta + J_delta)`; fallback `O(P_patch + B)` | Keep the compatibility path correct even if optimization cannot localize a patch. |
 | `get` | `O(seek(S) + S2 * seek(S) + C2 * seek(S) + B)` naive; target `O(seek(S) + S2 + C2 + B)` with ordered scans or batched reads | Reconstruction now reads a manifest, segments, and chunks. Avoid one point lookup per segment or chunk if that becomes visible. |
 | `history` | target `O(seek(S) + V * M_summary)` | Version keys encode sequence order, so listing history should stream ordered version summaries without sorting. It should not decode retained chunk bodies. Mark II removes the old `versions` command name. |
@@ -427,10 +429,16 @@ Keep Mark II complexity under control with these implementation constraints:
 - Keep chunk counts bounded. Markdown chunking should merge tiny adjacent blocks
   when useful, plain text should use paragraph/window targets, JSON should avoid
   exploding deeply nested scalar values, and JSONL should document that each
-  physical line is one chunk.
+  physical line is one chunk. For JSON, use top-level object/array chunks by
+  default and recurse into nested JSON Pointer-like chunks only when a value
+  exceeds chunk caps.
 - Treat Markdown parsing as advisory. Parse/source-map failures should fall back
   to linear plain-text-style chunking with diagnostic metadata instead of
   rejecting writes.
+- Treat Markdown front matter as both exact text and derived metadata. Store it
+  as a normal `markdownFrontMatter` chunk, but only parse and reindex derived
+  `frontmatter.*` fields when that chunk changes. Localized patches elsewhere
+  should not rescan the full document for front matter metadata.
 - Keep manifest segment size tunable. Start with `256` chunk pointers per
   segment, then benchmark and tune before merging the Mark II PR.
 - Keep chunk token counts bounded. Format-aware chunkers must split or force

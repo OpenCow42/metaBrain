@@ -162,15 +162,24 @@ paths for debugging.
 
 Mark II chunking is format-aware:
 
+- Explicit stored document format metadata wins over path and content
+  inference. Inference is used only when no explicit format is present, and the
+  selected format should be persisted with schema version `2` metadata so future
+  writes are stable across renames.
 - Markdown uses `swift-markdown` to choose block or section boundaries while
   preserving exact source text.
+- Markdown front matter is both an exact `markdownFrontMatter` chunk and
+  namespaced derived metadata when parseable. The chunk text is the source of
+  truth; explicit document metadata wins over derived front matter fields.
 - Markdown parsing is advisory. If parsing or source mapping fails, keep the
   document format as Markdown, record fallback metadata, and chunk with safe
   plain-text-style paragraph, line-group, and bounded-window rules.
 - Plain text chunks by paragraphs or bounded line/window groups.
 - JSONL treats each physical line as one chunk, preserving line terminators.
-- JSON chunks by stable structural boundaries when safe, with full-document
-  fallback when delimiter or whitespace ownership is ambiguous.
+- JSON uses a conservative hybrid strategy: chunk top-level object members or
+  array elements by default, recursively split nested values by JSON
+  Pointer-like logical paths only when they exceed chunk caps, and fall back to
+  full-document patching when delimiter or whitespace ownership is ambiguous.
 
 Lazy migration is revision-producing. Reading schema version `1` records remains
 read-only. The next write to a v1 document creates a new retained schema version

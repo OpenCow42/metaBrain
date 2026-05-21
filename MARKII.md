@@ -194,6 +194,7 @@ enum DocumentBodyFormat: String, Codable, Sendable {
 }
 
 enum DocumentChunkKind: String, Codable, Sendable {
+    case markdownFrontMatter
     case markdownSection
     case markdownBlock
     case textParagraph
@@ -288,16 +289,27 @@ Mark II should be Markdown-first, not Markdown-only. The core should choose a
 chunker from an explicit document format when one is supplied, then fall back to
 path extension and lightweight content detection.
 
-Suggested internal format selection:
+Format selection policy:
 
-- explicit API metadata wins when available;
+- explicit document format metadata wins when available;
+- API metadata can set or update that explicit format;
 - future CLI format flags, if added after `2.0.0`, can map to the same metadata;
 - path extensions such as `.md`, `.markdown`, `.txt`, `.json`, and `.jsonl`
-  provide the next hint;
+  provide the next hint when no explicit format is stored;
 - JSONL detection may accept documents where every non-empty line parses as one
-  JSON value;
-- JSON detection may accept one complete top-level JSON value;
+  JSON value when no explicit format is stored;
+- JSON detection may accept one complete top-level JSON value when no explicit
+  format is stored;
 - otherwise, use plain text.
+
+When Mark II writes a schema version 2 revision, it should store the selected
+document format as explicit metadata on the document and/or manifest summary.
+That makes future writes stable: renaming `/notes/spec.md` to `/notes/spec`
+should not silently change chunking from Markdown to plain text. Inference is a
+bootstrap and compatibility path, not something that should override an existing
+explicit format. If a future API or CLI command intentionally changes the
+format, that change should create a normal new revision and should be covered by
+chunking, reconstruction, and search-index tests.
 
 All chunkers must preserve exact source text. A chunker may parse structure to
 find safe boundaries, but it must not pretty-print, normalize, reorder keys,
@@ -313,17 +325,21 @@ Format-specific rules:
   terminator when present so reconstruction is exact. The logical path can be
   the zero-based line number. Validation should parse each non-empty line as an
   independent JSON value when strict JSONL mode is requested.
-- JSON: parse as one JSON value and chunk by stable structural boundaries. A
-  top-level array can use one element per chunk when elements are not too large.
-  A top-level object can use one member per chunk. Nested large values can split
-  recursively and record a JSON Pointer-like logical path. Scalar or tiny JSON
-  documents can remain one chunk.
+- JSON: use a conservative hybrid strategy. Parse as one JSON value and prefer
+  stable top-level structural boundaries: one top-level object member or array
+  element per chunk when practical. Nested JSON Pointer-like chunking should
+  happen only when a top-level value would otherwise exceed the byte,
+  character, or token cap. Scalar or tiny JSON documents can remain one chunk.
+  Recursive splits must record JSON Pointer-like logical paths for debugging and
+  patch mapping.
 
 JSON deserves extra caution: patching one structural chunk must preserve the
-surrounding commas, indentation, and whitespace. The first implementation may
+surrounding commas, indentation, and whitespace. The first implementation should
 fall back to full-document patching for JSON when a targeted patch would make
-delimiter ownership ambiguous. JSONL is the cleanest structured format because
-line boundaries are also record boundaries.
+delimiter ownership ambiguous, when a recursive split cannot be mapped back to
+exact source ranges, or when preserving original formatting cannot be guaranteed.
+JSONL is the cleanest structured format because line boundaries are also record
+boundaries.
 
 All chunkers must enforce a maximum token/term count per chunk. If a semantic
 unit exceeds that cap, the chunker should split at the safest format-specific
@@ -347,13 +363,40 @@ Initial rules:
   block quote, or fenced code block boundaries.
 - Fenced code blocks stay intact unless they exceed a hard maximum. If they do,
   split only with explicit metadata that marks the chunk as a forced split.
-- YAML front matter, if present, becomes a dedicated metadata chunk or is folded
-  into document metadata according to the existing metadata model.
+- YAML front matter, if present at the beginning of the document, becomes a
+  dedicated `markdownFrontMatter` chunk and is preserved as exact source text.
 - Markdown source order is authoritative. Rendered or normalized Markdown should
   not be used as the stored body unless the user explicitly asks for formatting.
 
 The chunker should preserve exact source text. Parsing is for boundaries and
 metadata, not for rewriting user Markdown.
+
+## Front Matter Policy
+
+Markdown front matter should be both first-class derived metadata and a normal
+document chunk.
+
+The front matter chunk is the source of truth for reconstruction and patching.
+It must keep the original delimiters, whitespace, key order, comments, quoting,
+and line endings. Mark II should not rewrite or normalize front matter unless
+the user edits that text.
+
+When front matter is parseable, the store should also extract it into derived
+metadata for filtering, search, summaries, and debugging. Derived front matter
+metadata should be namespaced, for example `frontmatter.title`,
+`frontmatter.tags`, and `frontmatter.status`, so it does not silently overwrite
+explicit API or CLI metadata. Explicit document metadata remains canonical when
+there is a conflict.
+
+Front matter extraction is opportunistic. If front matter parsing fails, the
+chunk still stores and reconstructs exactly, while derived metadata extraction is
+skipped or marked with a diagnostic. A malformed front matter block must not
+block `put`, `get`, `patch`, `search`, or `dump`.
+
+Patches that change the `markdownFrontMatter` chunk should refresh only the
+derived front matter metadata and indexes affected by that chunk. Patches outside
+front matter should not require rescanning or reindexing the derived front matter
+fields.
 
 ## Markdown Parse Fallback
 
@@ -640,21 +683,36 @@ Add focused tests for:
 
 - Markdown chunk boundaries for headings, lists, tables, block quotes, code
   fences, front matter, empty documents, and very large sections.
+- Front matter is preserved as an exact `markdownFrontMatter` chunk and is also
+  extracted into namespaced derived metadata when parseable.
+- Front matter parse failures preserve exact text, skip or diagnose derived
+  metadata extraction, and do not block normal document operations.
+- Explicit document metadata wins over derived front matter metadata when field
+  names overlap.
 - Markdown parse/source-mapping failure falls back to plain-text-style chunking,
   records fallback metadata, preserves exact text, and keeps put/get/patch/search
   usable.
 - Plain text, JSON, and JSONL chunk boundaries, including exact reconstruction
   of line endings and whitespace.
+- Explicit stored document format wins over path/content inference on later
+  writes, including after document renames.
+- Inference chooses Markdown, JSONL, JSON, or plain text when no explicit
+  document format is stored, and the selected format is persisted in schema
+  version 2 metadata.
 - JSONL uses one physical line per chunk and validates non-empty lines in strict
   JSONL mode.
-- JSON chunking preserves source text and either safely patches structural
-  chunks or deliberately falls back to full-document patching.
+- JSON chunking uses the conservative hybrid policy: top-level object members or
+  array elements by default, recursive JSON Pointer-like splitting only for
+  oversized values, and deliberate full-document patch fallback when exact
+  delimiter or whitespace ownership is ambiguous.
 - Chunkers enforce and test a maximum token/term count per chunk, using
   `forcedSplit` when a format-specific safe boundary is unavailable.
 - Full-body reconstruction preserving exact source bytes.
 - Targeted patch that rewrites one chunk and leaves unrelated chunk IDs stable.
 - Targeted patch that splits one chunk into multiple chunks.
 - Targeted patch that changes a heading and updates heading metadata.
+- Targeted patch that changes front matter updates derived metadata postings
+  without reindexing unrelated chunks.
 - Manifest segments store `segmentSHA256`, reuse unchanged segment IDs, and
   start with a target size of `256` chunk pointers.
 - Chunk IDs are plain SHA-256 content hashes, while manifest/segment/chunk
@@ -763,13 +821,3 @@ mb put /notes/plain --format text --body-file notes.txt
 
 Explicit `--format` should also wait until after `2.0.0`; Mark II should infer
 formats internally for the initial release.
-
-## Open Questions
-
-- Should front matter become first-class document metadata, a normal chunk, or
-  both?
-- Should document format be stored as explicit metadata, inferred from path on
-  every write, or both with explicit metadata taking precedence?
-- For JSON in the first Mark II implementation, should targeted patches support
-  only top-level array/object chunks, or should nested JSON Pointer chunking ship
-  immediately?
