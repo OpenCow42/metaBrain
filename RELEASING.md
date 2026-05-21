@@ -234,3 +234,95 @@ done
 
 The repository currently uses `trusted=yes` until a signing key and signed
 `InRelease` metadata are added.
+
+## Windows Release
+
+Windows releases are distributed as a portable zip containing the `mb.exe`
+binary at the archive root. This layout works for manual installs and maps
+cleanly to WinGet's portable zip manifest format.
+
+Build and package on a Windows machine with Swift for Windows and Visual Studio
+2022 installed:
+
+~~~powershell
+Scripts\windows\package.ps1 -Version 1.1.1
+~~~
+
+This writes:
+
+~~~text
+dist\metabrain-<version>-windows-x86_64\
+dist\metabrain-<version>-windows-x86_64\mb.exe
+dist\metabrain-<version>-windows-x86_64\README.md
+dist\metabrain-<version>-windows-x86_64\LICENSE
+dist\metabrain-<version>-windows-x86_64.zip
+dist\metabrain-<version>-windows-x86_64.zip.sha256
+~~~
+
+The helper loads the Visual Studio developer environment, resolves packages,
+builds `mb` in release mode, stages the portable layout, creates the zip, and
+writes a SHA-256 checksum file. If Visual Studio is installed somewhere unusual,
+pass the developer command prompt path explicitly:
+
+~~~powershell
+Scripts\windows\package.ps1 `
+  -Version 1.1.1 `
+  -VisualStudioDevCmd "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat"
+~~~
+
+To build without packaging:
+
+~~~powershell
+Scripts\windows\build.ps1
+~~~
+
+To package an already-built binary:
+
+~~~powershell
+Scripts\windows\package.ps1 `
+  -Version 1.1.1 `
+  -SkipBuild `
+  -BinaryPath .build\x86_64-unknown-windows-msvc\release\mb.exe
+~~~
+
+Manual install users can unzip the archive anywhere and add that directory to
+`PATH`.
+
+Verify the generated Windows artifact before upload:
+
+~~~powershell
+Expand-Archive dist\metabrain-1.1.1-windows-x86_64.zip -DestinationPath $env:TEMP\metabrain-check -Force
+& $env:TEMP\metabrain-check\mb.exe --help
+Get-FileHash -Algorithm SHA256 dist\metabrain-1.1.1-windows-x86_64.zip
+Get-Content dist\metabrain-1.1.1-windows-x86_64.zip.sha256
+~~~
+
+### WinGet
+
+After uploading the Windows zip and checksum to a GitHub release, submit a
+manifest PR to [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs).
+Use the zip release asset URL and the SHA-256 value from the generated checksum
+file.
+
+The installer manifest should use WinGet's portable zip support:
+
+~~~yaml
+PackageIdentifier: OpenCow42.metaBrain
+PackageVersion: 1.1.1
+InstallerType: zip
+NestedInstallerType: portable
+NestedInstallerFiles:
+  - RelativeFilePath: mb.exe
+    PortableCommandAlias: mb
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/OpenCow42/metaBrain/releases/download/1.1.1/metabrain-1.1.1-windows-x86_64.zip
+    InstallerSha256: <SHA256>
+ManifestType: installer
+ManifestVersion: 1.9.0
+~~~
+
+Windows does not require Apple-style notarization. Authenticode signing is not
+required for the zip to work, but it is recommended for public releases because
+unsigned downloaded executables can trigger SmartScreen warnings. Keep signing
+as an optional packaging step until a certificate is available.
