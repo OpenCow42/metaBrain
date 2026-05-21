@@ -128,16 +128,19 @@ and concatenating their referenced chunks in order. Segment records let large
 documents reuse unchanged runs across revisions without rewriting one giant flat
 manifest.
 
-Chunk SHA-256 values are computed over each exact stored chunk, including
-preserved line terminators. Segment records are content-addressed pointer runs:
-`segmentID` equals `segmentSHA256`, computed from the canonical ordered chunk
-pointer data and excluding segment ordinal, debug labels, and cache fields. The
-manifest SHA-256 is computed over a canonical representation of the manifest
-identity and ordered segment pointer data, including each segment's SHA-256. A
-complete-file SHA-256 is useful but non-mandatory lazy metadata. When an
-operation already streams the whole reconstructed body, such as `get`, `dump`,
-integrity verification, or a full-body write, the store should compute or refresh
-the complete-file SHA-256 and persist it as metadata.
+Chunk SHA-256 values are computed over each exact chunk body, including preserved
+line terminators, and `chunkID` should equal `chunkSHA256`. Chunk hashes exclude
+stored-record metadata such as document ID, ordinals, byte offsets, paths,
+parser diagnostics, token hints, and debug labels. Segment records are
+content-addressed pointer runs: `segmentID` equals `segmentSHA256`, computed from
+the canonical ordered chunk pointer data and excluding segment ordinal, debug
+labels, and cache fields. The manifest SHA-256 is computed over a canonical
+representation of the manifest identity and ordered segment pointer data,
+including each segment's SHA-256. A complete-file SHA-256 is useful but
+non-mandatory lazy metadata. When an operation already streams the whole
+reconstructed body, such as `get`, `dump`, integrity verification, or a full-body
+write, the store should compute or refresh the complete-file SHA-256 and persist
+it as metadata.
 
 Chunk IDs should remain plain SHA-256 content hashes of exact chunk bytes.
 Search, reference, and metadata postings should use current-version occurrence

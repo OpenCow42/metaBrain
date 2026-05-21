@@ -255,11 +255,19 @@ struct DocumentChunkRecord: Codable, Equatable, Sendable {
 }
 ```
 
-Chunk IDs should be plain content hashes: `sha256(exact chunk bytes)`. Do not
-include document ID, document path, version sequence, segment ordinal, chunk
-ordinal, timestamp, heading path, or other debugging context in `chunkID`.
-Debuggability should come from manifest and pointer metadata, not from polluting
-content identity.
+Chunk IDs should be plain content hashes over the complete chunk body:
+`chunkID = chunkSHA256 = sha256(exact chunk body bytes)`. The hashed bytes are
+the exact UTF-8 source bytes that the chunk contributes to reconstruction,
+including whitespace, comments, delimiters owned by the chunk, and line
+terminators when present.
+
+Do not hash the stored chunk record as a whole, and do not include document ID,
+document path, version sequence, segment ordinal, chunk ordinal, byte offsets,
+timestamp, heading path, logical path, parse status, token hints, debug labels,
+or other metadata in `chunkID`. Those fields may change because of renames,
+inserts before the chunk, parser improvements, metadata repair, or debugging
+updates even when the chunk body bytes are unchanged. Debuggability should come
+from manifest and pointer metadata, not from polluting content identity.
 
 Manifest and segment pointers should make file structure debuggable while
 keeping `chunkID` pure. Useful metadata includes document ID, version sequence,
@@ -751,6 +759,8 @@ Add focused tests for:
   and does not include segment ordinal or debug/cache fields.
 - Chunk IDs are plain SHA-256 content hashes, while manifest/segment/chunk
   pointer metadata keeps the document structure debuggable.
+- `chunkID` and `chunkSHA256` are identical hashes of exact chunk body bytes, not
+  hashes of the stored chunk record or its metadata.
 - Current-version search, reference, and metadata postings use occurrence
   identity: `documentID + ordinal + chunkID`, so duplicate chunk contents are
   indexed and cleaned up independently.
