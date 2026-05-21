@@ -27,6 +27,14 @@ benchmarkTargets = [
         plugins: [
             .plugin(name: "BenchmarkPlugin", package: "package-benchmark")
         ]
+    ),
+    .executableTarget(
+        name: "MetaBrainCurrentBaseCapture",
+        dependencies: [
+            "MetaBrainCore",
+            .product(name: "swift-leveldb-typed", package: "swift-leveldb")
+        ],
+        path: "Benchmarks/MetaBrainCurrentBaseCapture"
     )
 ]
 #endif
