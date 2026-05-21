@@ -10,7 +10,7 @@ The useful shape of the dependency is:
 
 - LevelDB provides ordered keys, efficient point lookups, prefix/range scans, atomic write batches, snapshots, Bloom filters, LRU cache options, approximate range sizes, and compaction.
 - `ZstdCodec` wraps another typed codec, such as `JSONCodec<T>`, so serialization and compression stay separate.
-- `ZstdCodec` defaults to ZSTD level `3` with adaptive storage: it stores compressed bytes only when compression saves enough space.
+- `metaBrain` should configure `ZstdCodec` with ZSTD level `9` and adaptive storage: it stores compressed bytes only when compression saves enough space.
 - Write batches can commit compressed records and plain ordered index keys atomically.
 
 The core store should use ZSTD-compressed Codable JSON envelopes for document records, version records, and chunk records. Index keys and tiny index values should stay raw and ordered so LevelDB can scan them efficiently.
@@ -95,6 +95,102 @@ Planned key families:
 
 Document writes should use one write batch to update the document record, version record, current chunks, lexical indexes, metadata indexes, path aliases, and reference indexes together.
 
+## Schema Version 2 / Mark II Model
+
+The current base store uses schema version `1`: document and version records
+carry full document bodies, and current search chunks are derived from fixed
+character windows. Mark II introduces schema version `2` records for the `2.0.0`
+major release.
+
+Mark II is the `2.0.0` release. The `version` command should report `2.0.0` for
+that release. The document history command is renamed from `versions` to
+`history`; `versions` is not available in Mark II.
+
+In schema version `2`, a document is represented by:
+
+- a document record that stores public metadata, path identity, current version,
+  and a pointer to the current chain manifest;
+- a chain manifest for each retained revision, containing the ordered list of
+  manifest segment pointers, manifest SHA-256, optional lazy complete-file
+  SHA-256, byte count, character count, format, and summary metadata needed for
+  `history`;
+- manifest segment records that contain ordered runs of chunk pointers, starting
+  with a target of `256` chunk pointers per segment;
+- chunk records that store exact body slices plus format-aware metadata and
+  SHA-256 for the chunk bytes;
+- existing raw ordered index keys for path lookup, tree discovery, term/tag/meta
+  search, references, and backlinks where the v1 layout remains compatible.
+
+The chain manifest is the internal map for reconstructing a complete body. It is
+not markup inserted into user documents. `get`, `dump`, and other compatibility
+paths rebuild the exact body by reading the manifest's ordered segment records
+and concatenating their referenced chunks in order. Segment records let large
+documents reuse unchanged runs across revisions without rewriting one giant flat
+manifest.
+
+Chunk SHA-256 values are computed over each exact stored chunk, including
+preserved line terminators. Segment SHA-256 values are computed over a canonical
+representation of each segment's identity and ordered chunk pointer data,
+including each chunk's SHA-256. The manifest SHA-256 is computed over a
+canonical representation of the manifest identity and ordered segment pointer
+data, including each segment's SHA-256. A complete-file SHA-256 is useful but
+non-mandatory lazy metadata. When an operation already streams the whole
+reconstructed body, such as `get`, `dump`, integrity verification, or a full-body
+write, the store should compute or refresh the complete-file SHA-256 and persist
+it as metadata.
+
+Chunk IDs should remain plain SHA-256 content hashes of exact chunk bytes.
+Debuggability should come from manifest, segment, and chunk pointer metadata:
+version sequence, segment ordinal, chunk ordinal, byte range, logical path,
+heading path, chunk kind, short hash display, and optional debug labels. A future
+inspection command can expose that structure without changing content identity.
+
+The initial segment target is `256` chunk pointers. Before merging the Mark II
+work, benchmark Markdown, plain text, JSON, and JSONL corpora and tune this
+property if the data shows a better value.
+
+SHA-256 hashing should use scanning APIs. The store should update hashers
+incrementally as chunks are read, written, patched, or reconstructed, and should
+never require loading an entire large file into memory just to compute a hash.
+
+Mark II `2.0.0` should not change `dump` into an integrity-checking command.
+Dedicated verification and scrubbing commands should be considered for a future
+`2.1.0` release. Public chunk-targeted patch flags and explicit document-format
+selection should also wait until after `2.0.0`. A future structure inspection
+command should expose manifests, segments, chunks, short hashes, and logical
+paths for debugging.
+
+Mark II chunking is format-aware:
+
+- Markdown uses `swift-markdown` to choose block or section boundaries while
+  preserving exact source text.
+- Markdown parsing is advisory. If parsing or source mapping fails, keep the
+  document format as Markdown, record fallback metadata, and chunk with safe
+  plain-text-style paragraph, line-group, and bounded-window rules.
+- Plain text chunks by paragraphs or bounded line/window groups.
+- JSONL treats each physical line as one chunk, preserving line terminators.
+- JSON chunks by stable structural boundaries when safe, with full-document
+  fallback when delimiter or whitespace ownership is ambiguous.
+
+Lazy migration is revision-producing. Reading schema version `1` records remains
+read-only. The next write to a v1 document creates a new retained schema version
+`2` revision, visible through `history` like any other update. Explicit future
+migration commands should follow the same rule and only garbage collect obsolete
+v1 data when retention allows it.
+
+Mark II should keep complexity under control by reusing unchanged chunks,
+reusing unchanged manifest segments, reindexing only changed chunks, storing
+version summaries that avoid decoding chunk bodies for `history`, and using
+reachability-based segment and chunk garbage collection for pruning. See
+[MARKII.md](MARKII.md) and
+[COMPLEXITY.md](COMPLEXITY.md) for the detailed provisional model and
+performance targets.
+
+Version keys should preserve sequence ordering so `history` can stream revisions
+in key order without sorting all retained revisions. Pruning should account for
+retained manifests, every segment pointer reachable from those manifests, and
+the unique chunk pointers reachable from retained segments.
+
 ## Search
 
 V1 search should be lexical and contextual, not vector-based.
@@ -109,6 +205,12 @@ Search should:
 - fetch matching chunks plus neighboring context chunks
 - optionally include linked documents and backlinks as contextual hints
 
+Mark II format-aware chunkers must enforce a maximum token/term count per chunk.
+When a semantic Markdown, JSON, or plain-text unit exceeds that cap, split at the
+safest format-specific boundary and mark unavoidable splits explicitly. This
+keeps chunk scoring bounded for document-database workloads with large sections,
+large JSON values, or dense logs.
+
 Embedding and vector search should remain a future extension point. The v1 store should not depend on embedding models or external services.
 
 ## Compression And Performance
@@ -120,7 +222,7 @@ commands and the core store methods they call.
 
 Default store tuning should start conservatively:
 
-- ZSTD compression level `3`
+- ZSTD compression level `9`
 - adaptive compression savings threshold `0.10`
 - LevelDB paranoid checks enabled
 - Bloom filter around `10` bits per key
@@ -149,3 +251,6 @@ Tests should cover:
 In this `metaBrain` repository, `MetaBrainCore` and CLI-facing logic should
 strive for 100% coverage. UI-app coverage expectations belong in the sibling
 app repository that owns that UI.
+
+For the Mark II / `2.0.0` work, tests should pass before merge and the coverage
+target remains 100% for `MetaBrainCore` and CLI-facing behavior.

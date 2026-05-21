@@ -323,6 +323,165 @@ throws a core error so the current document remains readable.
 Complexity is `O(seek(S))` for document resolution plus one version-key point
 lookup and, when present, one delete.
 
+## Mark II Provisional Complexity
+
+Mark II changes the physical representation from full-body document records plus
+fixed-window chunks to schema version 2 records made from document metadata,
+chain manifests, and format-aware chunk records. The CLI contract should remain
+stable for the first Mark II release, so this section describes expected core
+costs rather than new public commands.
+
+Additional provisional notation:
+
+- `C2`: number of Mark II chunks in the current document chain.
+- `S2`: number of manifest segments in the current document chain.
+- `S_delta`: number of manifest segments changed, inserted, removed, or
+  rehashed by one write.
+- `P_seg`: target chunk pointers per manifest segment. Mark II starts at `256`
+  and should tune this before merge based on benchmarks.
+- `C_delta`: number of chunks changed, inserted, removed, or reindexed by one
+  write.
+- `B_delta`: text bytes inside changed chunks, plus immediate boundary context.
+- `T_delta`: distinct indexed terms inside changed chunks.
+- `R_delta`: references added or removed by changed chunks.
+- `J`: structural parse work for a format-aware chunker. For Markdown and JSON
+  this is generally `O(B)` for a full body or `O(B_delta)` for localized work;
+  JSONL line validation is `O(B_delta)`. If Markdown semantic parsing fails,
+  fallback paragraph/line/window chunking remains linear in the input size.
+- `J_delta`: structural parse or validation work for only the changed chunk
+  region.
+- `M_chain`: encoded size of one chain manifest root, usually proportional to
+  `S2`.
+- `M_segment`: encoded size of changed manifest segment records, usually
+  proportional to `S_delta * P_seg`.
+- `M_summary`: version or manifest summary bytes decoded while listing history,
+  excluding chunk bodies.
+- `P_manifest`: total segment pointers scanned across retained manifests during
+  history, prune, dump, delete, or reachability work.
+- `H_sha`: bytes scanned by streaming SHA-256 hashers for required chunk and
+  segment/manifest hashes, plus optional lazy complete-file hashes when an
+  operation already reads the whole reconstructed body.
+- `H2`: total encoded chain manifest, segment, and reachable chunk bytes across
+  retained Mark II versions.
+- `G_segment`: number of manifest segment records considered by a reachability
+  or garbage collection pass.
+- `G_chunk`: number of chunk records considered by a reachability or garbage
+  collection pass.
+- `C_reachable`: number of unique chunk pointers reachable from retained
+  manifests after retention is applied.
+- `W_max`: enforced maximum terms/tokens per chunk after format-aware splitting.
+- `B_match_delta`: total matched chunk bytes decoded while scoring Mark II
+  search candidates.
+- `retention_work`: the chosen retention policy's version-summary scan,
+  manifest scan, and optional chunk reachability work.
+
+Provisional command/core costs:
+
+| Operation shape | Expected Mark II complexity | What changes from v1 |
+| --- | --- | --- |
+| New `put` | `O(J + B + H_sha + T + R + C2 + S2 + L * seek(S) + X_tree + D)` | Initial writes still parse, hash, segment, and index the whole body. Mark II adds segment/manifest metadata overhead. |
+| Full-body update | `O(J + B + H_sha + B_old + C2 + C_old + S2 + T_delta + R_delta + retention_work + H2 + L * seek(S) + X_tree + D)` | Worst case remains whole-document work, but unchanged chunks and segments should be reused instead of rewritten. |
+| Localized patch write | target `O(P_patch + B_delta + J_delta + H_sha + C_delta + S_delta * P_seg + T_delta + R_delta + M_chain + M_segment + retention_work)` | Required hashing should cover changed chunks, changed segments, and the manifest root, not force a full-file scan. The main desired win: cost should track changed chunks and changed segments, not full body size. |
+| Untargeted compatible `patch` | best case like localized patch after mapping hunks to chunks and segments; fallback `O(P_patch + B + J + C2 + S2 + T_delta + R_delta + M_chain + M_segment)` | CLI stays stable. Internals should infer affected chunks from diff hunks when safe, and fall back deliberately when not. |
+| `patch --check` | target `O(P_patch + B_delta + J_delta)`; fallback `O(P_patch + B)` | Keep the compatibility path correct even if optimization cannot localize a patch. |
+| `get` | `O(seek(S) + S2 * seek(S) + C2 * seek(S) + B)` naive; target `O(seek(S) + S2 + C2 + B)` with ordered scans or batched reads | Reconstruction now reads a manifest, segments, and chunks. Avoid one point lookup per segment or chunk if that becomes visible. |
+| `history` | target `O(seek(S) + V * M_summary)` | Version keys encode sequence order, so listing history should stream ordered version summaries without sorting. It should not decode retained chunk bodies. Mark II removes the old `versions` command name. |
+| `dump --versions` | `O(A * seek(S) + D_dump * (V log V + H2) + H_dump)` | Dumping complete retained bodies still pays for emitted bytes, but repeated local edits should make `H2` much smaller than v1 `H`. |
+| `prune` | `O(seek(S) + V * M_summary + P_manifest + G_segment + C_reachable + G_chunk + P_delete)` | Prune selects retained manifests, scans their segment pointers, marks reachable segments/chunks, and deletes only unreachable records. It should avoid decoding chunk text. |
+| `search` | `O((Q + G + M) * seek(S) + F log F + P log P + B_match_delta + C_match + M * W_max^2)` | Search should score semantic/format-aware chunks with a hard token/term cap. Patch reindexing should touch only `C_delta` chunks. |
+| `delete` | `O((S2 + C2 + R + E + L) * seek(S) + T + V + G_segment + G_chunk + X_tree + P_delete + K_delete)` | Delete must clean manifests, segments, and chunk records, preferably by reachability rather than broad value decoding. |
+
+The `history` target assumes implementation uses LevelDB key ordering. Version
+keys should remain sequence-sorted, and the scanner should emit summaries in key
+order instead of materializing and sorting all `V` records. If a future key
+layout loses that ordering, the complexity regresses to `O(seek(S) + V log V)`.
+
+The biggest intended complexity improvement is for repeated local edits to
+large documents. In v1, a one-line patch to a large body is still roughly a
+large-body update because the current body, retained version, chunks, and indexes
+are rebuilt. In Mark II, the target is:
+
+```text
+localized patch ~= changed chunk bytes + changed segment records + affected indexes + manifest root rewrite
+```
+
+not:
+
+```text
+localized patch ~= full document bytes + all chunks + all indexes
+```
+
+The manifest root rewrite is still proportional to `S2`, and changed segment
+records are bounded by the segment target. Mark II starts with `P_seg = 256`
+chunk pointers per segment. This should keep localized edits away from `O(C2)`
+flat-manifest rewrites, but `S2` can still become visible for very large JSONL
+logs and must be benchmarked.
+
+### Mark II Complexity Controls
+
+Keep Mark II complexity under control with these implementation constraints:
+
+- Preserve exact reconstruction, but do not store full document bodies in v2
+  document records or v2 version records. Otherwise Mark II quietly falls back
+  to v1 space and write costs.
+- Keep chunk counts bounded. Markdown chunking should merge tiny adjacent blocks
+  when useful, plain text should use paragraph/window targets, JSON should avoid
+  exploding deeply nested scalar values, and JSONL should document that each
+  physical line is one chunk.
+- Treat Markdown parsing as advisory. Parse/source-map failures should fall back
+  to linear plain-text-style chunking with diagnostic metadata instead of
+  rejecting writes.
+- Keep manifest segment size tunable. Start with `256` chunk pointers per
+  segment, then benchmark and tune before merging the Mark II PR.
+- Keep chunk token counts bounded. Format-aware chunkers must split or force
+  split chunks before they exceed `W_max`, because the current locality scoring
+  helper can be quadratic in terms per chunk.
+- Store manifest summaries that let `history` list revisions without decoding
+  chunk bodies: sequence, created date, path, title, pin state, body byte count,
+  chunk count, segment count, `manifestSHA256`, optional `fileSHA256`, and
+  format.
+- Maintain enough offset or line mapping to locate patch hunks in the current
+  chain. If hunk-to-chunk mapping is ambiguous, use the full-document fallback
+  explicitly and count it in benchmarks.
+- Reindex only changed chunks. Stale term/reference keys should be tracked by
+  chunk ID so a localized patch does not need to scan and decode all old chunks.
+- Make segment and chunk garbage collection reachability-based. Prune and
+  explicit migration should compute retained manifests first, scan segment
+  pointers across those manifests, mark reachable segments and chunks, then
+  delete only unreferenced segments and chunks.
+- Avoid broad prefix scans that materialize values when keys are enough. Use
+  key-only scans for stale chunk keys, manifest keys, and reachability passes
+  whenever possible.
+- Watch write batch size. A localized patch should not build a batch containing
+  every current chunk or every term in the document.
+- Compute SHA-256 digests with scanning APIs. Required write-path hashes are
+  chunk hashes, segment hashes, and manifest hashes; complete-file hashes are
+  lazy metadata and should be updated only when an operation already streams the
+  full reconstructed body.
+- Treat ZSTD level 9 as a measured tradeoff. Track compressed bytes and CPU time
+  separately for manifests, chunks, versions, and metadata.
+- Benchmark JSONL separately. One-line-per-chunk is simple and predictable, but
+  very large logs can create huge `C2`; manifest size, current ordinal pointers,
+  and `get` reconstruction must be measured against that case.
+
+Mark II should add benchmarks or counters that make these controls observable:
+
+- current chunk count per document and distribution across formats;
+- max and p95 token count per chunk;
+- manifest segment count and chunk pointers per segment;
+- changed chunk count per write;
+- changed segment count per write;
+- encoded write batch bytes and key count per mutation;
+- chunk reuse ratio across versions;
+- segment reuse ratio across versions;
+- SHA-256 bytes scanned, complete-file hash refresh count, and whether hashing
+  stayed streaming;
+- history storage growth per repeated local edit;
+- `get` reconstruction chunk reads per document;
+- prune reachability scan keys and deleted segment/chunk count;
+- retained manifest pointer count and reachable unique chunk count during prune;
+- fallback rate from localized patching to full-document patching.
+
 ## Maintenance Guidance
 
 Update this file whenever a CLI command starts calling a different core method,
