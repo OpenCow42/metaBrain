@@ -452,7 +452,9 @@ Keep Mark II complexity under control with these implementation constraints:
   chain. If hunk-to-chunk mapping is ambiguous, use the full-document fallback
   explicitly and count it in benchmarks.
 - Reindex only changed chunks. Stale term/reference keys should be tracked by
-  chunk ID so a localized patch does not need to scan and decode all old chunks.
+  current-version occurrence identity, `documentID + ordinal + chunkID`, so a
+  localized patch does not need to scan and decode all old chunks and duplicate
+  chunk contents are cleaned up independently.
 - Make segment and chunk garbage collection reachability-based. Prune and
   explicit migration should compute retained manifests first, scan segment
   pointers across those manifests, mark reachable segments and chunks, then

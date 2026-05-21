@@ -169,6 +169,21 @@ segments and chunk records for changed runs. This gives snapshot-style version
 semantics while avoiding full body rewrites and avoiding a single giant manifest
 value for large JSONL files.
 
+Manifest segments should be content-addressed pointer runs:
+
+- `segmentID` equals `segmentSHA256`.
+- `segmentSHA256` is computed from a canonical representation of the ordered
+  `DocumentChunkPointer` run.
+- The canonical segment payload must exclude `segmentID`, `segmentSHA256`,
+  `debugLabel`, segment ordinal, and other cache or diagnostic fields.
+- The canonical segment payload must include each pointer's `chunkID`,
+  `chunkSHA256`, byte range, format, chunk kind, heading path, logical path, and
+  chunk count in order.
+
+Excluding segment ordinal keeps unchanged pointer runs reusable after inserts or
+deletes elsewhere in the document. The chain manifest's segment pointers record
+where each segment sits in a specific revision.
+
 Initial segment tuning:
 
 - target `256` chunk pointers per manifest segment;
@@ -262,13 +277,30 @@ Pure content-hash IDs keep unchanged chunks stable across versions and make
 content reuse straightforward. The surrounding manifest structure keeps the file
 explainable.
 
+Content identity is not occurrence identity. The same `chunkID` may appear more
+than once in one document when content repeats, such as duplicate JSONL lines,
+repeated Markdown blocks, or repeated JSON scalar values. Current-version
+indexes and cleanup logic must identify searchable occurrences with
+`documentID + ordinal + chunkID`, not with `chunkID` alone. Conceptual current
+index keys should follow this shape:
+
+```text
+idx/term/<term>/<documentID>/<ordinal>/<chunkID>
+idx/ref/<target>/<documentID>/<ordinal>/<chunkID>
+chunk/current/<documentID>/<ordinal> -> chunkID
+```
+
+`chunkID` still identifies the stored bytes. `ordinal` identifies where that
+occurrence appears in the current reconstructed body. The combined occurrence
+identity lets search, reference cleanup, and metadata cleanup handle duplicate
+chunk content without deleting or merging the wrong posting.
+
 The manifest must store SHA-256 digests for every chunk, every manifest segment,
 and the manifest root itself. Each `chunkSHA256` is computed over the exact
 stored chunk bytes, including line terminators when present. `segmentSHA256` is
-computed over a canonical representation of the segment identity and ordered
-chunk pointer data, including each chunk's SHA-256. `manifestSHA256` is computed
-over a canonical representation of the manifest identity and ordered segment
-pointer data, including each segment's SHA-256.
+computed as the content address for the segment pointer run described above.
+`manifestSHA256` is computed over a canonical representation of the manifest
+identity and ordered segment pointer data, including each segment's SHA-256.
 
 `fileSHA256` is optional lazy metadata. It is computed over the exact bytes that
 `get` or `dump` would reconstruct for that revision, but Mark II writes should
@@ -567,12 +599,12 @@ Avoid a required up-front migration for existing stores.
 
 ## Search And Indexing
 
-Search should index format-aware chunks instead of fixed character windows. Each
-posting should reference document ID plus chunk ID or current ordinal. Result
-assembly can fetch neighboring chunks from the manifest when context is
-requested. Markdown chunks can use heading metadata, JSON chunks can use logical
-paths, JSONL chunks can use line numbers, and plain text chunks can use paragraph
-or window ordinals.
+Search should index format-aware chunk occurrences instead of fixed character
+windows. Each current-version posting should reference `documentID + ordinal +
+chunkID` so duplicate chunk contents remain distinct. Result assembly can fetch
+neighboring chunks from the manifest when context is requested. Markdown chunks
+can use heading metadata, JSON chunks can use logical paths, JSONL chunks can use
+line numbers, and plain text chunks can use paragraph or window ordinals.
 
 Search complexity depends on chunk token counts. Chunkers must enforce the
 maximum token/term cap described above so scoring stays bounded even for large
@@ -581,8 +613,8 @@ Markdown sections, large JSON values, or dense plain-text paragraphs.
 When a targeted patch changes one chunk, delete and rewrite only:
 
 - the current ordinal pointer for changed ordinals,
-- lexical postings for changed chunks,
-- reference edges if changed chunks alter explicit references,
+- lexical postings for changed occurrences,
+- reference edges if changed occurrences alter explicit references,
 - metadata postings if front matter or extracted metadata changed.
 
 If heading structure changes, affected ordinals after the splice may need pointer
@@ -715,8 +747,13 @@ Add focused tests for:
   without reindexing unrelated chunks.
 - Manifest segments store `segmentSHA256`, reuse unchanged segment IDs, and
   start with a target size of `256` chunk pointers.
+- `segmentID` equals `segmentSHA256` for the canonical ordered chunk-pointer run
+  and does not include segment ordinal or debug/cache fields.
 - Chunk IDs are plain SHA-256 content hashes, while manifest/segment/chunk
   pointer metadata keeps the document structure debuggable.
+- Current-version search, reference, and metadata postings use occurrence
+  identity: `documentID + ordinal + chunkID`, so duplicate chunk contents are
+  indexed and cleaned up independently.
 - Benchmark results before merge justify keeping or tuning the 256-pointer
   segment target.
 - Untargeted `patch` compatibility.

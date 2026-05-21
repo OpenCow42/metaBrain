@@ -129,21 +129,24 @@ documents reuse unchanged runs across revisions without rewriting one giant flat
 manifest.
 
 Chunk SHA-256 values are computed over each exact stored chunk, including
-preserved line terminators. Segment SHA-256 values are computed over a canonical
-representation of each segment's identity and ordered chunk pointer data,
-including each chunk's SHA-256. The manifest SHA-256 is computed over a
-canonical representation of the manifest identity and ordered segment pointer
-data, including each segment's SHA-256. A complete-file SHA-256 is useful but
-non-mandatory lazy metadata. When an operation already streams the whole
-reconstructed body, such as `get`, `dump`, integrity verification, or a full-body
-write, the store should compute or refresh the complete-file SHA-256 and persist
-it as metadata.
+preserved line terminators. Segment records are content-addressed pointer runs:
+`segmentID` equals `segmentSHA256`, computed from the canonical ordered chunk
+pointer data and excluding segment ordinal, debug labels, and cache fields. The
+manifest SHA-256 is computed over a canonical representation of the manifest
+identity and ordered segment pointer data, including each segment's SHA-256. A
+complete-file SHA-256 is useful but non-mandatory lazy metadata. When an
+operation already streams the whole reconstructed body, such as `get`, `dump`,
+integrity verification, or a full-body write, the store should compute or refresh
+the complete-file SHA-256 and persist it as metadata.
 
 Chunk IDs should remain plain SHA-256 content hashes of exact chunk bytes.
-Debuggability should come from manifest, segment, and chunk pointer metadata:
-version sequence, segment ordinal, chunk ordinal, byte range, logical path,
-heading path, chunk kind, short hash display, and optional debug labels. A future
-inspection command can expose that structure without changing content identity.
+Search, reference, and metadata postings should use current-version occurrence
+identity, `documentID + ordinal + chunkID`, because the same chunk content can
+appear more than once in a document. Debuggability should come from manifest,
+segment, and chunk pointer metadata: version sequence, segment ordinal, chunk
+ordinal, byte range, logical path, heading path, chunk kind, short hash display,
+and optional debug labels. A future inspection command can expose that structure
+without changing content identity.
 
 The initial segment target is `256` chunk pointers. Before merging the Mark II
 work, benchmark Markdown, plain text, JSON, and JSONL corpora and tune this
