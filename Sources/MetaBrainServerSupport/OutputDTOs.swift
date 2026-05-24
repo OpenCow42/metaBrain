@@ -93,6 +93,20 @@ public struct PatchCheckOutput: Codable, Equatable, Sendable {
     }
 }
 
+public enum ServerPatchOutput: Encodable, Equatable, Sendable {
+    case check(PatchCheckOutput)
+    case patch(PatchOutput)
+
+    public func encode(to encoder: Encoder) throws {
+        switch self {
+        case .check(let output):
+            try output.encode(to: encoder)
+        case .patch(let output):
+            try output.encode(to: encoder)
+        }
+    }
+}
+
 public struct MoveOutput: Codable, Equatable, Sendable {
     public var documentID: String
     public var from: String

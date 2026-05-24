@@ -74,6 +74,8 @@ import FoundationNetworking
     #expect(try encode(PutOutput(documentID: "abc123", path: "/notes/today", status: "created", version: 1)) == #"{"documentID":"abc123","operation":"put","path":"/notes/today","status":"created","version":1}"#)
     #expect(try encode(PatchOutput(documentID: "abc123", path: "/notes/today", version: 2)) == #"{"documentID":"abc123","operation":"patch","path":"/notes/today","status":"patched","version":2}"#)
     #expect(try encode(PatchCheckOutput()) == #"{"check":true,"operation":"patch","status":"applies","success":true}"#)
+    #expect(try encode(ServerPatchOutput.patch(PatchOutput(documentID: "abc123", path: "/notes/today", version: 2))) == #"{"documentID":"abc123","operation":"patch","path":"/notes/today","status":"patched","version":2}"#)
+    #expect(try encode(ServerPatchOutput.check(PatchCheckOutput())) == #"{"check":true,"operation":"patch","status":"applies","success":true}"#)
     #expect(try encode(MoveOutput(documentID: "abc123", from: "/old", path: "/new", status: "moved", version: 2)) == #"{"documentID":"abc123","from":"/old","operation":"move","path":"/new","status":"moved","version":2}"#)
     #expect(try encode(PruneOutput(prunedVersionCount: 1, retainedVersionCount: 2)) == #"{"operation":"prune","prunedVersionCount":1,"retainedVersionCount":2,"status":"completed"}"#)
     #expect(try encode(DeleteOutput(reference: "/notes/today", deleted: true)) == #"{"deleted":true,"operation":"delete","reference":"/notes/today","status":"completed"}"#)

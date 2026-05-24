@@ -180,6 +180,13 @@ methods. Their complexity matches the core scan/search/version listing
 behavior described for the CLI commands below, plus bounded HTTP decode and
 JSON encode overhead.
 
+`POST /v1/patch`, `POST /v1/move`, `POST /v1/prune`, `POST /v1/delete`, and
+`POST /v1/remove-version` delegate to the same core mutation methods used by
+the CLI. Their store complexity therefore matches the corresponding command
+rows below, plus bounded HTTP request decoding and response encoding. Patch
+requests carry the diff body directly in JSON, so the daemon never reads a
+server-side patch file for this endpoint.
+
 ### `init`
 
 `init` opens the store through `StoreOptions.openStore()` and

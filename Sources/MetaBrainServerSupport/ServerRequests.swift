@@ -4,6 +4,8 @@ import MetaBrainCore
 public enum ServerRequestDTOError: Error, Equatable, Sendable, CustomStringConvertible {
     case invalidTreeMaxDepth(Int)
     case invalidSearchLimit(Int)
+    case missingRetention
+    case invalidRemoveVersionSequence(UInt64)
 
     public var description: String {
         switch self {
@@ -11,6 +13,10 @@ public enum ServerRequestDTOError: Error, Equatable, Sendable, CustomStringConve
             return "maxDepth must be zero or greater, got \(maxDepth)"
         case .invalidSearchLimit(let limit):
             return "limit must be greater than zero, got \(limit)"
+        case .missingRetention:
+            return "retention is required"
+        case .invalidRemoveVersionSequence(let sequence):
+            return "sequence must be greater than zero, got \(sequence)"
         }
     }
 }
@@ -239,5 +245,118 @@ public struct ServerGetRequest: Codable, Equatable, Sendable {
 
     public func documentReference() throws -> DocumentReference {
         try reference.documentReference()
+    }
+}
+
+public struct ServerPatchRequest: Codable, Equatable, Sendable {
+    public var reference: DocumentReferenceDTO
+    public var unifiedDiff: String
+    public var check: Bool
+    public var retention: DocumentRetentionPolicyDTO?
+
+    public init(
+        reference: DocumentReferenceDTO,
+        unifiedDiff: String,
+        check: Bool = false,
+        retention: DocumentRetentionPolicyDTO? = nil
+    ) {
+        self.reference = reference
+        self.unifiedDiff = unifiedDiff
+        self.check = check
+        self.retention = retention
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case reference
+        case unifiedDiff
+        case check
+        case retention
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.reference = try container.decode(DocumentReferenceDTO.self, forKey: .reference)
+        self.unifiedDiff = try container.decode(String.self, forKey: .unifiedDiff)
+        self.check = try container.decodeIfPresent(Bool.self, forKey: .check) ?? false
+        self.retention = try container.decodeIfPresent(DocumentRetentionPolicyDTO.self, forKey: .retention)
+    }
+
+    public func documentPatchRequest() throws -> DocumentPatchRequest {
+        try DocumentPatchRequest(
+            reference: reference.documentReference(),
+            unifiedDiff: unifiedDiff,
+            retention: retention.map { try $0.retentionPolicy() }
+        )
+    }
+}
+
+public struct ServerMoveRequest: Codable, Equatable, Sendable {
+    public var reference: DocumentReferenceDTO
+    public var destinationPath: String
+
+    public init(reference: DocumentReferenceDTO, destinationPath: String) {
+        self.reference = reference
+        self.destinationPath = destinationPath
+    }
+
+    public func documentReference() throws -> DocumentReference {
+        try reference.documentReference()
+    }
+
+    public func documentPath() throws -> DocumentPath {
+        try DocumentPath(destinationPath)
+    }
+}
+
+public struct ServerPruneRequest: Codable, Equatable, Sendable {
+    public var reference: DocumentReferenceDTO
+    public var retention: DocumentRetentionPolicyDTO?
+
+    public init(reference: DocumentReferenceDTO, retention: DocumentRetentionPolicyDTO? = nil) {
+        self.reference = reference
+        self.retention = retention
+    }
+
+    public func pruneRequest() throws -> PruneRequest {
+        guard let retention else {
+            throw ServerRequestDTOError.missingRetention
+        }
+        return try PruneRequest(
+            reference: reference.documentReference(),
+            policy: retention.retentionPolicy()
+        )
+    }
+}
+
+public struct ServerDeleteRequest: Codable, Equatable, Sendable {
+    public var reference: DocumentReferenceDTO
+
+    public init(reference: DocumentReferenceDTO) {
+        self.reference = reference
+    }
+
+    public func documentReference() throws -> DocumentReference {
+        try reference.documentReference()
+    }
+}
+
+public struct ServerRemoveVersionRequest: Codable, Equatable, Sendable {
+    public var reference: DocumentReferenceDTO
+    public var sequence: UInt64
+
+    public init(reference: DocumentReferenceDTO, sequence: UInt64) {
+        self.reference = reference
+        self.sequence = sequence
+    }
+
+    public func documentReference() throws -> DocumentReference {
+        try reference.documentReference()
+    }
+
+    public func validatedSequence() throws -> UInt64 {
+        guard sequence > 0 else {
+            throw ServerRequestDTOError.invalidRemoveVersionSequence(sequence)
+        }
+        return sequence
     }
 }

@@ -87,3 +87,102 @@ import Testing
     #expect(search.map(\.path) == ["/notes/today"])
     #expect(versions.map(\.sequence) == [1])
 }
+
+@Test func storeServerHandlesMutationRoutes() async throws {
+    let root = try temporaryServerDirectory(prefix: "mbd-store-mutations")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let server = try MetaBrainStoreServer(storePath: root.appendingPathComponent("store.leveldb").path)
+    defer { server.closeBlocking() }
+
+    let diff = """
+    --- a/doc
+    +++ b/doc
+    @@ -1,2 +1,2 @@
+    -old
+    +new
+     line
+    """
+
+    let created = try await server.put(ServerPutRequest(path: "/notes/today", body: "old\nline\n"))
+    let check = try await server.patch(ServerPatchRequest(
+        reference: DocumentReferenceDTO(kind: .path, value: "/notes/today"),
+        unifiedDiff: diff,
+        check: true
+    ))
+    let patched = try await server.patch(ServerPatchRequest(
+        reference: DocumentReferenceDTO(kind: .path, value: "/notes/today"),
+        unifiedDiff: diff
+    ))
+    let fetched = try await server.get(ServerGetRequest(
+        reference: DocumentReferenceDTO(kind: .path, value: "/notes/today"),
+        trackingRead: false
+    ))
+    let moved = try await server.move(ServerMoveRequest(
+        reference: DocumentReferenceDTO(kind: .documentID, value: created.documentID),
+        destinationPath: "/notes/archive/today"
+    ))
+    let unchanged = try await server.move(ServerMoveRequest(
+        reference: DocumentReferenceDTO(kind: .path, value: "/notes/archive/today"),
+        destinationPath: "/notes/archive/today"
+    ))
+    let missingDelete = try await server.delete(ServerDeleteRequest(
+        reference: DocumentReferenceDTO(kind: .path, value: "/missing")
+    ))
+    let missingRemove = try await server.removeVersion(ServerRemoveVersionRequest(
+        reference: DocumentReferenceDTO(kind: .path, value: "/missing"),
+        sequence: 1
+    ))
+
+    await #expect(throws: MetaBrainStoreError.currentVersionCannotBeRemoved(
+        try DocumentID(rawValue: created.documentID),
+        sequence: 3
+    )) {
+        _ = try await server.removeVersion(ServerRemoveVersionRequest(
+            reference: DocumentReferenceDTO(kind: .path, value: "/notes/archive/today"),
+            sequence: 3
+        ))
+    }
+
+    let removed = try await server.removeVersion(ServerRemoveVersionRequest(
+        reference: DocumentReferenceDTO(kind: .path, value: "/notes/archive/today"),
+        sequence: 1
+    ))
+    let pruned = try await server.prune(ServerPruneRequest(
+        reference: DocumentReferenceDTO(kind: .path, value: "/notes/archive/today"),
+        retention: DocumentRetentionPolicyDTO(kind: .keepLast, count: 1)
+    ))
+    let deleted = try await server.delete(ServerDeleteRequest(
+        reference: DocumentReferenceDTO(kind: .path, value: "/notes/archive/today")
+    ))
+
+    #expect(check == .check(PatchCheckOutput()))
+    #expect(patched == .patch(PatchOutput(
+        documentID: created.documentID,
+        path: "/notes/today",
+        version: 2
+    )))
+    #expect(fetched.body == "new\nline\n")
+    #expect(moved.status == "moved")
+    #expect(moved.from == "/notes/today")
+    #expect(moved.path == "/notes/archive/today")
+    #expect(moved.version == 3)
+    #expect(unchanged.status == "unchanged")
+    #expect(!missingDelete.deleted)
+    #expect(!missingRemove.removed)
+    #expect(removed.removed)
+    #expect(pruned.prunedVersionCount == 1)
+    #expect(pruned.retainedVersionCount == 1)
+    #expect(deleted.deleted)
+}
+
+@Test func serverAsyncBridgePropagatesOperationFailures() throws {
+    #expect(throws: ServerAsyncBridgeTestError.sample) {
+        let _: Void = try ServerAsyncBridge.run {
+            throw ServerAsyncBridgeTestError.sample
+        }
+    }
+}
+
+private enum ServerAsyncBridgeTestError: Error, Equatable {
+    case sample
+}

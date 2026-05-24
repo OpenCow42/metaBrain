@@ -71,6 +71,54 @@ public actor MetaBrainStoreServer {
         try await store.listVersions(of: request.documentReference()).map(VersionsOutput.init)
     }
 
+    public func patch(_ request: ServerPatchRequest) async throws -> ServerPatchOutput {
+        let patchRequest = try request.documentPatchRequest()
+        if request.check {
+            try await store.checkDocumentPatch(patchRequest)
+            return .check(PatchCheckOutput())
+        }
+
+        let document = try await store.patchDocument(patchRequest)
+        return .patch(PatchOutput(document))
+    }
+
+    public func move(_ request: ServerMoveRequest) async throws -> MoveOutput {
+        let result = try await store.moveDocument(
+            request.documentReference(),
+            to: request.documentPath()
+        )
+        return MoveOutput(result)
+    }
+
+    public func prune(_ request: ServerPruneRequest) async throws -> PruneOutput {
+        let result = try await store.prune(request.pruneRequest())
+        return PruneOutput(result)
+    }
+
+    public func delete(_ request: ServerDeleteRequest) async throws -> DeleteOutput {
+        let reference = try request.documentReference()
+        return DeleteOutput(
+            reference: Self.referenceDescription(reference),
+            deleted: try await store.deleteDocument(reference)
+        )
+    }
+
+    public func removeVersion(_ request: ServerRemoveVersionRequest) async throws -> RemoveVersionOutput {
+        let reference = try request.documentReference()
+        let sequence = try request.validatedSequence()
+        let removed: Bool
+        if let document = try await store.getDocument(reference, trackingRead: false) {
+            removed = try await store.removeVersion(documentID: document.id, sequence: sequence)
+        } else {
+            removed = false
+        }
+        return RemoveVersionOutput(
+            reference: Self.referenceDescription(reference),
+            removed: removed,
+            sequence: sequence
+        )
+    }
+
     public func close() async {
         await store.close()
     }
@@ -116,7 +164,7 @@ enum ServerAsyncBridge {
         let semaphore = DispatchSemaphore(value: 0)
         let box = ServerAsyncResultBox<T>()
 
-        Task {
+        Task.detached(priority: .userInitiated) {
             do {
                 box.set(.success(try await operation()))
             } catch {

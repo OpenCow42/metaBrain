@@ -12,7 +12,7 @@ public struct ServerRouter: Sendable {
         self.init()
     }
 
-    public func route(_ request: ServerHTTPRequest) -> ServerHTTPResponse {
+    public func route(_ request: ServerHTTPRequest) async -> ServerHTTPResponse {
         switch (request.method, normalizedPath(request.path)) {
         case (.get, "/health"):
             return jsonResponse(statusCode: 200, payload: ServerHealthPayload())
@@ -23,52 +23,87 @@ public struct ServerRouter: Sendable {
         case (_, "/v1/version"):
             return methodNotAllowed(request, allowedMethod: "GET")
         case (.post, "/v1/init"):
-            return routeStoreOperation { storeServer in
+            return await routeStoreOperation { storeServer in
                 await storeServer.initialize()
             }
         case (_, "/v1/init"):
             return methodNotAllowed(request, allowedMethod: "POST")
         case (.post, "/v1/put"):
-            return routeStoreOperation { storeServer in
+            return await routeStoreOperation { storeServer in
                 let decoded = try decode(ServerPutRequest.self, from: request)
                 return try await storeServer.put(decoded)
             }
         case (_, "/v1/put"):
             return methodNotAllowed(request, allowedMethod: "POST")
+        case (.post, "/v1/patch"):
+            return await routeStoreOperation { storeServer in
+                let decoded = try decode(ServerPatchRequest.self, from: request)
+                return try await storeServer.patch(decoded)
+            }
+        case (_, "/v1/patch"):
+            return methodNotAllowed(request, allowedMethod: "POST")
+        case (.post, "/v1/move"):
+            return await routeStoreOperation { storeServer in
+                let decoded = try decode(ServerMoveRequest.self, from: request)
+                return try await storeServer.move(decoded)
+            }
+        case (_, "/v1/move"):
+            return methodNotAllowed(request, allowedMethod: "POST")
         case (.post, "/v1/get"):
-            return routeStoreOperation { storeServer in
+            return await routeStoreOperation { storeServer in
                 let decoded = try decode(ServerGetRequest.self, from: request)
                 return try await storeServer.get(decoded)
             }
         case (_, "/v1/get"):
             return methodNotAllowed(request, allowedMethod: "POST")
         case (.post, "/v1/list"):
-            return routeStoreOperation { storeServer in
+            return await routeStoreOperation { storeServer in
                 let decoded = try decode(ServerListRequest.self, from: request)
                 return try await storeServer.list(decoded)
             }
         case (_, "/v1/list"):
             return methodNotAllowed(request, allowedMethod: "POST")
         case (.post, "/v1/tree"):
-            return routeStoreOperation { storeServer in
+            return await routeStoreOperation { storeServer in
                 let decoded = try decode(ServerTreeRequest.self, from: request)
                 return try await storeServer.tree(decoded)
             }
         case (_, "/v1/tree"):
             return methodNotAllowed(request, allowedMethod: "POST")
         case (.post, "/v1/search"):
-            return routeStoreOperation { storeServer in
+            return await routeStoreOperation { storeServer in
                 let decoded = try decode(ServerSearchRequest.self, from: request)
                 return try await storeServer.search(decoded)
             }
         case (_, "/v1/search"):
             return methodNotAllowed(request, allowedMethod: "POST")
         case (.post, "/v1/versions"):
-            return routeStoreOperation { storeServer in
+            return await routeStoreOperation { storeServer in
                 let decoded = try decode(ServerVersionsRequest.self, from: request)
                 return try await storeServer.versions(decoded)
             }
         case (_, "/v1/versions"):
+            return methodNotAllowed(request, allowedMethod: "POST")
+        case (.post, "/v1/prune"):
+            return await routeStoreOperation { storeServer in
+                let decoded = try decode(ServerPruneRequest.self, from: request)
+                return try await storeServer.prune(decoded)
+            }
+        case (_, "/v1/prune"):
+            return methodNotAllowed(request, allowedMethod: "POST")
+        case (.post, "/v1/delete"):
+            return await routeStoreOperation { storeServer in
+                let decoded = try decode(ServerDeleteRequest.self, from: request)
+                return try await storeServer.delete(decoded)
+            }
+        case (_, "/v1/delete"):
+            return methodNotAllowed(request, allowedMethod: "POST")
+        case (.post, "/v1/remove-version"):
+            return await routeStoreOperation { storeServer in
+                let decoded = try decode(ServerRemoveVersionRequest.self, from: request)
+                return try await storeServer.removeVersion(decoded)
+            }
+        case (_, "/v1/remove-version"):
             return methodNotAllowed(request, allowedMethod: "POST")
         default:
             return jsonResponse(
@@ -78,6 +113,12 @@ public struct ServerRouter: Sendable {
                     message: "No server route exists for \(request.method.rawValue) \(request.path)."
                 )
             )
+        }
+    }
+
+    public func routeBlocking(_ request: ServerHTTPRequest) -> ServerHTTPResponse {
+        try! ServerAsyncBridge.run {
+            await route(request)
         }
     }
 
@@ -100,7 +141,7 @@ public struct ServerRouter: Sendable {
 
     private func routeStoreOperation<T: Encodable & Sendable>(
         _ operation: @escaping @Sendable (MetaBrainStoreServer) async throws -> T
-    ) -> ServerHTTPResponse {
+    ) async -> ServerHTTPResponse {
         guard let storeServer else {
             return jsonResponse(
                 statusCode: 500,
@@ -112,9 +153,7 @@ public struct ServerRouter: Sendable {
         }
 
         do {
-            let payload = try ServerAsyncBridge.run {
-                try await operation(storeServer)
-            }
+            let payload = try await operation(storeServer)
             return jsonResponse(statusCode: 200, payload: payload)
         } catch {
             return errorResponse(for: error)
@@ -142,6 +181,10 @@ public struct ServerRouter: Sendable {
             return storeErrorResponse(storeError)
         }
 
+        if let patchError = error as? MetaBrainPatchError {
+            return patchErrorResponse(patchError)
+        }
+
         return jsonResponse(
             statusCode: 400,
             payload: ServerErrorPayload(
@@ -161,11 +204,40 @@ public struct ServerRouter: Sendable {
                     message: error.description
                 )
             )
+        case .pathAlreadyExists, .currentVersionCannotBeRemoved:
+            return jsonResponse(
+                statusCode: 409,
+                payload: ServerErrorPayload(
+                    error: "conflict",
+                    message: error.description
+                )
+            )
         default:
             return jsonResponse(
                 statusCode: 500,
                 payload: ServerErrorPayload(
                     error: "store_error",
+                    message: error.description
+                )
+            )
+        }
+    }
+
+    private func patchErrorResponse(_ error: MetaBrainPatchError) -> ServerHTTPResponse {
+        switch error {
+        case .documentNotFound:
+            return jsonResponse(
+                statusCode: 404,
+                payload: ServerErrorPayload(
+                    error: "document_not_found",
+                    message: error.description
+                )
+            )
+        default:
+            return jsonResponse(
+                statusCode: 400,
+                payload: ServerErrorPayload(
+                    error: "invalid_patch",
                     message: error.description
                 )
             )

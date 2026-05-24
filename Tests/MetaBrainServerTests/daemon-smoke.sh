@@ -166,6 +166,29 @@ responses = [
     request("POST", "/v1/tree", {"path": "/notes", "maxDepth": 1}),
     request("POST", "/v1/search", {"query": "daemon", "pathPrefix": "/notes", "limit": 5}),
     request("POST", "/v1/versions", {"reference": {"kind": "path", "value": "/notes/today"}}),
+    request("POST", "/v1/put", {"path": "/mutation/doc", "body": "old\nline\n"}),
+    request("POST", "/v1/patch", {
+        "reference": {"kind": "path", "value": "/mutation/doc"},
+        "unifiedDiff": "--- a/doc\n+++ b/doc\n@@ -1,2 +1,2 @@\n-old\n+new\n line\n",
+        "check": True,
+    }),
+    request("POST", "/v1/patch", {
+        "reference": {"kind": "path", "value": "/mutation/doc"},
+        "unifiedDiff": "--- a/doc\n+++ b/doc\n@@ -1,2 +1,2 @@\n-old\n+new\n line\n",
+    }),
+    request("POST", "/v1/move", {
+        "reference": {"kind": "path", "value": "/mutation/doc"},
+        "destinationPath": "/mutation/moved",
+    }),
+    request("POST", "/v1/remove-version", {
+        "reference": {"kind": "path", "value": "/mutation/moved"},
+        "sequence": 1,
+    }),
+    request("POST", "/v1/prune", {
+        "reference": {"kind": "path", "value": "/mutation/moved"},
+        "retention": {"kind": "keepLast", "count": 1},
+    }),
+    request("POST", "/v1/delete", {"reference": {"kind": "path", "value": "/mutation/moved"}}),
 ]
 sys.stdout.write("\n---response---\n".join(responses))
 PY
@@ -180,6 +203,12 @@ printf '%s\n' "$API_RESPONSE" | rg -F -q '"hasChildren"'
 printf '%s\n' "$API_RESPONSE" | rg -F -q '"kind":"root"'
 printf '%s\n' "$API_RESPONSE" | rg -F -q '"snippet":"daemon body"'
 printf '%s\n' "$API_RESPONSE" | rg -F -q '"sequence":1'
+printf '%s\n' "$API_RESPONSE" | rg -F -q '"status":"applies"'
+printf '%s\n' "$API_RESPONSE" | rg -F -q '"status":"patched"'
+printf '%s\n' "$API_RESPONSE" | rg -F -q '"status":"moved"'
+printf '%s\n' "$API_RESPONSE" | rg -F -q '"removed":true'
+printf '%s\n' "$API_RESPONSE" | rg -F -q '"operation":"prune"'
+printf '%s\n' "$API_RESPONSE" | rg -F -q '"deleted":true'
 
 kill "$serve_pid" 2>/dev/null || true
 wait "$serve_pid" 2>/dev/null || true

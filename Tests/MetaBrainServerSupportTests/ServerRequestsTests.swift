@@ -61,6 +61,45 @@ import Testing
     #expect(try explicit.documentReference() == .documentID(try DocumentID(rawValue: "abc123")))
 }
 
+@Test func serverPatchRequestDefaultsAndBuildsPatchRequest() throws {
+    let decoded = try MetaBrainJSON.decoder().decode(
+        ServerPatchRequest.self,
+        from: Data(#"{"reference":{"kind":"path","value":"notes/today"},"unifiedDiff":"@@ -1 +1 @@\n-old\n+new\n"}"#.utf8)
+    )
+    let patch = try decoded.documentPatchRequest()
+
+    #expect(!decoded.check)
+    #expect(patch.reference == .path(try DocumentPath("/notes/today")))
+    #expect(patch.unifiedDiff == "@@ -1 +1 @@\n-old\n+new\n")
+    #expect(patch.retention == nil)
+}
+
+@Test func serverMutationRequestDTOsConvertOptionalFields() throws {
+    let reference = DocumentReferenceDTO(kind: .path, value: "/notes/today")
+    let retention = DocumentRetentionPolicyDTO(kind: .keepLast, count: 2)
+    let patch = ServerPatchRequest(
+        reference: reference,
+        unifiedDiff: "@@ -1 +1 @@\n-old\n+new\n",
+        check: true,
+        retention: retention
+    )
+    let move = ServerMoveRequest(reference: reference, destinationPath: "/notes/archive/today")
+    let prune = ServerPruneRequest(reference: reference, retention: retention)
+    let delete = ServerDeleteRequest(reference: reference)
+    let removeVersion = ServerRemoveVersionRequest(reference: reference, sequence: 1)
+
+    #expect(try patch.documentPatchRequest().retention == .keepMostRecent(2))
+    #expect(try move.documentReference() == .path(try DocumentPath("/notes/today")))
+    #expect(try move.documentPath() == DocumentPath("/notes/archive/today"))
+    #expect(try prune.pruneRequest() == PruneRequest(
+        reference: .path(try DocumentPath("/notes/today")),
+        policy: .keepMostRecent(2)
+    ))
+    #expect(try delete.documentReference() == .path(try DocumentPath("/notes/today")))
+    #expect(try removeVersion.documentReference() == .path(try DocumentPath("/notes/today")))
+    #expect(try removeVersion.validatedSequence() == 1)
+}
+
 @Test func serverReadRequestDTOsDefaultAndValidate() throws {
     let list = try MetaBrainJSON.decoder().decode(ServerListRequest.self, from: Data("{}".utf8))
     let tree = try MetaBrainJSON.decoder().decode(ServerTreeRequest.self, from: Data(#"{"maxDepth":0}"#.utf8))
@@ -103,6 +142,8 @@ import Testing
 @Test func serverRequestDTOErrorsHaveStableDescriptions() {
     #expect(ServerRequestDTOError.invalidTreeMaxDepth(-1).description == "maxDepth must be zero or greater, got -1")
     #expect(ServerRequestDTOError.invalidSearchLimit(0).description == "limit must be greater than zero, got 0")
+    #expect(ServerRequestDTOError.missingRetention.description == "retention is required")
+    #expect(ServerRequestDTOError.invalidRemoveVersionSequence(0).description == "sequence must be greater than zero, got 0")
 }
 
 @Test func serverReadRequestDTOsRejectInvalidValues() throws {
@@ -114,5 +155,16 @@ import Testing
     }
     #expect(throws: MetaBrainDomainError.invalidDocumentPath("..")) {
         _ = try ServerListRequest(path: "..").documentPath()
+    }
+    #expect(throws: ServerRequestDTOError.missingRetention) {
+        _ = try ServerPruneRequest(
+            reference: DocumentReferenceDTO(kind: .path, value: "/notes/today")
+        ).pruneRequest()
+    }
+    #expect(throws: ServerRequestDTOError.invalidRemoveVersionSequence(0)) {
+        _ = try ServerRemoveVersionRequest(
+            reference: DocumentReferenceDTO(kind: .path, value: "/notes/today"),
+            sequence: 0
+        ).validatedSequence()
     }
 }

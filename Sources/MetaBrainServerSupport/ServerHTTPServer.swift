@@ -67,7 +67,7 @@ public final class ServerHTTPServer: @unchecked Sendable {
         let router = router ?? ServerRouter(configuration: configuration)
         self.configuration = configuration
         self.routeHandler = { request in
-            router.route(request)
+            router.routeBlocking(request)
         }
         self.codec = codec
         self.requestLimiter = requestLimiter ?? ServerRequestLimiter(

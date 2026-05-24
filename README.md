@@ -155,8 +155,8 @@ mb help dump
 
 `mbd` runs the local daemon surface. The daemon opens one configured
 `MetaBrainCore` store for its lifetime, serves `/health`, and exposes
-store-backed JSON endpoints for version, init, put, get, list, tree, search,
-and versions.
+store-backed JSON endpoints for version, init, put, patch, move, get, list,
+tree, search, versions, prune, delete, and remove-version.
 
 ```bash
 mbd serve --store .metabrain/store.leveldb --socket ~/.metabrain/mbd.sock
