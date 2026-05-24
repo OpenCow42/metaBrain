@@ -151,6 +151,20 @@ mb help dump
 - `delete` removes a current document and all retained versions.
 - `remove-version` removes one retained historical version.
 
+## Daemon
+
+`mbd` runs the local daemon surface. The first daemon endpoint is a health
+route; document APIs are being added over the shared `MetaBrainCore` layer.
+
+```bash
+mbd serve --store .metabrain/store.leveldb --socket ~/.metabrain/mbd.sock
+mbd service print --user
+mbd version
+```
+
+Unix sockets are the default local transport on macOS and Linux. Loopback HTTP
+is available for debugging with `--host 127.0.0.1 --port 7421`.
+
 ## Project Shape
 
 This repository is a Swift package with three products:
