@@ -1,6 +1,8 @@
 # Releasing metaBrain
 
-This document is for maintainers preparing `mb` CLI release builds.
+This document is for maintainers preparing `mb` CLI release builds. The `mbd`
+daemon is built from the same package; daemon packaging is tracked separately
+until the server release flow is complete.
 
 Public macOS releases **must** be Developer ID signed and Apple-notarized before
 they are uploaded or referenced from Homebrew. Do not publish a macOS archive
@@ -10,8 +12,10 @@ for local smoke checks.
 ## Before Release
 
 Before cutting a new release, update the bundled version returned by
-`currentSoftwareTag()` in `Sources/MetaBrainCLI/main.swift` to the release tag.
-This keeps `mb version` accurate before the tag exists and in installed builds.
+`MetaBrainVersion.currentSoftwareTag()` by changing `bundledTag` in
+`Sources/MetaBrainServerSupport/MetaBrainVersion.swift` to the release tag.
+This keeps `mb version` and `mbd version` accurate before the tag exists and in
+installed builds.
 
 ## macOS Release
 

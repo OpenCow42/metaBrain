@@ -5,7 +5,16 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP_PARENT="${METABRAIN_TMPDIR:-/private/tmp}"
 TMP_DIR="$(mktemp -d "$TMP_PARENT/metabrain-cli.XXXXXX")"
 STORE="$TMP_DIR/store.leveldb"
-trap 'rm -rf "$TMP_DIR"' EXIT
+release_server_pid=""
+
+cleanup() {
+    if [[ -n "$release_server_pid" ]] && kill -0 "$release_server_pid" 2>/dev/null; then
+        kill "$release_server_pid" 2>/dev/null || true
+        wait "$release_server_pid" 2>/dev/null || true
+    fi
+    rm -rf "$TMP_DIR"
+}
+trap cleanup EXIT
 
 if [[ -n "${METABRAIN_BIN:-}" ]]; then
     METABRAIN=("$METABRAIN_BIN")
@@ -234,6 +243,91 @@ if [[ "$VERSION_JSON" != "$VERSION_DEFAULT_JSON" ]]; then
     echo "Expected version JSON output without release check, got: $VERSION_JSON" >&2
     exit 1
 fi
+VERSION_JSONL="$(METABRAIN_VERSION=9.8.7 "${METABRAIN[@]}" version --no-release-check --format jsonl)"
+if [[ "$VERSION_JSONL" != "$VERSION_DEFAULT_JSON" ]]; then
+    echo "Expected version JSONL output without release check, got: $VERSION_JSONL" >&2
+    exit 1
+fi
+
+release_port_file="$TMP_DIR/release-port"
+python3 - "$release_port_file" <<'PY' &
+import http.server
+import os
+import socketserver
+import sys
+
+class Server(http.server.HTTPServer):
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path != "/latest":
+            body = b'{}'
+            self.send_response(503)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        body = b'{"html_url":"https://example.com/metabrain/releases/9.9.9","tag_name":"9.9.9"}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args):
+        pass
+
+server = Server(("127.0.0.1", 0), Handler)
+with open(sys.argv[1], "w", encoding="utf-8") as file:
+    file.write(str(server.server_port))
+    file.flush()
+    os.fsync(file.fileno())
+server.serve_forever()
+PY
+release_server_pid="$!"
+for _ in $(seq 1 400); do
+    if [[ -s "$release_port_file" ]]; then
+        break
+    fi
+    if ! kill -0 "$release_server_pid" 2>/dev/null; then
+        echo "Release test server exited early." >&2
+        exit 1
+    fi
+    sleep 0.05
+done
+if [[ ! -s "$release_port_file" ]]; then
+    echo "Release test server did not report a port." >&2
+    exit 1
+fi
+release_port="$(cat "$release_port_file")"
+VERSION_CHECKED_TEXT="$(METABRAIN_VERSION=9.8.7 "${METABRAIN[@]}" version --format text --release-api-url "http://127.0.0.1:${release_port}/latest")"
+printf '%s\n' "$VERSION_CHECKED_TEXT" | rg -F -q 'version: 9.8.7'
+printf '%s\n' "$VERSION_CHECKED_TEXT" | rg -F -q 'latest: 9.9.9'
+printf '%s\n' "$VERSION_CHECKED_TEXT" | rg -F -q 'updateAvailable: true'
+printf '%s\n' "$VERSION_CHECKED_TEXT" | rg -F -q 'releaseCheck: checked'
+printf '%s\n' "$VERSION_CHECKED_TEXT" | rg -F -q 'releaseURL: https://example.com/metabrain/releases/9.9.9'
+VERSION_FAILED_TEXT="$(METABRAIN_VERSION=9.8.7 "${METABRAIN[@]}" version --format text --release-api-url "http://127.0.0.1:${release_port}/failed")"
+printf '%s\n' "$VERSION_FAILED_TEXT" | rg -F -q 'releaseCheck: failed'
+printf '%s\n' "$VERSION_FAILED_TEXT" | rg -F -q 'message: GitHub releases request returned HTTP 503.'
+
+if "${METABRAIN[@]}" version --release-check-timeout 0 2>"$TMP_DIR/version-timeout.err"; then
+    echo "Expected invalid release timeout to fail" >&2
+    exit 1
+fi
+rg -F -q -- '--release-check-timeout must be greater than zero' "$TMP_DIR/version-timeout.err"
+
+if "${METABRAIN[@]}" version --release-api-url relative/path 2>"$TMP_DIR/version-url.err"; then
+    echo "Expected invalid release API URL to fail" >&2
+    exit 1
+fi
+rg -F -q -- '--release-api-url must be an absolute URL' "$TMP_DIR/version-url.err"
 
 if "${METABRAIN[@]}" help missing 2>"$TMP_DIR/help-missing.err"; then
     echo "Expected unknown help topic to fail" >&2
@@ -604,6 +698,10 @@ MOVE_SOURCE_ID="$(printf '%s\n' "$PUT_MOVE_SOURCE_JSON" | sed -E 's/.*"documentI
 MOVE_SOURCE_JSON="$("${METABRAIN[@]}" move --store "$STORE" /move/source /move/archive/source)"
 assert_move_json "$MOVE_SOURCE_JSON" /move/source /move/archive/source moved 2
 printf '%s\n' "$MOVE_SOURCE_JSON" | rg -F -q '"documentID":"'"$MOVE_SOURCE_ID"'"'
+MOVE_JSONL_TARGET_JSON="$("${METABRAIN[@]}" put --store "$STORE" /move/jsonl-source 'jsonl relocated body')"
+assert_put_json "$MOVE_JSONL_TARGET_JSON" /move/jsonl-source created 1
+MOVE_JSONL_OUTPUT="$("${METABRAIN[@]}" move --store "$STORE" /move/jsonl-source /move/jsonl-target --format jsonl)"
+assert_move_json "$MOVE_JSONL_OUTPUT" /move/jsonl-source /move/jsonl-target moved 2
 if "${METABRAIN[@]}" get --store "$STORE" /move/source 2>"$TMP_DIR/move-old-get.err"; then
     echo "Expected moved old path get to fail" >&2
     exit 1
@@ -627,6 +725,16 @@ if "${METABRAIN[@]}" move --store "$STORE" /move/missing /move/new-missing 2>"$T
     exit 1
 fi
 rg -F -q 'Document not found: /move/missing.' "$TMP_DIR/move-missing.err"
+if "${METABRAIN[@]}" move --store "$STORE" /move/only-one-path 2>"$TMP_DIR/move-one-path.err"; then
+    echo "Expected move with one path and no ID to fail" >&2
+    exit 1
+fi
+rg -F -q 'Provide a source path and a destination path, or use --id with one destination path.' "$TMP_DIR/move-one-path.err"
+if "${METABRAIN[@]}" move --store "$STORE" --id "$MOVE_SOURCE_ID" /move/a /move/b 2>"$TMP_DIR/move-id-two-paths.err"; then
+    echo "Expected move with ID and two paths to fail" >&2
+    exit 1
+fi
+rg -F -q 'Use --id with exactly one destination path.' "$TMP_DIR/move-id-two-paths.err"
 
 "${METABRAIN[@]}" put --store "$STORE" --format text /delete/target 'delete target v1 needle' --keep-all | rg -q '^version: 1$'
 "${METABRAIN[@]}" put --store "$STORE" --format text /delete/target 'delete target v2 needle' --keep-all | rg -q '^version: 2$'

@@ -153,14 +153,16 @@ mb help dump
 
 ## Project Shape
 
-This repository is a Swift package with two products:
+This repository is a Swift package with three products:
 
 - `MetaBrainCore`: the shared library for storage, indexing, retrieval, and
   domain behavior.
 - `mb`: the command-line tool.
+- `mbd`: the local daemon executable.
 
-The CLI stays thin. Shared behavior belongs in `MetaBrainCore` so every future
-interface uses the same underlying model.
+The CLI and daemon stay thin. Shared behavior belongs in `MetaBrainCore`, while
+server-facing transport DTOs live in the internal `MetaBrainServerSupport`
+target when they are not part of the core storage model.
 
 The native Apple platform GUI lives in the sibling
 [`metaBrainExplorer`](../metaBrainExplorer) repository. It depends on
