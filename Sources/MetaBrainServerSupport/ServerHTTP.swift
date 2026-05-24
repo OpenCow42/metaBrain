@@ -49,7 +49,9 @@ public enum ServerHTTPCodecError: Error, Equatable, CustomStringConvertible, Sen
     case invalidUTF8
     case missingHeaderTerminator
     case malformedRequestLine
+    case malformedStatusLine
     case unsupportedMethod(String)
+    case invalidStatusCode(String)
     case malformedHeader(String)
     case invalidContentLength(String)
     case incompleteBody(expected: Int, actual: Int)
@@ -62,8 +64,12 @@ public enum ServerHTTPCodecError: Error, Equatable, CustomStringConvertible, Sen
             return "HTTP headers must end with CRLF CRLF"
         case .malformedRequestLine:
             return "HTTP request line must be METHOD PATH HTTP/1.1"
+        case .malformedStatusLine:
+            return "HTTP status line must be HTTP/1.1 STATUS REASON"
         case .unsupportedMethod(let method):
             return "unsupported HTTP method: \(method)"
+        case .invalidStatusCode(let value):
+            return "invalid HTTP status code: \(value)"
         case .malformedHeader(let header):
             return "malformed HTTP header: \(header)"
         case .invalidContentLength(let value):
@@ -124,6 +130,31 @@ public struct ServerHTTPCodec: Sendable {
         )
     }
 
+    public func parseResponse(_ data: Data) throws -> ServerHTTPResponse {
+        let headerEnd = try headerEndIndex(in: data)
+        let headerData = data[..<headerEnd]
+        guard let headerText = String(data: headerData, encoding: .utf8) else { throw ServerHTTPCodecError.invalidUTF8 }
+
+        let lines = headerText.components(separatedBy: "\r\n")
+        let statusParts = lines[0].split(separator: " ", maxSplits: 2, omittingEmptySubsequences: false)
+        guard statusParts.count == 3, statusParts[0] == "HTTP/1.1" else { throw ServerHTTPCodecError.malformedStatusLine }
+        guard let statusCode = Int(statusParts[1]) else { throw ServerHTTPCodecError.invalidStatusCode(String(statusParts[1])) }
+
+        let headers = try Self.headers(from: lines.dropFirst())
+        let bodyStart = headerEnd + 4
+        let declaredLength = try contentLength(from: headers)
+        let actualLength = data.count - bodyStart
+        guard actualLength >= declaredLength else {
+            throw ServerHTTPCodecError.incompleteBody(expected: declaredLength, actual: actualLength)
+        }
+
+        return ServerHTTPResponse(
+            statusCode: statusCode,
+            headers: headers,
+            body: data[bodyStart..<(bodyStart + declaredLength)]
+        )
+    }
+
     public func serializeResponse(_ response: ServerHTTPResponse) -> Data {
         var headers = response.headers
         headers["Content-Length"] = "\(response.body.count)"
@@ -161,16 +192,7 @@ public struct ServerHTTPCodec: Sendable {
             throw ServerHTTPCodecError.invalidUTF8
         }
 
-        var headers: [String: String] = [:]
-        for line in headerText.components(separatedBy: "\r\n").dropFirst() where !line.isEmpty {
-            guard let colon = line.firstIndex(of: ":") else {
-                throw ServerHTTPCodecError.malformedHeader(line)
-            }
-            headers[String(line[..<colon]).trimmingCharacters(in: .whitespacesAndNewlines)] =
-                String(line[line.index(after: colon)...]).trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-
-        return try contentLength(from: headers)
+        return try contentLength(from: Self.headers(from: headerText.components(separatedBy: "\r\n").dropFirst()))
     }
 
     private func headerEndIndex(in data: Data) throws -> Int {
@@ -192,6 +214,20 @@ public struct ServerHTTPCodec: Sendable {
             throw ServerHTTPCodecError.invalidContentLength(value)
         }
         return length
+    }
+
+    private static func headers<T: Sequence>(from lines: T) throws -> [String: String] where T.Element == String {
+        var headers: [String: String] = [:]
+        for line in lines where !line.isEmpty {
+            guard let colon = line.firstIndex(of: ":") else {
+                throw ServerHTTPCodecError.malformedHeader(line)
+            }
+            let name = String(line[..<colon]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let value = String(line[line.index(after: colon)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty else { throw ServerHTTPCodecError.malformedHeader(line) }
+            headers[name] = value
+        }
+        return headers
     }
 
     private func reasonPhrase(for statusCode: Int) -> String {

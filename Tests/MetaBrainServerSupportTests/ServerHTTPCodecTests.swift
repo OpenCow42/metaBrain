@@ -37,6 +37,12 @@ import Testing
     #expect(responseText.contains("Connection: close\r\n"))
     #expect(responseText.contains("Content-Length: 11\r\n"))
     #expect(responseText.hasSuffix(#"{"ok":true}"#))
+
+    let parsedResponse = try codec.parseResponse(response)
+    #expect(parsedResponse.statusCode == 200)
+    #expect(parsedResponse.headers["Content-Type"] == "application/json")
+    #expect(parsedResponse.headers["Content-Length"] == "11")
+    #expect(parsedResponse.body == Data(#"{"ok":true}"#.utf8))
 }
 
 @Test func httpCodecReportsStableParseErrors() throws {
@@ -73,6 +79,27 @@ import Testing
     #expect(throws: ServerHTTPCodecError.malformedHeader("Broken")) {
         _ = try codec.expectedRequestByteCount(Data("GET /health HTTP/1.1\r\nBroken\r\n\r\n".utf8))
     }
+    #expect(throws: ServerHTTPCodecError.malformedStatusLine) {
+        _ = try codec.parseResponse(Data("HTTP/1.1\r\n\r\n".utf8))
+    }
+    #expect(throws: ServerHTTPCodecError.invalidStatusCode("OK")) {
+        _ = try codec.parseResponse(Data("HTTP/1.1 OK Fine\r\n\r\n".utf8))
+    }
+    #expect(throws: ServerHTTPCodecError.malformedHeader("Broken")) {
+        _ = try codec.parseResponse(Data("HTTP/1.1 200 OK\r\nBroken\r\n\r\n".utf8))
+    }
+    #expect(throws: ServerHTTPCodecError.malformedHeader(": missing-name")) {
+        _ = try codec.parseResponse(Data("HTTP/1.1 200 OK\r\n: missing-name\r\n\r\n".utf8))
+    }
+    #expect(throws: ServerHTTPCodecError.invalidContentLength("bad")) {
+        _ = try codec.parseResponse(Data("HTTP/1.1 200 OK\r\nContent-Length: bad\r\n\r\n".utf8))
+    }
+    #expect(throws: ServerHTTPCodecError.incompleteBody(expected: 4, actual: 2)) {
+        _ = try codec.parseResponse(Data("HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\n{}".utf8))
+    }
+    #expect(throws: ServerHTTPCodecError.invalidUTF8) {
+        _ = try codec.parseResponse(Data([0x48, 0x54, 0x54, 0x50, 0x2f, 0x31, 0x2e, 0x31, 0x20, 0xff, 0x20, 0x4f, 0x4b, 0x0d, 0x0a, 0x0d, 0x0a]))
+    }
 }
 
 @Test func httpCodecComputesExpectedRequestByteCounts() throws {
@@ -108,7 +135,9 @@ import Testing
     #expect(ServerHTTPCodecError.invalidUTF8.description == "HTTP message must be valid UTF-8")
     #expect(ServerHTTPCodecError.missingHeaderTerminator.description == "HTTP headers must end with CRLF CRLF")
     #expect(ServerHTTPCodecError.malformedRequestLine.description == "HTTP request line must be METHOD PATH HTTP/1.1")
+    #expect(ServerHTTPCodecError.malformedStatusLine.description == "HTTP status line must be HTTP/1.1 STATUS REASON")
     #expect(ServerHTTPCodecError.unsupportedMethod("TRACE").description == "unsupported HTTP method: TRACE")
+    #expect(ServerHTTPCodecError.invalidStatusCode("OK").description == "invalid HTTP status code: OK")
     #expect(ServerHTTPCodecError.malformedHeader("Broken").description == "malformed HTTP header: Broken")
     #expect(ServerHTTPCodecError.invalidContentLength("abc").description == "invalid Content-Length header: abc")
     #expect(ServerHTTPCodecError.incompleteBody(expected: 3, actual: 2).description == "HTTP body is incomplete: expected 3 bytes, got 2")
