@@ -77,6 +77,13 @@ public struct ServerRouter: Sendable {
             }
         case (_, "/v1/search"):
             return methodNotAllowed(request, allowedMethod: "POST")
+        case (.post, "/v1/dump"):
+            return await routeStoreOperation { storeServer in
+                let decoded = try decode(ServerDumpRequest.self, from: request)
+                return try await storeServer.dump(decoded)
+            }
+        case (_, "/v1/dump"):
+            return methodNotAllowed(request, allowedMethod: "POST")
         case (.post, "/v1/versions"):
             return await routeStoreOperation { storeServer in
                 let decoded = try decode(ServerVersionsRequest.self, from: request)

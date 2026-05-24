@@ -88,6 +88,27 @@ import Testing
     #expect(versions.map(\.sequence) == [1])
 }
 
+@Test func storeServerHandlesDumpRoute() async throws {
+    let root = try temporaryServerDirectory(prefix: "mbd-store-dump")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let server = try MetaBrainStoreServer(storePath: root.appendingPathComponent("store.leveldb").path)
+    defer { server.closeBlocking() }
+
+    _ = try await server.put(ServerPutRequest(path: "/notes/today", body: "first"))
+    _ = try await server.put(ServerPutRequest(path: "/notes/today", body: "second"))
+    _ = try await server.put(ServerPutRequest(path: "/notes/other", body: "other"))
+
+    let current = try await server.dump(ServerDumpRequest(path: "/notes/today"))
+    let allVersions = try await server.dump(ServerDumpRequest(path: "/notes/today", versions: true))
+    let subtree = try await server.dump(ServerDumpRequest(path: "/notes"))
+    let missing = try await server.dump(ServerDumpRequest(path: "/missing"))
+
+    #expect(current.map(\.body) == ["second"])
+    #expect(allVersions.map(\.version) == [1, 2])
+    #expect(subtree.map(\.path).sorted() == ["/notes/other", "/notes/today"])
+    #expect(missing == [])
+}
+
 @Test func storeServerHandlesMutationRoutes() async throws {
     let root = try temporaryServerDirectory(prefix: "mbd-store-mutations")
     defer { try? FileManager.default.removeItem(at: root) }

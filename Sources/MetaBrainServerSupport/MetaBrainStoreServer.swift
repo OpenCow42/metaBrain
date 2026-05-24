@@ -71,6 +71,10 @@ public actor MetaBrainStoreServer {
         try await store.listVersions(of: request.documentReference()).map(VersionsOutput.init)
     }
 
+    public func dump(_ request: ServerDumpRequest) async throws -> [DumpOutput] {
+        try await store.dump(request.dumpQuery()).map(DumpOutput.init)
+    }
+
     public func patch(_ request: ServerPatchRequest) async throws -> ServerPatchOutput {
         let patchRequest = try request.documentPatchRequest()
         if request.check {

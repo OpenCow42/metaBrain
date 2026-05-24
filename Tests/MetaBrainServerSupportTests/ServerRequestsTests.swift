@@ -105,12 +105,15 @@ import Testing
     let tree = try MetaBrainJSON.decoder().decode(ServerTreeRequest.self, from: Data(#"{"maxDepth":0}"#.utf8))
     let search = try MetaBrainJSON.decoder().decode(ServerSearchRequest.self, from: Data(#"{"query":"hello"}"#.utf8))
     let versions = ServerVersionsRequest(reference: DocumentReferenceDTO(kind: .path, value: "/notes/today"))
+    let dump = try MetaBrainJSON.decoder().decode(ServerDumpRequest.self, from: Data("{}".utf8))
 
     #expect(list == ServerListRequest())
     #expect(try list.documentPath() == DocumentPath("/"))
     #expect(try tree.treeQuery() == TreeQuery(path: try DocumentPath("/"), directoriesOnly: false, maxDepth: 0))
     #expect(try search.searchQuery() == SearchQuery(text: "hello"))
     #expect(try versions.documentReference() == .path(try DocumentPath("/notes/today")))
+    #expect(dump == ServerDumpRequest())
+    #expect(try dump.dumpQuery() == DocumentDumpQuery(path: try DocumentPath("/")))
 }
 
 @Test func serverReadRequestDTOsConvertOptionalFields() throws {
@@ -125,6 +128,7 @@ import Testing
         includeBacklinks: true,
         limit: 3
     )
+    let dump = ServerDumpRequest(path: "/notes", versions: true)
 
     #expect(try list.documentPath() == DocumentPath("/notes"))
     #expect(try tree.treeQuery() == TreeQuery(path: try DocumentPath("/notes"), directoriesOnly: true, maxDepth: 2))
@@ -137,6 +141,10 @@ import Testing
         includeBacklinks: true,
         limit: 3
     ))
+    #expect(try dump.dumpQuery() == DocumentDumpQuery(
+        path: try DocumentPath("/notes"),
+        versionSelection: .allRetained
+    ))
 }
 
 @Test func serverRequestDTOErrorsHaveStableDescriptions() {
@@ -144,6 +152,10 @@ import Testing
     #expect(ServerRequestDTOError.invalidSearchLimit(0).description == "limit must be greater than zero, got 0")
     #expect(ServerRequestDTOError.missingRetention.description == "retention is required")
     #expect(ServerRequestDTOError.invalidRemoveVersionSequence(0).description == "sequence must be greater than zero, got 0")
+    #expect(
+        ServerRequestDTOError.unsupportedDumpWithoutBodies.description
+            == "includeBodies=false is not supported; dump responses use DumpOutput"
+    )
 }
 
 @Test func serverReadRequestDTOsRejectInvalidValues() throws {
@@ -155,6 +167,9 @@ import Testing
     }
     #expect(throws: MetaBrainDomainError.invalidDocumentPath("..")) {
         _ = try ServerListRequest(path: "..").documentPath()
+    }
+    #expect(throws: ServerRequestDTOError.unsupportedDumpWithoutBodies) {
+        _ = try ServerDumpRequest(includeBodies: false).dumpQuery()
     }
     #expect(throws: ServerRequestDTOError.missingRetention) {
         _ = try ServerPruneRequest(

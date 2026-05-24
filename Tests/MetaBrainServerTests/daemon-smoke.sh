@@ -165,6 +165,7 @@ responses = [
     request("POST", "/v1/list", {"path": "/notes", "recursive": True}),
     request("POST", "/v1/tree", {"path": "/notes", "maxDepth": 1}),
     request("POST", "/v1/search", {"query": "daemon", "pathPrefix": "/notes", "limit": 5}),
+    request("POST", "/v1/dump", {"path": "/notes", "versions": False}),
     request("POST", "/v1/versions", {"reference": {"kind": "path", "value": "/notes/today"}}),
     request("POST", "/v1/put", {"path": "/mutation/doc", "body": "old\nline\n"}),
     request("POST", "/v1/patch", {
@@ -202,6 +203,7 @@ printf '%s\n' "$API_RESPONSE" | rg -F -q '"body":"daemon body"'
 printf '%s\n' "$API_RESPONSE" | rg -F -q '"hasChildren"'
 printf '%s\n' "$API_RESPONSE" | rg -F -q '"kind":"root"'
 printf '%s\n' "$API_RESPONSE" | rg -F -q '"snippet":"daemon body"'
+printf '%s\n' "$API_RESPONSE" | rg -F -q '"bodyUTF8ByteCount":11'
 printf '%s\n' "$API_RESPONSE" | rg -F -q '"sequence":1'
 printf '%s\n' "$API_RESPONSE" | rg -F -q '"status":"applies"'
 printf '%s\n' "$API_RESPONSE" | rg -F -q '"status":"patched"'

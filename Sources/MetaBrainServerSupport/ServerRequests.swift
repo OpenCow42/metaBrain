@@ -6,6 +6,7 @@ public enum ServerRequestDTOError: Error, Equatable, Sendable, CustomStringConve
     case invalidSearchLimit(Int)
     case missingRetention
     case invalidRemoveVersionSequence(UInt64)
+    case unsupportedDumpWithoutBodies
 
     public var description: String {
         switch self {
@@ -17,6 +18,8 @@ public enum ServerRequestDTOError: Error, Equatable, Sendable, CustomStringConve
             return "retention is required"
         case .invalidRemoveVersionSequence(let sequence):
             return "sequence must be greater than zero, got \(sequence)"
+        case .unsupportedDumpWithoutBodies:
+            return "includeBodies=false is not supported; dump responses use DumpOutput"
         }
     }
 }
@@ -220,6 +223,41 @@ public struct ServerVersionsRequest: Codable, Equatable, Sendable {
 
     public func documentReference() throws -> DocumentReference {
         try reference.documentReference()
+    }
+}
+
+public struct ServerDumpRequest: Codable, Equatable, Sendable {
+    public var path: String
+    public var versions: Bool
+    public var includeBodies: Bool
+
+    public init(path: String = "/", versions: Bool = false, includeBodies: Bool = true) {
+        self.path = path
+        self.versions = versions
+        self.includeBodies = includeBodies
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case path
+        case versions
+        case includeBodies
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.path = try container.decodeIfPresent(String.self, forKey: .path) ?? "/"
+        self.versions = try container.decodeIfPresent(Bool.self, forKey: .versions) ?? false
+        self.includeBodies = try container.decodeIfPresent(Bool.self, forKey: .includeBodies) ?? true
+    }
+
+    public func dumpQuery() throws -> DocumentDumpQuery {
+        guard includeBodies else {
+            throw ServerRequestDTOError.unsupportedDumpWithoutBodies
+        }
+        return try DocumentDumpQuery(
+            path: DocumentPath(path),
+            versionSelection: versions ? .allRetained : .current
+        )
     }
 }
 

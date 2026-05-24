@@ -57,6 +57,7 @@ import Testing
     let list = await router.route(ServerHTTPRequest(method: .get, path: "/v1/list"))
     let tree = await router.route(ServerHTTPRequest(method: .get, path: "/v1/tree"))
     let search = await router.route(ServerHTTPRequest(method: .get, path: "/v1/search"))
+    let dump = await router.route(ServerHTTPRequest(method: .get, path: "/v1/dump"))
     let versions = await router.route(ServerHTTPRequest(method: .get, path: "/v1/versions"))
     let prune = await router.route(ServerHTTPRequest(method: .get, path: "/v1/prune"))
     let delete = await router.route(ServerHTTPRequest(method: .get, path: "/v1/delete"))
@@ -70,6 +71,7 @@ import Testing
     #expect(list.statusCode == 405)
     #expect(tree.statusCode == 405)
     #expect(search.statusCode == 405)
+    #expect(dump.statusCode == 405)
     #expect(versions.statusCode == 405)
     #expect(prune.statusCode == 405)
     #expect(delete.statusCode == 405)
@@ -82,6 +84,7 @@ import Testing
     #expect(list.headers["Allow"] == "POST")
     #expect(tree.headers["Allow"] == "POST")
     #expect(search.headers["Allow"] == "POST")
+    #expect(dump.headers["Allow"] == "POST")
     #expect(versions.headers["Allow"] == "POST")
     #expect(prune.headers["Allow"] == "POST")
     #expect(delete.headers["Allow"] == "POST")
@@ -148,6 +151,11 @@ import Testing
         path: "/v1/search",
         body: Data(#"{"query":"alpha","pathPrefix":"/notes","tags":["planning"],"metadata":{"source":"agent"},"limit":5}"#.utf8)
     ))
+    let dump = await router.route(ServerHTTPRequest(
+        method: .post,
+        path: "/v1/dump",
+        body: Data(#"{"path":"/notes/today","versions":true}"#.utf8)
+    ))
     let versions = await router.route(ServerHTTPRequest(
         method: .post,
         path: "/v1/versions",
@@ -160,6 +168,8 @@ import Testing
     #expect(try MetaBrainJSON.decoder().decode([TreeOutput].self, from: tree.body).first?.kind == "root")
     #expect(search.statusCode == 200)
     #expect(try MetaBrainJSON.decoder().decode([SearchOutput].self, from: search.body).map(\.path) == ["/notes/today"])
+    #expect(dump.statusCode == 200)
+    #expect(try MetaBrainJSON.decoder().decode([DumpOutput].self, from: dump.body).map(\.body) == ["alpha beta"])
     #expect(versions.statusCode == 200)
     #expect(try MetaBrainJSON.decoder().decode([VersionsOutput].self, from: versions.body).map(\.sequence) == [1])
 }
@@ -258,6 +268,11 @@ import Testing
         path: "/v1/search",
         body: Data(#"{"query":"hello","limit":0}"#.utf8)
     ))
+    let invalidDump = await router.route(ServerHTTPRequest(
+        method: .post,
+        path: "/v1/dump",
+        body: Data(#"{"includeBodies":false}"#.utf8)
+    ))
     let invalidPrune = await router.route(ServerHTTPRequest(
         method: .post,
         path: "/v1/prune",
@@ -282,6 +297,8 @@ import Testing
     #expect(try MetaBrainJSON.decoder().decode(ServerErrorPayload.self, from: invalidTree.body).error == "invalid_request")
     #expect(invalidSearch.statusCode == 400)
     #expect(try MetaBrainJSON.decoder().decode(ServerErrorPayload.self, from: invalidSearch.body).error == "invalid_request")
+    #expect(invalidDump.statusCode == 400)
+    #expect(try MetaBrainJSON.decoder().decode(ServerErrorPayload.self, from: invalidDump.body).error == "invalid_request")
     #expect(invalidPrune.statusCode == 400)
     #expect(try MetaBrainJSON.decoder().decode(ServerErrorPayload.self, from: invalidPrune.body).error == "invalid_request")
     #expect(invalidRemoveVersion.statusCode == 400)

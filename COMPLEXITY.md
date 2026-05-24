@@ -174,11 +174,12 @@ indexes. `POST /v1/get` delegates to `MetaBrainStore.getDocument(_:trackingRead:
 with tracking reads enabled it follows the core read-metadata mutation path,
 and with tracking disabled it follows the non-mutating lookup path.
 
-`POST /v1/list`, `POST /v1/tree`, `POST /v1/search`, and
+`POST /v1/list`, `POST /v1/tree`, `POST /v1/search`, `POST /v1/dump`, and
 `POST /v1/versions` delegate to the corresponding `MetaBrainStore` read
-methods. Their complexity matches the core scan/search/version listing
+methods. Their complexity matches the core scan/search/dump/version listing
 behavior described for the CLI commands below, plus bounded HTTP decode and
-JSON encode overhead.
+JSON encode overhead. The daemon dump endpoint returns JSON bodies but does not
+write server-side output directories.
 
 `POST /v1/patch`, `POST /v1/move`, `POST /v1/prune`, `POST /v1/delete`, and
 `POST /v1/remove-version` delegate to the same core mutation methods used by
