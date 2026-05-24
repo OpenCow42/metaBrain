@@ -69,11 +69,14 @@ LevelDB allows concurrent access from multiple threads inside one process, but a
 
 The v1 model is:
 
-- CLI: each command opens the store, performs one operation, and exits.
+- CLI: each store-backed command opens the store directly by default, performs
+  one operation, and exits. With explicit `--server <socket>`, the CLI stays
+  thin by reading client-side files, sending JSON DTOs over the local daemon
+  socket, formatting the response, and avoiding any direct LevelDB open.
 - Daemon: `mbd serve` opens one configured store at startup and routes local
   HTTP/1.1 requests through `MetaBrainServerSupport`, keeping business behavior
   in `MetaBrainCore`. Store-backed routes cover the current read and mutation
-  command surface except client-side dump file emission.
+  command surface; dump file emission remains a client-side CLI concern.
 - UI app: keep one `MetaBrainStore` instance alive and call it with `async`/`await`.
 - Multiple processes: do not promise direct concurrent access to the same store.
 - Multiple tools should use the daemon when they need concurrent access to the

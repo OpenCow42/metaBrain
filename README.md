@@ -167,6 +167,18 @@ mbd version
 Unix sockets are the default local transport on macOS and Linux. Loopback HTTP
 is available for debugging with `--host 127.0.0.1 --port 7421`.
 
+The `mb` CLI can opt into an explicit daemon instead of opening LevelDB
+directly:
+
+```bash
+mb --server ~/.metabrain/mbd.sock put /notes/today "daemon-backed note"
+mb --server ~/.metabrain/mbd.sock search "daemon-backed"
+```
+
+`--body-file`, `--patch-file`, and `--output-dir` remain client-side CLI
+features. The daemon receives JSON request bodies and never reads or writes
+those paths on behalf of a client.
+
 ## Project Shape
 
 This repository is a Swift package with three products:

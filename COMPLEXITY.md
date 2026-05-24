@@ -161,8 +161,9 @@ to store size.
 Per health request, parsing, validation, routing, and JSON response encoding are
 `O(H_req + B_req + B_resp)`, where request and response sizes are bounded by
 the configured limits. Current request handling uses a single concurrency
-limiter with bounded queued admission; feature-parity document APIs will add
-serialized store ownership in a later slice.
+limiter with bounded queued admission. Store-backed routes use the daemon-owned
+`MetaBrainStoreServer` actor, so document operations are serialized through one
+long-lived store handle in the first implementation.
 
 `GET /v1/version` reports local daemon version metadata and does not perform
 the GitHub release check. `POST /v1/init` returns the daemon-owned store path.
@@ -187,6 +188,21 @@ the CLI. Their store complexity therefore matches the corresponding command
 rows below, plus bounded HTTP request decoding and response encoding. Patch
 requests carry the diff body directly in JSON, so the daemon never reads a
 server-side patch file for this endpoint.
+
+### `mb --server`
+
+Every store-backed `mb` command can opt into an explicit daemon with
+`--server <socket>`, either before the command name or on the command itself.
+In that mode the CLI does not open LevelDB. It validates command-line options,
+performs client-side file work such as `--body-file`, `--patch-file`, and
+`--output-dir`, sends compact JSON over the Unix socket, decodes the response,
+and formats output locally.
+
+The daemon-backed command complexity is therefore the local CLI preprocessing
+and output cost plus the matching `/v1/...` endpoint cost described above. The
+store scan/write behavior remains the same as the direct command because both
+paths delegate to `MetaBrainCore`; the process-level difference is that LevelDB
+is already owned by the daemon.
 
 ### `init`
 

@@ -6,8 +6,13 @@ TMP_PARENT="${METABRAIN_TMPDIR:-/private/tmp}"
 TMP_DIR="$(mktemp -d "$TMP_PARENT/metabrain-cli.XXXXXX")"
 STORE="$TMP_DIR/store.leveldb"
 release_server_pid=""
+daemon_server_pid=""
 
 cleanup() {
+    if [[ -n "$daemon_server_pid" ]] && kill -0 "$daemon_server_pid" 2>/dev/null; then
+        kill "$daemon_server_pid" 2>/dev/null || true
+        wait "$daemon_server_pid" 2>/dev/null || true
+    fi
     if [[ -n "$release_server_pid" ]] && kill -0 "$release_server_pid" 2>/dev/null; then
         kill "$release_server_pid" 2>/dev/null || true
         wait "$release_server_pid" 2>/dev/null || true
@@ -20,6 +25,14 @@ if [[ -n "${METABRAIN_BIN:-}" ]]; then
     METABRAIN=("$METABRAIN_BIN")
 else
     METABRAIN=(swift run mb)
+fi
+
+if [[ -n "${METABRAIN_DAEMON_BIN:-}" ]]; then
+    METABRAIN_DAEMON=("$METABRAIN_DAEMON_BIN")
+elif [[ -x "$ROOT_DIR/.build/debug/mbd" ]]; then
+    METABRAIN_DAEMON=("$ROOT_DIR/.build/debug/mbd")
+else
+    METABRAIN_DAEMON=(swift run mbd)
 fi
 
 cd "$ROOT_DIR"
@@ -341,7 +354,7 @@ if "${METABRAIN[@]}" init --unknown-option 2>"$TMP_DIR/init-invalid.err"; then
     echo "Expected invalid init option to fail" >&2
     exit 1
 fi
-rg -F -q 'Usage: mb init [--store <store>] [--format <format>]' "$TMP_DIR/init-invalid.err"
+rg -F -q 'Usage: mb init [--store <store>] [--server <server>] [--format <format>]' "$TMP_DIR/init-invalid.err"
 
 if "${METABRAIN[@]}" search query --limit 0 2>"$TMP_DIR/search-invalid.err"; then
     echo "Expected invalid search limit to fail" >&2
@@ -848,7 +861,7 @@ if "${METABRAIN[@]}" get --store "$STORE" --id abc --path /notes/today 2>"$TMP_D
     exit 1
 fi
 rg -q 'Provide exactly one of --id, --path, or a positional path' "$TMP_DIR/double-reference.err"
-rg -F -q 'Usage: mb get [--store <store>] [--id <id>] [--path <path>] [<path>] [--format <format>]' "$TMP_DIR/double-reference.err"
+rg -F -q 'Usage: mb get [--store <store>] [--server <server>] [--id <id>] [--path <path>] [<path>] [--format <format>]' "$TMP_DIR/double-reference.err"
 
 if "${METABRAIN[@]}" get --store "$STORE" --path /notes/today /notes/file 2>"$TMP_DIR/path-and-positional-reference.err"; then
     echo "Expected option path plus positional path to fail" >&2
@@ -952,28 +965,28 @@ if "${METABRAIN[@]}" versions --store "$STORE" 2>"$TMP_DIR/missing-version-refer
     exit 1
 fi
 rg -q 'Provide exactly one of --id, --path, or a positional path' "$TMP_DIR/missing-version-reference.err"
-rg -F -q 'Usage: mb versions [--store <store>] [--id <id>] [--path <path>] [<path>] [--format <format>]' "$TMP_DIR/missing-version-reference.err"
+rg -F -q 'Usage: mb versions [--store <store>] [--server <server>] [--id <id>] [--path <path>] [<path>] [--format <format>]' "$TMP_DIR/missing-version-reference.err"
 
 if "${METABRAIN[@]}" delete --store "$STORE" 2>"$TMP_DIR/missing-delete-reference.err"; then
     echo "Expected missing delete reference options to fail" >&2
     exit 1
 fi
 rg -q 'Provide exactly one of --id, --path, or a positional path' "$TMP_DIR/missing-delete-reference.err"
-rg -F -q 'Usage: mb delete [--store <store>] [--id <id>] [--path <path>] [<path>] [--format <format>]' "$TMP_DIR/missing-delete-reference.err"
+rg -F -q 'Usage: mb delete [--store <store>] [--server <server>] [--id <id>] [--path <path>] [<path>] [--format <format>]' "$TMP_DIR/missing-delete-reference.err"
 
 if "${METABRAIN[@]}" remove-version --store "$STORE" --sequence 1 2>"$TMP_DIR/missing-remove-version-reference.err"; then
     echo "Expected missing remove-version reference options to fail" >&2
     exit 1
 fi
 rg -q 'Provide exactly one of --id, --path, or a positional path' "$TMP_DIR/missing-remove-version-reference.err"
-rg -F -q 'Usage: mb remove-version [--store <store>] [--id <id>] [--path <path>] [<path>] [--format <format>] --sequence <sequence>' "$TMP_DIR/missing-remove-version-reference.err"
+rg -F -q 'Usage: mb remove-version [--store <store>] [--server <server>] [--id <id>] [--path <path>] [<path>] [--format <format>] --sequence <sequence>' "$TMP_DIR/missing-remove-version-reference.err"
 
 if "${METABRAIN[@]}" remove-version --store "$STORE" /versions/remove-json 2>"$TMP_DIR/missing-remove-version-sequence.err"; then
     echo "Expected missing remove-version sequence to fail" >&2
     exit 1
 fi
 rg -q 'Missing expected (argument|option).*--sequence <sequence>' "$TMP_DIR/missing-remove-version-sequence.err"
-rg -F -q 'Usage: mb remove-version [--store <store>] [--id <id>] [--path <path>] [<path>] [--format <format>] --sequence <sequence>' "$TMP_DIR/missing-remove-version-sequence.err"
+rg -F -q 'Usage: mb remove-version [--store <store>] [--server <server>] [--id <id>] [--path <path>] [<path>] [--format <format>] --sequence <sequence>' "$TMP_DIR/missing-remove-version-sequence.err"
 
 if "${METABRAIN[@]}" remove-version --store "$STORE" /versions/remove-json --sequence 0 2>"$TMP_DIR/zero-remove-version-sequence.err"; then
     echo "Expected zero remove-version sequence to fail" >&2
@@ -986,11 +999,117 @@ if "${METABRAIN[@]}" prune --store "$STORE" --path /notes/today 2>"$TMP_DIR/miss
     exit 1
 fi
 rg -q 'Provide one of --keep-all, --keep-last, or --keep-within' "$TMP_DIR/missing-retention.err"
-rg -F -q 'Usage: mb prune [--store <store>] [--id <id>] [--path <path>] [<path>] [--keep-all] [--keep-last <keep-last>] [--keep-within <keep-within>] [--format <format>]' "$TMP_DIR/missing-retention.err"
+rg -F -q 'Usage: mb prune [--store <store>] [--server <server>] [--id <id>] [--path <path>] [<path>] [--keep-all] [--keep-last <keep-last>] [--keep-within <keep-within>] [--format <format>]' "$TMP_DIR/missing-retention.err"
 
 if "${METABRAIN[@]}" get --store "$STORE" 2>"$TMP_DIR/missing-reference.err"; then
     echo "Expected missing reference options to fail" >&2
     exit 1
 fi
 rg -q 'Provide exactly one of --id, --path, or a positional path' "$TMP_DIR/missing-reference.err"
-rg -F -q 'Usage: mb get [--store <store>] [--id <id>] [--path <path>] [<path>] [--format <format>]' "$TMP_DIR/missing-reference.err"
+rg -F -q 'Usage: mb get [--store <store>] [--server <server>] [--id <id>] [--path <path>] [<path>] [--format <format>]' "$TMP_DIR/missing-reference.err"
+
+SERVER_STORE="$TMP_DIR/server-store.leveldb"
+SERVER_SOCKET="$TMP_DIR/mbd.sock"
+"${METABRAIN_DAEMON[@]}" serve --store "$SERVER_STORE" --socket "$SERVER_SOCKET" --log-level error >"$TMP_DIR/mbd.out" 2>"$TMP_DIR/mbd.err" &
+daemon_server_pid="$!"
+for _ in $(seq 1 400); do
+    if [[ -S "$SERVER_SOCKET" ]]; then
+        break
+    fi
+    if ! kill -0 "$daemon_server_pid" 2>/dev/null; then
+        echo "Daemon exited early." >&2
+        cat "$TMP_DIR/mbd.err" >&2
+        exit 1
+    fi
+    sleep 0.05
+done
+if [[ ! -S "$SERVER_SOCKET" ]]; then
+    echo "Daemon did not create socket." >&2
+    cat "$TMP_DIR/mbd.err" >&2
+    exit 1
+fi
+
+SERVER_MB=("${METABRAIN[@]}" --server "$SERVER_SOCKET")
+SERVER_INIT_JSON="$("${SERVER_MB[@]}" init)"
+SERVER_EXPECTED_INIT_JSON="{\"operation\":\"init\",\"status\":\"initialized\",\"storePath\":\"$SERVER_STORE\"}"
+if [[ "$SERVER_INIT_JSON" != "$SERVER_EXPECTED_INIT_JSON" ]]; then
+    echo "Expected daemon init JSON output, got: $SERVER_INIT_JSON" >&2
+    exit 1
+fi
+SERVER_VERSION_IGNORED="$(METABRAIN_VERSION=4.5.6 "${METABRAIN[@]}" --server "$SERVER_SOCKET" version --no-release-check)"
+if [[ "$SERVER_VERSION_IGNORED" != '{"currentTag":"4.5.6","releaseCheck":null}' ]]; then
+    echo "Expected non-store version command to ignore global daemon option, got: $SERVER_VERSION_IGNORED" >&2
+    exit 1
+fi
+
+SERVER_PUT_TODAY_JSON="$("${SERVER_MB[@]}" put /daemon/today 'daemon alpha memory' --title Daemon --tag daemon --meta kind=server --keep-all)"
+assert_put_json "$SERVER_PUT_TODAY_JSON" /daemon/today created 1
+SERVER_GET_TODAY_JSON="$("${SERVER_MB[@]}" get /daemon/today)"
+assert_get_json "$SERVER_GET_TODAY_JSON" /daemon/today 'daemon alpha memory' 1
+printf '%s\n' "$SERVER_GET_TODAY_JSON" | rg -F -q '"title":"Daemon"'
+printf '%s\n' "$SERVER_GET_TODAY_JSON" | rg -F -q '"tags":["daemon"]'
+printf '%s\n' "$SERVER_GET_TODAY_JSON" | rg -F -q '"metadata":{"kind":"server"}'
+SERVER_TODAY_ID="$(printf '%s\n' "$SERVER_GET_TODAY_JSON" | sed -E 's/.*"documentID":"([^"]+)".*/\1/')"
+
+SERVER_BODY_FILE="$TMP_DIR/server-body.txt"
+printf 'daemon body file memory\n' >"$SERVER_BODY_FILE"
+SERVER_PUT_FILE_JSON="$("${SERVER_MB[@]}" put /daemon/file --body-file "$SERVER_BODY_FILE" --ref-path /daemon/today --ref-url https://example.com/server-ref)"
+assert_put_json "$SERVER_PUT_FILE_JSON" /daemon/file created 1
+
+SERVER_PATCHABLE_JSON="$("${SERVER_MB[@]}" put /daemon/patchable 'old daemon patch memory' --tag patch --keep-all)"
+assert_put_json "$SERVER_PATCHABLE_JSON" /daemon/patchable created 1
+SERVER_PATCH_FILE="$TMP_DIR/server.patch"
+cat >"$SERVER_PATCH_FILE" <<'PATCH'
+@@ -1 +1 @@
+-old daemon patch memory
+\ No newline at end of file
++fresh daemon patch memory
+\ No newline at end of file
+PATCH
+SERVER_PATCH_CHECK_JSON="$("${SERVER_MB[@]}" patch /daemon/patchable --patch-file "$SERVER_PATCH_FILE" --check)"
+assert_patch_check_json "$SERVER_PATCH_CHECK_JSON"
+SERVER_PATCH_WRITE_JSON="$("${SERVER_MB[@]}" patch /daemon/patchable --patch-file "$SERVER_PATCH_FILE" --keep-last 2)"
+assert_patch_write_json "$SERVER_PATCH_WRITE_JSON" /daemon/patchable 2
+
+SERVER_LIST_JSONL="$("${SERVER_MB[@]}" list /daemon)"
+printf '%s\n' "$SERVER_LIST_JSONL" | rg -F -q '"path":"/daemon/today"'
+SERVER_TREE_JSONL="$("${SERVER_MB[@]}" tree /daemon --max-depth 1)"
+printf '%s\n' "$SERVER_TREE_JSONL" | rg -F -q '"kind":"root","name":"daemon","path":"/daemon"'
+printf '%s\n' "$SERVER_TREE_JSONL" | rg -F -q '"path":"/daemon/patchable"'
+SERVER_SEARCH_JSONL="$("${SERVER_MB[@]}" search fresh --tag patch)"
+assert_search_jsonl_result "$SERVER_SEARCH_JSONL" /daemon/patchable fresh
+
+SERVER_TODAY_UPDATE_JSON="$("${SERVER_MB[@]}" put /daemon/today 'daemon alpha updated memory' --keep-all)"
+assert_put_json "$SERVER_TODAY_UPDATE_JSON" /daemon/today updated 2
+SERVER_VERSIONS_JSONL="$("${SERVER_MB[@]}" versions --id "$SERVER_TODAY_ID")"
+assert_versions_jsonl "$SERVER_VERSIONS_JSONL" /daemon/today 2
+SERVER_DUMP_DIR="$TMP_DIR/server-dump-files"
+"${SERVER_MB[@]}" dump /daemon/today --versions --output-dir "$SERVER_DUMP_DIR" >"$TMP_DIR/server-dump.jsonl"
+rg -F -q '"fileSystemPath":"' "$TMP_DIR/server-dump.jsonl"
+SERVER_DUMP_FILE="$(find "$SERVER_DUMP_DIR" -type f -name 'today__*__v2__*.md' | head -n 1)"
+if [[ -z "$SERVER_DUMP_FILE" || ! -f "$SERVER_DUMP_FILE" ]]; then
+    echo "Expected daemon dump --output-dir to create a versioned copy" >&2
+    exit 1
+fi
+rg -F -q 'daemon alpha updated memory' "$SERVER_DUMP_FILE"
+
+SERVER_MOVE_JSON="$("${SERVER_MB[@]}" move /daemon/file /daemon/archive/file)"
+assert_move_json "$SERVER_MOVE_JSON" /daemon/file /daemon/archive/file moved 2
+SERVER_PRUNE_JSON="$("${SERVER_MB[@]}" prune /daemon/today --keep-last 1)"
+assert_prune_json "$SERVER_PRUNE_JSON" 1 1
+SERVER_DELETE_JSON="$("${SERVER_MB[@]}" delete /daemon/archive/file --format json)"
+assert_delete_json "$SERVER_DELETE_JSON" /daemon/archive/file true
+if "${SERVER_MB[@]}" get /daemon/archive/file 2>"$TMP_DIR/server-get-deleted.err"; then
+    echo "Expected daemon deleted document get to fail" >&2
+    exit 1
+fi
+rg -F -q 'server returned HTTP 404 document_not_found' "$TMP_DIR/server-get-deleted.err"
+
+"${SERVER_MB[@]}" put /daemon/remove-version 'remove daemon v1' --keep-all --format text | rg -q '^version: 1$'
+"${SERVER_MB[@]}" put /daemon/remove-version 'remove daemon v2' --keep-all --format text | rg -q '^version: 2$'
+SERVER_REMOVE_VERSION_JSON="$("${SERVER_MB[@]}" remove-version /daemon/remove-version --sequence 1 --format json)"
+assert_remove_version_json "$SERVER_REMOVE_VERSION_JSON" /daemon/remove-version true 1
+
+kill "$daemon_server_pid" 2>/dev/null || true
+wait "$daemon_server_pid" 2>/dev/null || true
+daemon_server_pid=""
