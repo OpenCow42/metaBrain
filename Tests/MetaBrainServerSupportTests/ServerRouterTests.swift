@@ -52,13 +52,25 @@ import Testing
     let initialize = router.route(ServerHTTPRequest(method: .get, path: "/v1/init"))
     let put = router.route(ServerHTTPRequest(method: .get, path: "/v1/put"))
     let get = router.route(ServerHTTPRequest(method: .get, path: "/v1/get"))
+    let list = router.route(ServerHTTPRequest(method: .get, path: "/v1/list"))
+    let tree = router.route(ServerHTTPRequest(method: .get, path: "/v1/tree"))
+    let search = router.route(ServerHTTPRequest(method: .get, path: "/v1/search"))
+    let versions = router.route(ServerHTTPRequest(method: .get, path: "/v1/versions"))
 
     #expect(initialize.statusCode == 405)
     #expect(put.statusCode == 405)
     #expect(get.statusCode == 405)
+    #expect(list.statusCode == 405)
+    #expect(tree.statusCode == 405)
+    #expect(search.statusCode == 405)
+    #expect(versions.statusCode == 405)
     #expect(initialize.headers["Allow"] == "POST")
     #expect(put.headers["Allow"] == "POST")
     #expect(get.headers["Allow"] == "POST")
+    #expect(list.headers["Allow"] == "POST")
+    #expect(tree.headers["Allow"] == "POST")
+    #expect(search.headers["Allow"] == "POST")
+    #expect(versions.headers["Allow"] == "POST")
 }
 
 @Test func routerHandlesStoreBackedInitialPutAndGetRoutes() throws {
@@ -88,6 +100,55 @@ import Testing
     #expect(try MetaBrainJSON.decoder().decode(GetOutput.self, from: get.body).title == "Today")
 }
 
+@Test func routerHandlesReadSideStoreRoutes() throws {
+    let root = try temporaryServerDirectory(prefix: "mbd-router-reads")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let storeServer = try MetaBrainStoreServer(storePath: root.appendingPathComponent("store.leveldb").path)
+    defer { storeServer.closeBlocking() }
+    let router = ServerRouter(storeServer: storeServer)
+
+    _ = router.route(ServerHTTPRequest(
+        method: .post,
+        path: "/v1/put",
+        body: Data(#"{"path":"/notes/today","body":"alpha beta","tags":["planning"],"metadata":{"source":"agent"}}"#.utf8)
+    ))
+    _ = router.route(ServerHTTPRequest(
+        method: .post,
+        path: "/v1/put",
+        body: Data(#"{"path":"/notes/archive/yesterday","body":"alpha archive"}"#.utf8)
+    ))
+
+    let list = router.route(ServerHTTPRequest(
+        method: .post,
+        path: "/v1/list",
+        body: Data(#"{"path":"/notes","recursive":true}"#.utf8)
+    ))
+    let tree = router.route(ServerHTTPRequest(
+        method: .post,
+        path: "/v1/tree",
+        body: Data(#"{"path":"/notes","maxDepth":2}"#.utf8)
+    ))
+    let search = router.route(ServerHTTPRequest(
+        method: .post,
+        path: "/v1/search",
+        body: Data(#"{"query":"alpha","pathPrefix":"/notes","tags":["planning"],"metadata":{"source":"agent"},"limit":5}"#.utf8)
+    ))
+    let versions = router.route(ServerHTTPRequest(
+        method: .post,
+        path: "/v1/versions",
+        body: Data(#"{"reference":{"kind":"path","value":"/notes/today"}}"#.utf8)
+    ))
+
+    #expect(list.statusCode == 200)
+    #expect(try MetaBrainJSON.decoder().decode([ListOutput].self, from: list.body).map(\.path).contains("/notes/today"))
+    #expect(tree.statusCode == 200)
+    #expect(try MetaBrainJSON.decoder().decode([TreeOutput].self, from: tree.body).first?.kind == "root")
+    #expect(search.statusCode == 200)
+    #expect(try MetaBrainJSON.decoder().decode([SearchOutput].self, from: search.body).map(\.path) == ["/notes/today"])
+    #expect(versions.statusCode == 200)
+    #expect(try MetaBrainJSON.decoder().decode([VersionsOutput].self, from: versions.body).map(\.sequence) == [1])
+}
+
 @Test func routerMapsStoreRouteValidationAndMissingDocumentErrors() throws {
     let root = try temporaryServerDirectory(prefix: "mbd-router-errors")
     defer { try? FileManager.default.removeItem(at: root) }
@@ -106,6 +167,16 @@ import Testing
         path: "/v1/get",
         body: Data(#"{"reference":{"kind":"path","value":"/missing"}}"#.utf8)
     ))
+    let invalidTree = router.route(ServerHTTPRequest(
+        method: .post,
+        path: "/v1/tree",
+        body: Data(#"{"maxDepth":-1}"#.utf8)
+    ))
+    let invalidSearch = router.route(ServerHTTPRequest(
+        method: .post,
+        path: "/v1/search",
+        body: Data(#"{"query":"hello","limit":0}"#.utf8)
+    ))
 
     #expect(badJSON.statusCode == 400)
     #expect(try MetaBrainJSON.decoder().decode(ServerErrorPayload.self, from: badJSON.body).error == "invalid_request")
@@ -116,6 +187,10 @@ import Testing
         try MetaBrainJSON.decoder().decode(ServerErrorPayload.self, from: missing.body).error
             == "document_not_found"
     )
+    #expect(invalidTree.statusCode == 400)
+    #expect(try MetaBrainJSON.decoder().decode(ServerErrorPayload.self, from: invalidTree.body).error == "invalid_request")
+    #expect(invalidSearch.statusCode == 400)
+    #expect(try MetaBrainJSON.decoder().decode(ServerErrorPayload.self, from: invalidSearch.body).error == "invalid_request")
 }
 
 @Test func routerMapsClosedStoreFailuresToStoreErrors() throws {

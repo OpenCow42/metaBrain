@@ -49,3 +49,41 @@ import Testing
         ))
     }
 }
+
+@Test func storeServerHandlesReadSideRoutes() async throws {
+    let root = try temporaryServerDirectory(prefix: "mbd-store-reads")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let server = try MetaBrainStoreServer(storePath: root.appendingPathComponent("store.leveldb").path)
+    defer { server.closeBlocking() }
+
+    _ = try await server.put(ServerPutRequest(
+        path: "/notes/today",
+        body: "alpha beta",
+        title: "Today",
+        tags: ["planning"],
+        metadata: ["source": "agent"]
+    ))
+    _ = try await server.put(ServerPutRequest(path: "/notes/archive/yesterday", body: "alpha archive"))
+
+    let list = try await server.list(ServerListRequest(path: "/notes", recursive: true))
+    let tree = try await server.tree(ServerTreeRequest(path: "/notes", maxDepth: 2))
+    let rootOnly = try await server.tree(ServerTreeRequest(path: "/missing", maxDepth: 0))
+    let missingTree = try await server.tree(ServerTreeRequest(path: "/missing"))
+    let search = try await server.search(ServerSearchRequest(
+        query: "alpha",
+        pathPrefix: "/notes",
+        tags: ["planning"],
+        metadata: ["source": "agent"],
+        limit: 5
+    ))
+    let versions = try await server.versions(ServerVersionsRequest(
+        reference: DocumentReferenceDTO(kind: .path, value: "/notes/today")
+    ))
+
+    #expect(list.map(\.path).contains("/notes/today"))
+    #expect(tree.first == TreeOutput(root: try DocumentPath("/notes"), hasChildren: true))
+    #expect(rootOnly == [TreeOutput(root: try DocumentPath("/missing"), hasChildren: false)])
+    #expect(missingTree == [])
+    #expect(search.map(\.path) == ["/notes/today"])
+    #expect(versions.map(\.sequence) == [1])
+}

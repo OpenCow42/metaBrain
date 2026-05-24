@@ -49,6 +49,28 @@ public actor MetaBrainStoreServer {
         return GetOutput(document)
     }
 
+    public func list(_ request: ServerListRequest) async throws -> [ListOutput] {
+        try await store.listDirectory(
+            path: request.documentPath(),
+            recursive: request.recursive,
+            directoriesOnly: request.directoriesOnly
+        ).map(ListOutput.init)
+    }
+
+    public func tree(_ request: ServerTreeRequest) async throws -> [TreeOutput] {
+        let query = try request.treeQuery()
+        let entries = try await store.tree(query)
+        return Self.treeOutputs(root: query.path, entries: entries, maxDepth: query.maxDepth)
+    }
+
+    public func search(_ request: ServerSearchRequest) async throws -> [SearchOutput] {
+        try await store.search(request.searchQuery()).map(SearchOutput.init)
+    }
+
+    public func versions(_ request: ServerVersionsRequest) async throws -> [VersionsOutput] {
+        try await store.listVersions(of: request.documentReference()).map(VersionsOutput.init)
+    }
+
     public func close() async {
         await store.close()
     }
@@ -64,6 +86,17 @@ public actor MetaBrainStoreServer {
             fileURLWithPath: NSString(string: storePath).expandingTildeInPath,
             isDirectory: true
         )
+    }
+
+    private static func treeOutputs(
+        root: DocumentPath,
+        entries: [DocumentTreeEntry],
+        maxDepth: Int?
+    ) -> [TreeOutput] {
+        guard !entries.isEmpty || maxDepth == 0 else {
+            return []
+        }
+        return [TreeOutput(root: root, hasChildren: !entries.isEmpty)] + entries.map(TreeOutput.init)
     }
 
     private static func referenceDescription(_ reference: DocumentReference) -> String {

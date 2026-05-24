@@ -42,6 +42,34 @@ public struct ServerRouter: Sendable {
             }
         case (_, "/v1/get"):
             return methodNotAllowed(request, allowedMethod: "POST")
+        case (.post, "/v1/list"):
+            return routeStoreOperation { storeServer in
+                let decoded = try decode(ServerListRequest.self, from: request)
+                return try await storeServer.list(decoded)
+            }
+        case (_, "/v1/list"):
+            return methodNotAllowed(request, allowedMethod: "POST")
+        case (.post, "/v1/tree"):
+            return routeStoreOperation { storeServer in
+                let decoded = try decode(ServerTreeRequest.self, from: request)
+                return try await storeServer.tree(decoded)
+            }
+        case (_, "/v1/tree"):
+            return methodNotAllowed(request, allowedMethod: "POST")
+        case (.post, "/v1/search"):
+            return routeStoreOperation { storeServer in
+                let decoded = try decode(ServerSearchRequest.self, from: request)
+                return try await storeServer.search(decoded)
+            }
+        case (_, "/v1/search"):
+            return methodNotAllowed(request, allowedMethod: "POST")
+        case (.post, "/v1/versions"):
+            return routeStoreOperation { storeServer in
+                let decoded = try decode(ServerVersionsRequest.self, from: request)
+                return try await storeServer.versions(decoded)
+            }
+        case (_, "/v1/versions"):
+            return methodNotAllowed(request, allowedMethod: "POST")
         default:
             return jsonResponse(
                 statusCode: 404,

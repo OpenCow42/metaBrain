@@ -162,6 +162,10 @@ responses = [
     request("POST", "/v1/init", {}),
     request("POST", "/v1/put", {"path": "/notes/today", "body": "daemon body", "title": "Today"}),
     request("POST", "/v1/get", {"reference": {"kind": "path", "value": "/notes/today"}, "trackingRead": False}),
+    request("POST", "/v1/list", {"path": "/notes", "recursive": True}),
+    request("POST", "/v1/tree", {"path": "/notes", "maxDepth": 1}),
+    request("POST", "/v1/search", {"query": "daemon", "pathPrefix": "/notes", "limit": 5}),
+    request("POST", "/v1/versions", {"reference": {"kind": "path", "value": "/notes/today"}}),
 ]
 sys.stdout.write("\n---response---\n".join(responses))
 PY
@@ -172,6 +176,10 @@ printf '%s\n' "$API_RESPONSE" | rg -F -q '"releaseCheck":null'
 printf '%s\n' "$API_RESPONSE" | rg -F -q '"operation":"init"'
 printf '%s\n' "$API_RESPONSE" | rg -F -q '"status":"created"'
 printf '%s\n' "$API_RESPONSE" | rg -F -q '"body":"daemon body"'
+printf '%s\n' "$API_RESPONSE" | rg -F -q '"hasChildren"'
+printf '%s\n' "$API_RESPONSE" | rg -F -q '"kind":"root"'
+printf '%s\n' "$API_RESPONSE" | rg -F -q '"snippet":"daemon body"'
+printf '%s\n' "$API_RESPONSE" | rg -F -q '"sequence":1'
 
 kill "$serve_pid" 2>/dev/null || true
 wait "$serve_pid" 2>/dev/null || true

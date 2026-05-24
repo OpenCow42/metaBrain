@@ -1,6 +1,20 @@
 import Foundation
 import MetaBrainCore
 
+public enum ServerRequestDTOError: Error, Equatable, Sendable, CustomStringConvertible {
+    case invalidTreeMaxDepth(Int)
+    case invalidSearchLimit(Int)
+
+    public var description: String {
+        switch self {
+        case .invalidTreeMaxDepth(let maxDepth):
+            return "maxDepth must be zero or greater, got \(maxDepth)"
+        case .invalidSearchLimit(let limit):
+            return "limit must be greater than zero, got \(limit)"
+        }
+    }
+}
+
 public struct ServerPutRequest: Codable, Equatable, Sendable {
     public var path: String
     public var body: String
@@ -59,6 +73,147 @@ public struct ServerPutRequest: Codable, Equatable, Sendable {
             references: references.map { try $0.documentReference() },
             retention: retention.map { try $0.retentionPolicy() }
         )
+    }
+}
+
+public struct ServerListRequest: Codable, Equatable, Sendable {
+    public var path: String
+    public var recursive: Bool
+    public var directoriesOnly: Bool
+
+    public init(path: String = "/", recursive: Bool = false, directoriesOnly: Bool = false) {
+        self.path = path
+        self.recursive = recursive
+        self.directoriesOnly = directoriesOnly
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case path
+        case recursive
+        case directoriesOnly
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.path = try container.decodeIfPresent(String.self, forKey: .path) ?? "/"
+        self.recursive = try container.decodeIfPresent(Bool.self, forKey: .recursive) ?? false
+        self.directoriesOnly = try container.decodeIfPresent(Bool.self, forKey: .directoriesOnly) ?? false
+    }
+
+    public func documentPath() throws -> DocumentPath {
+        try DocumentPath(path)
+    }
+}
+
+public struct ServerTreeRequest: Codable, Equatable, Sendable {
+    public var path: String
+    public var directoriesOnly: Bool
+    public var maxDepth: Int?
+
+    public init(path: String = "/", directoriesOnly: Bool = false, maxDepth: Int? = nil) {
+        self.path = path
+        self.directoriesOnly = directoriesOnly
+        self.maxDepth = maxDepth
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case path
+        case directoriesOnly
+        case maxDepth
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.path = try container.decodeIfPresent(String.self, forKey: .path) ?? "/"
+        self.directoriesOnly = try container.decodeIfPresent(Bool.self, forKey: .directoriesOnly) ?? false
+        self.maxDepth = try container.decodeIfPresent(Int.self, forKey: .maxDepth)
+    }
+
+    public func treeQuery() throws -> TreeQuery {
+        if let maxDepth, maxDepth < 0 {
+            throw ServerRequestDTOError.invalidTreeMaxDepth(maxDepth)
+        }
+        return try TreeQuery(
+            path: DocumentPath(path),
+            directoriesOnly: directoriesOnly,
+            maxDepth: maxDepth
+        )
+    }
+}
+
+public struct ServerSearchRequest: Codable, Equatable, Sendable {
+    public var query: String
+    public var pathPrefix: String?
+    public var tags: [String]
+    public var metadata: [String: String]
+    public var includeLinkedDocuments: Bool
+    public var includeBacklinks: Bool
+    public var limit: Int
+
+    public init(
+        query: String,
+        pathPrefix: String? = nil,
+        tags: [String] = [],
+        metadata: [String: String] = [:],
+        includeLinkedDocuments: Bool = false,
+        includeBacklinks: Bool = false,
+        limit: Int = 20
+    ) {
+        self.query = query
+        self.pathPrefix = pathPrefix
+        self.tags = tags
+        self.metadata = metadata
+        self.includeLinkedDocuments = includeLinkedDocuments
+        self.includeBacklinks = includeBacklinks
+        self.limit = limit
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case query
+        case pathPrefix
+        case tags
+        case metadata
+        case includeLinkedDocuments
+        case includeBacklinks
+        case limit
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.query = try container.decode(String.self, forKey: .query)
+        self.pathPrefix = try container.decodeIfPresent(String.self, forKey: .pathPrefix)
+        self.tags = try container.decodeIfPresent([String].self, forKey: .tags) ?? []
+        self.metadata = try container.decodeIfPresent([String: String].self, forKey: .metadata) ?? [:]
+        self.includeLinkedDocuments = try container.decodeIfPresent(Bool.self, forKey: .includeLinkedDocuments) ?? false
+        self.includeBacklinks = try container.decodeIfPresent(Bool.self, forKey: .includeBacklinks) ?? false
+        self.limit = try container.decodeIfPresent(Int.self, forKey: .limit) ?? 20
+    }
+
+    public func searchQuery() throws -> SearchQuery {
+        guard limit > 0 else {
+            throw ServerRequestDTOError.invalidSearchLimit(limit)
+        }
+        return try SearchQuery(
+            text: query,
+            pathPrefix: pathPrefix.map(DocumentPath.init),
+            tags: tags,
+            metadata: metadata,
+            includeLinkedDocuments: includeLinkedDocuments,
+            includeBacklinks: includeBacklinks,
+            limit: limit
+        )
+    }
+}
+
+public struct ServerVersionsRequest: Codable, Equatable, Sendable {
+    public var reference: DocumentReferenceDTO
+
+    public init(reference: DocumentReferenceDTO) {
+        self.reference = reference
+    }
+
+    public func documentReference() throws -> DocumentReference {
+        try reference.documentReference()
     }
 }
 

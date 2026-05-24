@@ -174,6 +174,12 @@ indexes. `POST /v1/get` delegates to `MetaBrainStore.getDocument(_:trackingRead:
 with tracking reads enabled it follows the core read-metadata mutation path,
 and with tracking disabled it follows the non-mutating lookup path.
 
+`POST /v1/list`, `POST /v1/tree`, `POST /v1/search`, and
+`POST /v1/versions` delegate to the corresponding `MetaBrainStore` read
+methods. Their complexity matches the core scan/search/version listing
+behavior described for the CLI commands below, plus bounded HTTP decode and
+JSON encode overhead.
+
 ### `init`
 
 `init` opens the store through `StoreOptions.openStore()` and

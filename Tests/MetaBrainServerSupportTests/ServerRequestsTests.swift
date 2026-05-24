@@ -60,3 +60,59 @@ import Testing
     #expect(!explicit.trackingRead)
     #expect(try explicit.documentReference() == .documentID(try DocumentID(rawValue: "abc123")))
 }
+
+@Test func serverReadRequestDTOsDefaultAndValidate() throws {
+    let list = try MetaBrainJSON.decoder().decode(ServerListRequest.self, from: Data("{}".utf8))
+    let tree = try MetaBrainJSON.decoder().decode(ServerTreeRequest.self, from: Data(#"{"maxDepth":0}"#.utf8))
+    let search = try MetaBrainJSON.decoder().decode(ServerSearchRequest.self, from: Data(#"{"query":"hello"}"#.utf8))
+    let versions = ServerVersionsRequest(reference: DocumentReferenceDTO(kind: .path, value: "/notes/today"))
+
+    #expect(list == ServerListRequest())
+    #expect(try list.documentPath() == DocumentPath("/"))
+    #expect(try tree.treeQuery() == TreeQuery(path: try DocumentPath("/"), directoriesOnly: false, maxDepth: 0))
+    #expect(try search.searchQuery() == SearchQuery(text: "hello"))
+    #expect(try versions.documentReference() == .path(try DocumentPath("/notes/today")))
+}
+
+@Test func serverReadRequestDTOsConvertOptionalFields() throws {
+    let list = ServerListRequest(path: "/notes", recursive: true, directoriesOnly: true)
+    let tree = ServerTreeRequest(path: "/notes", directoriesOnly: true, maxDepth: 2)
+    let search = ServerSearchRequest(
+        query: "hello",
+        pathPrefix: "/notes",
+        tags: ["planning"],
+        metadata: ["source": "agent"],
+        includeLinkedDocuments: true,
+        includeBacklinks: true,
+        limit: 3
+    )
+
+    #expect(try list.documentPath() == DocumentPath("/notes"))
+    #expect(try tree.treeQuery() == TreeQuery(path: try DocumentPath("/notes"), directoriesOnly: true, maxDepth: 2))
+    #expect(try search.searchQuery() == SearchQuery(
+        text: "hello",
+        pathPrefix: try DocumentPath("/notes"),
+        tags: ["planning"],
+        metadata: ["source": "agent"],
+        includeLinkedDocuments: true,
+        includeBacklinks: true,
+        limit: 3
+    ))
+}
+
+@Test func serverRequestDTOErrorsHaveStableDescriptions() {
+    #expect(ServerRequestDTOError.invalidTreeMaxDepth(-1).description == "maxDepth must be zero or greater, got -1")
+    #expect(ServerRequestDTOError.invalidSearchLimit(0).description == "limit must be greater than zero, got 0")
+}
+
+@Test func serverReadRequestDTOsRejectInvalidValues() throws {
+    #expect(throws: ServerRequestDTOError.invalidTreeMaxDepth(-1)) {
+        _ = try ServerTreeRequest(maxDepth: -1).treeQuery()
+    }
+    #expect(throws: ServerRequestDTOError.invalidSearchLimit(0)) {
+        _ = try ServerSearchRequest(query: "hello", limit: 0).searchQuery()
+    }
+    #expect(throws: MetaBrainDomainError.invalidDocumentPath("..")) {
+        _ = try ServerListRequest(path: "..").documentPath()
+    }
+}
