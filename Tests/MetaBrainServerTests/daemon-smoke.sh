@@ -127,6 +127,52 @@ PY
 printf '%s\n' "$HEALTH_RESPONSE" | rg -q 'HTTP/1.1 200 OK'
 printf '%s\n' "$HEALTH_RESPONSE" | rg -F -q '{"service":"mbd","status":"ok"}'
 
+API_RESPONSE="$(python3 - "$socket_path" <<'PY'
+import json
+import socket
+import sys
+
+socket_path = sys.argv[1]
+
+def request(method, path, body=None):
+    payload = b"" if body is None else json.dumps(body, separators=(",", ":")).encode("utf-8")
+    headers = [
+        f"{method} {path} HTTP/1.1",
+        "Host: localhost",
+        f"Content-Length: {len(payload)}",
+    ]
+    if payload:
+        headers.append("Content-Type: application/json")
+    raw = ("\r\n".join(headers) + "\r\n\r\n").encode("utf-8") + payload
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.connect(socket_path)
+    client.sendall(raw)
+    client.shutdown(socket.SHUT_WR)
+    chunks = []
+    while True:
+        chunk = client.recv(4096)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    client.close()
+    return b"".join(chunks).decode("utf-8")
+
+responses = [
+    request("GET", "/v1/version"),
+    request("POST", "/v1/init", {}),
+    request("POST", "/v1/put", {"path": "/notes/today", "body": "daemon body", "title": "Today"}),
+    request("POST", "/v1/get", {"reference": {"kind": "path", "value": "/notes/today"}, "trackingRead": False}),
+]
+sys.stdout.write("\n---response---\n".join(responses))
+PY
+)"
+
+printf '%s\n' "$API_RESPONSE" | rg -q 'HTTP/1.1 200 OK'
+printf '%s\n' "$API_RESPONSE" | rg -F -q '"releaseCheck":null'
+printf '%s\n' "$API_RESPONSE" | rg -F -q '"operation":"init"'
+printf '%s\n' "$API_RESPONSE" | rg -F -q '"status":"created"'
+printf '%s\n' "$API_RESPONSE" | rg -F -q '"body":"daemon body"'
+
 kill "$serve_pid" 2>/dev/null || true
 wait "$serve_pid" 2>/dev/null || true
 serve_pid=""

@@ -103,7 +103,10 @@ extension MetaBrainDaemonCommand {
                 ) { line in
                     FileHandle.standardError.write(Data((line + "\n").utf8))
                 }
-                let server = ServerHTTPServer(configuration: configuration, logger: logger)
+                let storeServer = try MetaBrainStoreServer(storePath: configuration.storePath)
+                defer { storeServer.closeBlocking() }
+                let router = ServerRouter(storeServer: storeServer)
+                let server = ServerHTTPServer(configuration: configuration, router: router, logger: logger)
                 let shutdownSignals = ServerShutdownSignalHandler(server: server)
                 defer { shutdownSignals.cancel() }
 

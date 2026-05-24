@@ -151,17 +151,28 @@ and does not open the store.
 
 ### `mbd serve`
 
-The initial daemon server opens a foreground HTTP/1.1 listener over a Unix
-socket by default, or loopback HTTP when explicitly configured. It validates
-configuration, applies request size limits and optional bearer-token
-authorization, and currently routes `GET /health` without opening the document
-store. Startup is `O(1)` relative to store size.
+The daemon server opens a foreground HTTP/1.1 listener over a Unix socket by
+default, or loopback HTTP when explicitly configured. It validates
+configuration, opens one configured `MetaBrainStore` for the daemon lifetime,
+applies request size limits and optional bearer-token authorization, and routes
+`GET /health` without touching the document store. Startup is `O(1)` relative
+to store size.
 
 Per health request, parsing, validation, routing, and JSON response encoding are
 `O(H_req + B_req + B_resp)`, where request and response sizes are bounded by
 the configured limits. Current request handling uses a single concurrency
 limiter with bounded queued admission; feature-parity document APIs will add
 serialized store ownership in a later slice.
+
+`GET /v1/version` reports local daemon version metadata and does not perform
+the GitHub release check. `POST /v1/init` returns the daemon-owned store path.
+Both are `O(1)` relative to store size.
+
+`POST /v1/put` delegates to `MetaBrainStore.putDocument(_:)`; its complexity
+matches the core write path for creating or replacing one document and its
+indexes. `POST /v1/get` delegates to `MetaBrainStore.getDocument(_:trackingRead:)`;
+with tracking reads enabled it follows the core read-metadata mutation path,
+and with tracking disabled it follows the non-mutating lookup path.
 
 ### `init`
 

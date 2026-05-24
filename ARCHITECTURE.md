@@ -70,9 +70,13 @@ LevelDB allows concurrent access from multiple threads inside one process, but a
 The v1 model is:
 
 - CLI: each command opens the store, performs one operation, and exits.
+- Daemon: `mbd serve` opens one configured store at startup and routes local
+  HTTP/1.1 requests through `MetaBrainServerSupport`, keeping business behavior
+  in `MetaBrainCore`.
 - UI app: keep one `MetaBrainStore` instance alive and call it with `async`/`await`.
 - Multiple processes: do not promise direct concurrent access to the same store.
-- Future daemon: may own one store instance and expose process-safe access to many tools.
+- Multiple tools should use the daemon when they need concurrent access to the
+  same workspace store from separate processes.
 
 If a CLI command cannot open a store because another process owns it, surface a clear lock/open error rather than trying to bypass LevelDB's process lock.
 

@@ -153,8 +153,10 @@ mb help dump
 
 ## Daemon
 
-`mbd` runs the local daemon surface. The first daemon endpoint is a health
-route; document APIs are being added over the shared `MetaBrainCore` layer.
+`mbd` runs the local daemon surface. The daemon opens one configured
+`MetaBrainCore` store for its lifetime, serves `/health`, and exposes the first
+store-backed JSON endpoints: `/v1/version`, `/v1/init`, `/v1/put`, and
+`/v1/get`.
 
 ```bash
 mbd serve --store .metabrain/store.leveldb --socket ~/.metabrain/mbd.sock
