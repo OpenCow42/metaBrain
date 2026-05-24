@@ -1,8 +1,7 @@
 # Releasing metaBrain
 
-This document is for maintainers preparing `mb` CLI release builds. The `mbd`
-daemon is built from the same package; daemon packaging is tracked separately
-until the server release flow is complete.
+This document is for maintainers preparing `mb` CLI and `mbd` daemon release
+builds. Release archives and Linux packages include both binaries.
 
 Public macOS releases **must** be Developer ID signed and Apple-notarized before
 they are uploaded or referenced from Homebrew. Do not publish a macOS archive
@@ -19,9 +18,9 @@ installed builds.
 
 ## macOS Release
 
-The release helper builds a universal macOS binary named `mb` for Apple silicon
-and Intel Macs, signs it with Developer ID, and submits a zip archive to Apple's
-notary service:
+The release helper builds universal macOS binaries named `mb` and `mbd` for
+Apple silicon and Intel Macs, signs both with Developer ID, and submits a zip
+archive to Apple's notary service:
 
 ~~~bash
 Scripts/build-release.sh \
@@ -59,8 +58,8 @@ The expected status is:
 status: Accepted
 ~~~
 
-Standalone CLI zip archives are not stapled. Distribute the notarized zip
-returned by Apple's notary service.
+Standalone zip archives are not stapled. Distribute the notarized zip returned
+by Apple's notary service.
 
 ## Local macOS Checks
 
@@ -79,6 +78,7 @@ By default, macOS artifacts are written under `dist/`:
 ~~~text
 dist/mb-<version>-macos-universal/
 dist/mb-<version>-macos-universal/bin/mb
+dist/mb-<version>-macos-universal/bin/mbd
 dist/mb-<version>-macos-universal/README.md
 dist/mb-<version>-macos-universal/LICENSE
 dist/mb-<version>-macos-universal.zip
@@ -94,8 +94,11 @@ After uploading the macOS zip, update
 
 1. Set the formula `version` to the release version.
 2. Set `sha256` to the notarized zip checksum.
-3. If the formula uses GitHub's release asset API URL, update the asset id.
-4. Commit and push the tap.
+3. Confirm the formula installs both `bin/mb` and `bin/mbd`.
+4. Do not auto-start `mbd` in `post_install`; print passive next steps or rely
+   on `mbd service print --user` and `mbd service install --user`.
+5. If the formula uses GitHub's release asset API URL, update the asset id.
+6. Commit and push the tap.
 
 Verify the uploaded macOS asset:
 
@@ -106,7 +109,9 @@ gh release download 1.1.2 --repo OpenCow42/metaBrain --pattern 'mb-1.1.2-macos-u
 shasum -a 256 -c mb-1.1.2-macos-universal.zip.sha256
 unzip -q mb-1.1.2-macos-universal.zip
 codesign --verify --verbose mb-1.1.2-macos-universal/bin/mb
+codesign --verify --verbose mb-1.1.2-macos-universal/bin/mbd
 mb-1.1.2-macos-universal/bin/mb --help
+mb-1.1.2-macos-universal/bin/mbd --help
 ~~~
 
 ## macOS Helper Options
@@ -134,8 +139,9 @@ METABRAIN_RELEASE_BUILD_DIR
 ## Linux / Ubuntu Release
 
 Ubuntu release artifacts should be built on Ubuntu, using the Linux release
-helper. The binary is built with a statically linked Swift standard library so
-the package does not require Swift to be installed on end-user machines.
+helper. The `mb` and `mbd` binaries are built with a statically linked Swift
+standard library so the package does not require Swift to be installed on
+end-user machines.
 
 ~~~bash
 Scripts/build-linux-release.sh --version 1.1.2
@@ -167,7 +173,13 @@ sha256sum -c dist/mb-1.1.2-linux-x86_64.tar.gz.sha256
 sha256sum -c dist/metabrain_1.1.2_amd64.deb.sha256
 tar -tzf dist/mb-1.1.2-linux-x86_64.tar.gz
 dpkg-deb -I dist/metabrain_1.1.2_amd64.deb
+dpkg-deb -c dist/metabrain_1.1.2_amd64.deb | grep -E '/usr/bin/(mb|mbd)$'
 ~~~
+
+The `.deb` installs `/usr/bin/mb` and `/usr/bin/mbd` plus documentation. It
+must not auto-enable, auto-start, or install a user service for `mbd`; user
+services require per-user config and should be created explicitly with
+`mbd service install --user --config <path>`.
 
 ## Ubuntu APT Repository
 

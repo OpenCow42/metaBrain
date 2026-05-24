@@ -13,8 +13,8 @@ state across loose `.md`, `.json`, and scratch files, `metaBrain` stores content
 in a compact LevelDB-backed database while keeping it discoverable through a
 small CLI.
 
-The first public release ships the `mb` command-line tool and the
-`MetaBrainCore` Swift library.
+The first public release ships the `mb` command-line tool, the `mbd` local
+daemon, and the `MetaBrainCore` Swift library.
 
 ## Install On macOS
 
@@ -24,10 +24,13 @@ Install from the public OpenCow42 Homebrew tap:
 brew tap OpenCow42/tap && brew install mb
 ```
 
+The Homebrew package installs both `mb` and `mbd`. It does not start the daemon
+automatically.
+
 ## Install On Ubuntu
 
 Install from the public OpenCow42 APT repository on Ubuntu 24.04 or 26.04.
-The package name is `metabrain`, and it installs the `mb` command.
+The package name is `metabrain`, and it installs both `mb` and `mbd`.
 
 Ubuntu 24.04:
 
@@ -166,6 +169,11 @@ mbd version
 
 Unix sockets are the default local transport on macOS and Linux. Loopback HTTP
 is available for debugging with `--host 127.0.0.1 --port 7421`.
+
+Package managers install the daemon binary passively; they do not create a
+workspace store, install a user service, or start `mbd`. Use
+`mbd service print --user` or `mbd service install --user --config <path>` when
+you want an inspectable user LaunchAgent or systemd unit.
 
 The `mb` CLI can opt into an explicit daemon instead of opening LevelDB
 directly:

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PRODUCT_NAME="mb"
+PRODUCT_NAMES=("mb" "mbd")
 DIST_DIR="${METABRAIN_DIST_DIR:-${ROOT_DIR}/dist}"
 BUILD_ROOT="${METABRAIN_RELEASE_BUILD_DIR:-${ROOT_DIR}/.build/release-macos}"
 VERSION="${METABRAIN_RELEASE_VERSION:-}"
@@ -20,8 +20,8 @@ usage() {
   cat <<'USAGE'
 Usage: Scripts/build-release.sh [options]
 
-Build a universal macOS release binary named mb, sign it with Developer ID, and
-submit a zip archive to Apple's notary service.
+Build universal macOS release binaries named mb and mbd, sign them with
+Developer ID, and submit a zip archive to Apple's notary service.
 
 Options:
   --identity <name>          Developer ID Application signing identity.
@@ -198,57 +198,60 @@ MESSAGE
   fi
 fi
 
-echo "Building ${PRODUCT_NAME} ${VERSION} for macOS architectures: ${ARCHS[*]}"
+echo "Building ${PRODUCT_NAMES[*]} ${VERSION} for macOS architectures: ${ARCHS[*]}"
 rm -rf "${BUILD_ROOT}"
 mkdir -p "${DIST_DIR}"
 
-arch_binaries=()
-for arch in "${ARCHS[@]}"; do
-  scratch_path="${BUILD_ROOT}/${arch}"
-  echo "Building ${arch} release binary..."
-  swift build \
-    -c release \
-    --product "${PRODUCT_NAME}" \
-    --arch "${arch}" \
-    --scratch-path "${scratch_path}"
-
-  bin_path="$(swift build \
-    -c release \
-    --product "${PRODUCT_NAME}" \
-    --arch "${arch}" \
-    --scratch-path "${scratch_path}" \
-    --show-bin-path)"
-  arch_binary="${bin_path}/${PRODUCT_NAME}"
-
-  if [[ ! -x "${arch_binary}" ]]; then
-    echo "Expected executable not found: ${arch_binary}" >&2
-    exit 1
-  fi
-
-  arch_binaries+=("${arch_binary}")
-done
-
-release_name="${PRODUCT_NAME}-${VERSION}-macos-universal"
+release_name="mb-${VERSION}-macos-universal"
 release_dir="${DIST_DIR}/${release_name}"
-binary_path="${release_dir}/bin/${PRODUCT_NAME}"
 archive_path="${DIST_DIR}/${release_name}.zip"
 checksum_path="${archive_path}.sha256"
 
 rm -rf "${release_dir}" "${archive_path}" "${checksum_path}"
 mkdir -p "${release_dir}/bin"
 
-if [[ "${#arch_binaries[@]}" -eq 1 ]]; then
-  install -m 0755 "${arch_binaries[0]}" "${binary_path}"
-else
-  echo "Creating universal binary..."
-  lipo -create "${arch_binaries[@]}" -output "${binary_path}"
-  chmod 0755 "${binary_path}"
-fi
+release_binaries=()
+for product_name in "${PRODUCT_NAMES[@]}"; do
+  arch_binaries=()
+  for arch in "${ARCHS[@]}"; do
+    scratch_path="${BUILD_ROOT}/${arch}"
+    echo "Building ${product_name} ${arch} release binary..."
+    swift build \
+      -c release \
+      --product "${product_name}" \
+      --arch "${arch}" \
+      --scratch-path "${scratch_path}"
+
+    bin_path="$(swift build \
+      -c release \
+      --product "${product_name}" \
+      --arch "${arch}" \
+      --scratch-path "${scratch_path}" \
+      --show-bin-path)"
+    arch_binary="${bin_path}/${product_name}"
+
+    if [[ ! -x "${arch_binary}" ]]; then
+      echo "Expected executable not found: ${arch_binary}" >&2
+      exit 1
+    fi
+
+    arch_binaries+=("${arch_binary}")
+  done
+
+  binary_path="${release_dir}/bin/${product_name}"
+  if [[ "${#arch_binaries[@]}" -eq 1 ]]; then
+    install -m 0755 "${arch_binaries[0]}" "${binary_path}"
+  else
+    echo "Creating universal ${product_name} binary..."
+    lipo -create "${arch_binaries[@]}" -output "${binary_path}"
+    chmod 0755 "${binary_path}"
+  fi
+  release_binaries+=("${binary_path}")
+  lipo -info "${binary_path}"
+done
 
 install -m 0644 "${ROOT_DIR}/README.md" "${release_dir}/README.md"
 install -m 0644 "${ROOT_DIR}/LICENSE" "${release_dir}/LICENSE"
-
-lipo -info "${binary_path}"
 
 if [[ "${SKIP_SIGN}" -eq 0 ]]; then
   sign_args=(
@@ -262,9 +265,11 @@ if [[ "${SKIP_SIGN}" -eq 0 ]]; then
     sign_args+=(--entitlements "${ENTITLEMENTS}")
   fi
 
-  echo "Signing ${binary_path}..."
-  codesign "${sign_args[@]}" "${binary_path}"
-  codesign --verify --strict --verbose=2 "${binary_path}"
+  for binary_path in "${release_binaries[@]}"; do
+    echo "Signing ${binary_path}..."
+    codesign "${sign_args[@]}" "${binary_path}"
+    codesign --verify --strict --verbose=2 "${binary_path}"
+  done
 else
   echo "Skipping codesign."
 fi
@@ -279,7 +284,7 @@ if [[ "${SKIP_NOTARIZATION}" -eq 0 ]]; then
   echo "Submitting ${archive_path} for notarization..."
   xcrun notarytool submit "${archive_path}" --wait "${NOTARY_ARGS[@]}"
   echo "Notarization accepted for ${archive_path}."
-  echo "Standalone CLI zip archives are not stapled; distribute this notarized zip."
+  echo "Standalone zip archives are not stapled; distribute this notarized zip."
 else
   echo "Skipping notarization."
 fi
@@ -295,6 +300,7 @@ else
   printf '%s  %s\n' "${checksum}" "$(basename "${archive_path}")" > "${checksum_path}"
 fi
 
-echo "Release binary: ${binary_path}"
+echo "Release binaries:"
+printf '  %s\n' "${release_binaries[@]}"
 echo "Release archive: ${archive_path}"
 echo "Release checksum: ${checksum_path}"
