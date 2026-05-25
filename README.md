@@ -175,6 +175,26 @@ compression. Ordered index keys remain plain ASCII strings for prefix scans.
 The default ZSTD compression level is `3`, and LevelDB paranoid checks are
 enabled by default.
 
+### Store Format Compatibility
+
+Record envelopes include an internal schema version. This tool treats schema
+version `1` as the current writable format. Later schema versions are parsed as
+future versions instead of invalid versions.
+
+When a store contains future-version records, commands should still read them
+when the existing key layout and Codable payload remain compatible. This lets
+older `mb` binaries inspect a newer store where possible. Mutating commands
+refuse to overwrite, prune, or delete future-version records and return a clear
+upgrade-required store error instead of silently downgrading newer data. In
+practice, `get`, `list`, `tree`, `search`, `dump`, and `versions` can continue
+to work for compatible future records, while `put`, `patch`, `move`, `prune`,
+`delete`, and `remove-version` fail at the affected newer records.
+
+Compatibility is best-effort, not a promise that every future format can be
+read by older binaries. A future release may add required payload fields or a
+new key layout that old tools cannot decode. Older tools should fail
+gracefully in those cases.
+
 Implemented behavior includes:
 
 - Async `MetaBrainStore` facade over one explicit store path.
