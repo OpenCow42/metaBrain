@@ -51,6 +51,7 @@ public enum MetaBrainStoreError: Error, Equatable, Sendable, CustomStringConvert
     case pathAlreadyExists(DocumentPath, existingID: DocumentID)
     case currentVersionCannotBeRemoved(DocumentID, sequence: UInt64)
     case unsupportedRecordSchemaVersion(UInt8)
+    case newerRecordSchemaVersion(UInt8, operation: String)
 
     public var description: String {
         switch self {
@@ -65,7 +66,9 @@ public enum MetaBrainStoreError: Error, Equatable, Sendable, CustomStringConvert
         case .currentVersionCannotBeRemoved(let id, let sequence):
             "Cannot remove current version \(sequence) of document \(id.rawValue)."
         case .unsupportedRecordSchemaVersion(let version):
-            "Unsupported metaBrain record schema version: \(version)"
+            "Unsupported metaBrain record schema version: \(version)."
+        case .newerRecordSchemaVersion(let version, let operation):
+            "This metaBrain store contains record schema version \(version), which is newer than this tool can safely modify during \(operation). Upgrade metaBrain to modify these records."
         }
     }
 }
@@ -203,14 +206,20 @@ public final class MetaBrainStore: Sendable {
 
         return try await writes.run {
             guard let id = try await self.documentID(for: reference),
-                  let record = try await self.documentRecord(id: id) else {
+                  let storedRecord = try await self.documentStoredRecord(id: id) else {
                 return nil as StoredDocumentEntry?
             }
 
-            let metadata = try await self.writeEntryMetadata(
-                for: record.document,
-                readDelta: 1
-            )
+            let record = storedRecord.payload
+            let metadata: DocumentEntryMetadata
+            if storedRecord.schemaVersion.isCurrent {
+                metadata = try await self.writeEntryMetadata(
+                    for: record.document,
+                    readDelta: 1
+                )
+            } else {
+                metadata = try await self.entryMetadataRecord(for: record.document)
+            }
 
             return StoredDocumentEntry(
                 document: record.document,
@@ -389,6 +398,10 @@ public final class MetaBrainStore: Sendable {
                 return PruneResult(prunedVersionCount: 0, retainedVersionCount: 0)
             }
 
+            if let record = try await self.documentStoredRecord(id: id) {
+                try record.requireCurrentSchemaVersion(operation: "prune versions")
+            }
+
             return try await self.pruneVersions(id: id, policy: request.policy)
         }
     }
@@ -397,10 +410,12 @@ public final class MetaBrainStore: Sendable {
     public func deleteDocument(_ reference: DocumentReference) async throws -> Bool {
         try await writes.run {
             guard let id = try await self.documentID(for: reference),
-                  let record = try await self.documentRecord(id: id) else {
+                  let storedRecord = try await self.documentStoredRecord(id: id) else {
                 return false
             }
 
+            try storedRecord.requireCurrentSchemaVersion(operation: "delete document")
+            let record = storedRecord.payload
             try await self.deleteDocumentRecord(record)
             return true
         }
@@ -409,19 +424,25 @@ public final class MetaBrainStore: Sendable {
     @discardableResult
     public func removeVersion(documentID: DocumentID, sequence: UInt64) async throws -> Bool {
         try await writes.run {
-            guard let record = try await self.documentRecord(id: documentID) else {
+            guard let storedRecord = try await self.documentStoredRecord(id: documentID) else {
                 return false
             }
 
+            try storedRecord.requireCurrentSchemaVersion(operation: "remove version")
+            let record = storedRecord.payload
             guard record.document.currentVersion != sequence else {
                 throw MetaBrainStoreError.currentVersionCannotBeRemoved(documentID, sequence: sequence)
             }
 
             let versionKey = MetaBrainKeyspace.version(id: documentID, sequence: sequence)
-            guard try await self.rawValue(forKey: versionKey) != nil else {
+            guard let versionRecord = try await self.compressedStoredRecord(
+                forKey: versionKey,
+                as: DocumentVersion.self
+            ) else {
                 return false
             }
 
+            try versionRecord.requireCurrentSchemaVersion(operation: "remove version")
             try await self.deleteRawValue(forKey: versionKey)
             return true
         }
@@ -441,16 +462,18 @@ public final class MetaBrainStore: Sendable {
         forKey key: String,
         as type: Value.Type = Value.self
     ) async throws -> Value? {
+        try await compressedStoredRecord(forKey: key, as: type)?.payload
+    }
+
+    private func compressedStoredRecord<Value: Codable & Sendable>(
+        forKey key: String,
+        as type: Value.Type = Value.self
+    ) async throws -> MetaBrainStoredRecord<Value>? {
         guard let data = try await rawValue(forKey: key) else {
             return nil
         }
 
-        let envelope = try codec(for: type).decode(data)
-        guard envelope.schemaVersion == MetaBrainRecordEnvelope<Value>.currentSchemaVersion else {
-            throw MetaBrainStoreError.unsupportedRecordSchemaVersion(envelope.schemaVersion)
-        }
-
-        return envelope.payload
+        return try decodeCompressedRecord(data, as: type)
     }
 
     func writeRawValue(_ value: Data, forKey key: String) async throws {
@@ -618,7 +641,10 @@ public final class MetaBrainStore: Sendable {
         input: DocumentInput,
         accessMutation: EntryAccessMutation = .fullWrite
     ) async throws -> StoredDocument {
-        guard let existingRecord = try await documentRecord(id: id) else {
+        guard let existingRecord = try await currentDocumentRecord(
+            id: id,
+            operation: "update document"
+        ) else {
             return try await writeNewDocument(input)
         }
 
@@ -727,10 +753,12 @@ public final class MetaBrainStore: Sendable {
         let encodedVersion = try compressedData(version)
         let encodedEntryMetadata = try compressedData(entryMetadata)
         let encodedID = Data(document.id.rawValue.utf8)
-        let staleChunkKeys = try await currentChunkKeys(for: document.id)
+        let staleChunkRecords = try await currentChunkRecordEntries(for: document.id)
+        try staleChunkRecords.requireCurrentSchemaVersions(operation: "update document chunks")
+        let staleChunkKeys = staleChunkRecords.map(\.key)
         let staleIndexKeys = try await staleIndexKeys(
             for: previousRecord?.document,
-            staleChunkKeys: staleChunkKeys
+            staleChunks: staleChunkRecords.map(\.payload)
         )
         let staleReferenceKeys = try await staleReferenceKeys(sourceID: document.id)
         let treeUpdate = try await incrementalTreeUpdate(
@@ -793,14 +821,20 @@ public final class MetaBrainStore: Sendable {
 
     private func deleteDocumentRecord(_ record: MetaBrainDocumentRecord) async throws {
         let document = record.document
-        let staleChunkKeys = try await currentChunkKeys(for: document.id)
+        let staleChunkRecords = try await currentChunkRecordEntries(for: document.id)
+        try staleChunkRecords.requireCurrentSchemaVersions(operation: "delete document chunks")
+        let staleChunkKeys = staleChunkRecords.map(\.key)
         let staleIndexKeys = try await staleIndexKeys(
             for: document,
-            staleChunkKeys: staleChunkKeys
+            staleChunks: staleChunkRecords.map(\.payload)
         )
         let staleReferenceKeys = try await staleReferenceKeys(sourceID: document.id)
         let staleBacklinkKeys = try await staleBacklinkKeys(targetID: document.id)
-        let versionKeys = try await scanKeys(withPrefix: MetaBrainKeyspace.versionPrefix(id: document.id))
+        let versionRecords = try await versionRecordEntries(for: document.id)
+        try versionRecords.requireCurrentSchemaVersions(operation: "delete document versions")
+        let versionKeys = versionRecords.map(\.key)
+        let entryMetadata = try await entryMetadataStoredRecord(for: document)
+        try entryMetadata?.requireCurrentSchemaVersion(operation: "delete document metadata")
         let treeUpdate = try await incrementalTreeUpdate(removing: document)
 
         try await Self.mapLevelDBErrors(path: url.path) {
@@ -833,7 +867,9 @@ public final class MetaBrainStore: Sendable {
         id: DocumentID,
         policy: VersionRetentionPolicy
     ) async throws -> PruneResult {
-        let versions = try await versionRecords(for: id)
+        let versionRecords = try await versionRecordEntries(for: id)
+        try versionRecords.requireCurrentSchemaVersions(operation: "prune versions")
+        let versions = versionRecords.map(\.payload)
         guard !versions.isEmpty else {
             return PruneResult(prunedVersionCount: 0, retainedVersionCount: 0)
         }
@@ -870,8 +906,11 @@ public final class MetaBrainStore: Sendable {
         appending version: DocumentVersion,
         policy: VersionRetentionPolicy
     ) async throws -> [DocumentVersion] {
-        prunedVersionRecords(
-            from: try await versionRecords(for: id) + [version],
+        let existingRecords = try await versionRecordEntries(for: id)
+        try existingRecords.requireCurrentSchemaVersions(operation: "update document versions")
+
+        return prunedVersionRecords(
+            from: existingRecords.map(\.payload) + [version],
             policy: policy
         )
     }
@@ -940,28 +979,57 @@ public final class MetaBrainStore: Sendable {
     }
 
     private func documentRecord(id: DocumentID) async throws -> MetaBrainDocumentRecord? {
-        try await compressedRecord(
+        try await documentStoredRecord(id: id)?.payload
+    }
+
+    private func currentDocumentRecord(
+        id: DocumentID,
+        operation: String
+    ) async throws -> MetaBrainDocumentRecord? {
+        guard let record = try await documentStoredRecord(id: id) else {
+            return nil
+        }
+
+        try record.requireCurrentSchemaVersion(operation: operation)
+        return record.payload
+    }
+
+    private func documentStoredRecord(id: DocumentID) async throws -> MetaBrainStoredRecord<MetaBrainDocumentRecord>? {
+        try await compressedStoredRecord(
             forKey: MetaBrainKeyspace.document(id: id),
             as: MetaBrainDocumentRecord.self
         )
     }
 
     private func entryMetadataRecord(for document: StoredDocument) async throws -> DocumentEntryMetadata {
-        guard let metadata = try await compressedRecord(
-            forKey: MetaBrainKeyspace.documentMetadata(id: document.id),
-            as: DocumentEntryMetadata.self
-        ) else {
+        guard let metadata = try await entryMetadataStoredRecord(for: document) else {
             return Self.defaultEntryMetadata(for: document)
         }
 
-        return Self.rederivedEntryMetadata(metadata, for: document)
+        return Self.rederivedEntryMetadata(metadata.payload, for: document)
+    }
+
+    private func entryMetadataStoredRecord(
+        for document: StoredDocument
+    ) async throws -> MetaBrainStoredRecord<DocumentEntryMetadata>? {
+        try await compressedStoredRecord(
+            forKey: MetaBrainKeyspace.documentMetadata(id: document.id),
+            as: DocumentEntryMetadata.self
+        )
     }
 
     private func updatedEntryMetadata(
         for document: StoredDocument,
         accessMutation: EntryAccessMutation
     ) async throws -> DocumentEntryMetadata {
-        var metadata = try await entryMetadataRecord(for: document)
+        let storedMetadata = try await entryMetadataStoredRecord(for: document)
+        try storedMetadata?.requireCurrentSchemaVersion(operation: "update document metadata")
+
+        var metadata = if let storedMetadata {
+            Self.rederivedEntryMetadata(storedMetadata.payload, for: document)
+        } else {
+            Self.defaultEntryMetadata(for: document)
+        }
 
         switch accessMutation {
         case .fullWrite:
@@ -977,7 +1045,16 @@ public final class MetaBrainStore: Sendable {
         for document: StoredDocument,
         readDelta: UInt64
     ) async throws -> DocumentEntryMetadata {
-        var metadata = try await entryMetadataRecord(for: document)
+        let storedMetadata = try await entryMetadataStoredRecord(for: document)
+        if let storedMetadata, !storedMetadata.schemaVersion.isCurrent {
+            return Self.rederivedEntryMetadata(storedMetadata.payload, for: document)
+        }
+
+        var metadata = if let storedMetadata {
+            Self.rederivedEntryMetadata(storedMetadata.payload, for: document)
+        } else {
+            Self.defaultEntryMetadata(for: document)
+        }
         metadata.access.readCount = Self.incremented(metadata.access.readCount, by: readDelta)
         metadata = Self.rederivedEntryMetadata(metadata, for: document)
 
@@ -990,17 +1067,29 @@ public final class MetaBrainStore: Sendable {
     }
 
     private func versionRecords(for id: DocumentID) async throws -> [DocumentVersion] {
-        let prefix = MetaBrainKeyspace.versionPrefix(id: id)
+        try await versionRecordEntries(for: id).map(\.payload)
+    }
 
+    private func versionRecordEntries(for id: DocumentID) async throws -> [MetaBrainKeyedStoredRecord<DocumentVersion>] {
+        let prefix = MetaBrainKeyspace.versionPrefix(id: id)
         return try await Self.mapLevelDBErrors(path: url.path) {
             let records = try await currentRecords()
             return try await records
                 .scanEncodedPrefix(Data(prefix.utf8), readOptions: Self.bulkReadOptions)
-                .map { try decodeCompressedData($0.value, as: DocumentVersion.self) }
+                .map {
+                    try MetaBrainKeyedStoredRecord(
+                        key: $0.key,
+                        record: decodeCompressedRecord($0.value, as: DocumentVersion.self)
+                    )
+                }
         }
     }
 
     private func currentChunkRecords(for id: DocumentID) async throws -> [MetaBrainChunkRecord] {
+        try await currentChunkRecordEntries(for: id).map(\.payload)
+    }
+
+    private func currentChunkRecordEntries(for id: DocumentID) async throws -> [MetaBrainKeyedStoredRecord<MetaBrainChunkRecord>] {
         return try await Self.mapLevelDBErrors(path: url.path) {
             let records = try await currentRecords()
             return try await records
@@ -1008,23 +1097,34 @@ public final class MetaBrainStore: Sendable {
                     Data(MetaBrainKeyspace.currentChunkPrefix(id: id).utf8),
                     readOptions: Self.bulkReadOptions
                 )
-                .map { try decodeCompressedData($0.value, as: MetaBrainChunkRecord.self) }
+                .map {
+                    try MetaBrainKeyedStoredRecord(
+                        key: $0.key,
+                        record: decodeCompressedRecord($0.value, as: MetaBrainChunkRecord.self)
+                    )
+                }
         }
     }
 
-    private func currentChunkKeys(for id: DocumentID) async throws -> [String] {
-        try await scanKeys(withPrefix: MetaBrainKeyspace.currentChunkPrefix(id: id))
+    private func childTreeEntries(of path: DocumentPath) async throws -> [DocumentTreeEntry] {
+        try await childTreeRecordEntries(of: path)
+            .map { $0.payload.entry }
+            .sorted { $0.path.rawValue < $1.path.rawValue }
     }
 
-    private func childTreeEntries(of path: DocumentPath) async throws -> [DocumentTreeEntry] {
+    private func childTreeRecordEntries(of path: DocumentPath) async throws -> [MetaBrainKeyedStoredRecord<MetaBrainTreeRecord>] {
         let prefix = MetaBrainKeyspace.treePrefix(parentPath: path)
 
         return try await Self.mapLevelDBErrors(path: url.path) {
             let records = try await currentRecords()
             return try await records
                 .scanEncodedPrefix(Data(prefix.utf8), readOptions: Self.bulkReadOptions)
-                .map { try decodeCompressedData($0.value, as: MetaBrainTreeRecord.self).entry }
-                .sorted { $0.path.rawValue < $1.path.rawValue }
+                .map {
+                    try MetaBrainKeyedStoredRecord(
+                        key: $0.key,
+                        record: decodeCompressedRecord($0.value, as: MetaBrainTreeRecord.self)
+                    )
+                }
         }
     }
 
@@ -1067,6 +1167,8 @@ public final class MetaBrainStore: Sendable {
             newPath: document.path,
             removedPath: removedPath
         )
+        try await requireCurrentTreeRecords(for: affectedPaths, operation: "update document tree")
+
         var removedKeys: [String] = []
         var records: [(key: String, value: Data)] = []
 
@@ -1090,10 +1192,13 @@ public final class MetaBrainStore: Sendable {
     private func incrementalTreeUpdate(
         removing document: StoredDocument
     ) async throws -> (removedKeys: [String], records: [(key: String, value: Data)]) {
+        let affectedPaths = Self.treeBranchPaths(for: document.path)
+        try await requireCurrentTreeRecords(for: affectedPaths, operation: "delete document tree")
+
         var removedKeys: [String] = []
         var records: [(key: String, value: Data)] = []
 
-        for path in Self.treeBranchPaths(for: document.path).sorted(by: { lhs, rhs in
+        for path in affectedPaths.sorted(by: { lhs, rhs in
             lhs.rawValue.count > rhs.rawValue.count
         }) {
             let key = MetaBrainKeyspace.tree(parentPath: path.parent!, name: path.name)
@@ -1109,6 +1214,18 @@ public final class MetaBrainStore: Sendable {
         }
 
         return (removedKeys, records)
+    }
+
+    private func requireCurrentTreeRecords(
+        for paths: [DocumentPath],
+        operation: String
+    ) async throws {
+        for path in paths {
+            let key = MetaBrainKeyspace.tree(parentPath: path.parent!, name: path.name)
+            if let record = try await compressedStoredRecord(forKey: key, as: MetaBrainTreeRecord.self) {
+                try record.requireCurrentSchemaVersion(operation: operation)
+            }
+        }
     }
 
     private func treeRecordAfterWrite(
@@ -1232,21 +1349,14 @@ public final class MetaBrainStore: Sendable {
 
     private func staleIndexKeys(
         for document: StoredDocument?,
-        staleChunkKeys: [String]
+        staleChunks: [MetaBrainChunkRecord]
     ) async throws -> [String] {
         guard let document else {
             return []
         }
 
-        var chunks: [MetaBrainChunkRecord] = []
-        for key in staleChunkKeys {
-            if let chunk = try await compressedRecord(forKey: key, as: MetaBrainChunkRecord.self) {
-                chunks.append(chunk)
-            }
-        }
-
         var keys = Set<String>()
-        for chunk in chunks {
+        for chunk in staleChunks {
             for term in Self.tokenize(chunk.text) {
                 keys.insert(MetaBrainKeyspace.term(term, id: document.id, ordinal: chunk.ordinal))
             }
@@ -1715,16 +1825,16 @@ public final class MetaBrainStore: Sendable {
         try codec(for: Value.self).encode(MetaBrainRecordEnvelope(payload: value))
     }
 
-    private func decodeCompressedData<Value: Codable & Sendable>(
+    private func decodeCompressedRecord<Value: Codable & Sendable>(
         _ data: Data,
         as type: Value.Type = Value.self
-    ) throws -> Value {
+    ) throws -> MetaBrainStoredRecord<Value> {
         let envelope = try codec(for: type).decode(data)
-        guard envelope.schemaVersion == MetaBrainRecordEnvelope<Value>.currentSchemaVersion else {
-            throw MetaBrainStoreError.unsupportedRecordSchemaVersion(envelope.schemaVersion)
-        }
-
-        return envelope.payload
+        try envelope.schemaVersion.requireReadable()
+        return MetaBrainStoredRecord(
+            schemaVersion: envelope.schemaVersion,
+            payload: envelope.payload
+        )
     }
 
     static func mapLevelDBErrors<T: Sendable>(
@@ -1779,15 +1889,127 @@ private actor MetaBrainStoreDatabase {
     }
 }
 
-struct MetaBrainRecordEnvelope<Payload: Codable & Sendable>: Codable, Sendable {
-    static var currentSchemaVersion: UInt8 { 1 }
+public enum MetaBrainRecordSchemaVersion: Codable, Equatable, Hashable, Sendable, Comparable, CustomStringConvertible {
+    case unsupported(UInt8)
+    case v1
+    case future(UInt8)
 
-    var schemaVersion: UInt8
+    public static let current = MetaBrainRecordSchemaVersion.v1
+
+    public init(rawValue: UInt8) {
+        switch rawValue {
+        case 1:
+            self = .v1
+        case 2...UInt8.max:
+            self = .future(rawValue)
+        default:
+            self = .unsupported(rawValue)
+        }
+    }
+
+    public var rawValue: UInt8 {
+        switch self {
+        case .unsupported(let version), .future(let version):
+            version
+        case .v1:
+            1
+        }
+    }
+
+    public var isCurrent: Bool {
+        self == Self.current
+    }
+
+    public var isFuture: Bool {
+        if case .future = self {
+            return true
+        }
+
+        return false
+    }
+
+    public var description: String {
+        "\(rawValue)"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        self.init(rawValue: try container.decode(UInt8.self))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+
+    public static func < (lhs: MetaBrainRecordSchemaVersion, rhs: MetaBrainRecordSchemaVersion) -> Bool {
+        lhs.rawValue < rhs.rawValue
+    }
+
+    func requireReadable() throws {
+        if case .unsupported(let version) = self {
+            throw MetaBrainStoreError.unsupportedRecordSchemaVersion(version)
+        }
+    }
+}
+
+private struct MetaBrainStoredRecord<Payload: Sendable>: Sendable {
+    var schemaVersion: MetaBrainRecordSchemaVersion
     var payload: Payload
 
-    init(schemaVersion: UInt8 = currentSchemaVersion, payload: Payload) {
+    func requireCurrentSchemaVersion(operation: String) throws {
+        try schemaVersion.requireReadable()
+        guard schemaVersion.isCurrent else {
+            throw MetaBrainStoreError.newerRecordSchemaVersion(
+                schemaVersion.rawValue,
+                operation: operation
+            )
+        }
+    }
+}
+
+private struct MetaBrainKeyedStoredRecord<Payload: Sendable>: Sendable {
+    var key: String
+    var schemaVersion: MetaBrainRecordSchemaVersion
+    var payload: Payload
+
+    init(key: String, record: MetaBrainStoredRecord<Payload>) {
+        self.key = key
+        self.schemaVersion = record.schemaVersion
+        self.payload = record.payload
+    }
+
+    func requireCurrentSchemaVersion(operation: String) throws {
+        try MetaBrainStoredRecord(
+            schemaVersion: schemaVersion,
+            payload: payload
+        ).requireCurrentSchemaVersion(operation: operation)
+    }
+}
+
+private extension Sequence {
+    func requireCurrentSchemaVersions<Payload>(
+        operation: String
+    ) throws where Element == MetaBrainKeyedStoredRecord<Payload> {
+        for record in self {
+            try record.requireCurrentSchemaVersion(operation: operation)
+        }
+    }
+}
+
+struct MetaBrainRecordEnvelope<Payload: Codable & Sendable>: Codable, Sendable {
+    static var currentSchemaVersion: MetaBrainRecordSchemaVersion { .current }
+
+    var schemaVersion: MetaBrainRecordSchemaVersion
+    var payload: Payload
+
+    init(schemaVersion: MetaBrainRecordSchemaVersion = currentSchemaVersion, payload: Payload) {
         self.schemaVersion = schemaVersion
         self.payload = payload
+    }
+
+    init(schemaVersion: UInt8, payload: Payload) {
+        self.init(schemaVersion: MetaBrainRecordSchemaVersion(rawValue: schemaVersion), payload: payload)
     }
 }
 

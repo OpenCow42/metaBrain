@@ -10,6 +10,7 @@ contributors toward the calls that can become expensive as a store grows.
 - `A`: number of virtual tree entries, including directories and documents.
 - `B`: size of the current document body being read or written.
 - `B_old`: size of the previous body for an updated document.
+- `B_version`: size of one retained version snapshot body.
 - `C`: number of current chunks for a document.
 - `C_old`: number of previous chunks for an updated document.
 - `T`: number of distinct indexed terms in a document or query context.
@@ -90,8 +91,8 @@ and [LevelDB options](https://github.com/google/leveldb/blob/main/include/leveld
 | `search` | `search`, `filteredDocumentIDs`, `termPostings`, `currentChunkRecords`, scoring, optional edge scans | `O((Q + G + M) * seek(S) + F log F + P log P + B_match + C_match + M * (W^2 + E) + M log M)` | `W` is terms in a scored chunk. `--limit` is applied after collecting, scoring, and sorting all candidates, so it does not cap the initial scan. |
 | `versions` | `listVersions`, `versionRecords` | `O(seek(S) + V log V + H)` | Scans, decodes, sorts, and prints every full-snapshot version for the document. |
 | `prune` | `prune`, `pruneVersions`, `versionRecords`, retention helpers | `O(seek(S) + V log V + H + P_delete)` | Scans and decodes all versions before deciding which version keys to delete. |
-| `delete` | `deleteDocument`, `deleteDocumentRecord`, cleanup helpers | `O((C + R + E + L) * seek(S) + T + V + X_tree + P_delete + K_delete)` | Resolves one explicit document, then cleans current chunks, lexical/tag/metadata indexes, references/backlinks, retained versions, and affected tree entries. |
-| `remove-version` | `getDocument`, `removeVersion` | `O(seek(S))` | Resolves one document and performs one version-key point lookup/delete. Rejects the current version. |
+| `delete` | `deleteDocument`, `deleteDocumentRecord`, cleanup helpers | `O((C + R + E + L) * seek(S) + T + V + H + X_tree + P_delete + K_delete)` | Resolves one explicit document, checks retained version envelopes for compatible mutation, then cleans current chunks, lexical/tag/metadata indexes, references/backlinks, retained versions, and affected tree entries. |
+| `remove-version` | `getDocument`, `removeVersion` | `O(seek(S) + B + B_version)` | Resolves one document and decodes the target version envelope before deleting it. Rejects the current version. |
 
 ## Current Complex Calls To Treat Carefully
 
@@ -127,9 +128,11 @@ and [LevelDB options](https://github.com/google/leveldb/blob/main/include/leveld
   Large bodies plus many versions are the worst case.
 - `delete` is intentionally explicit, but it can still issue a broad cleanup for
   one document: current chunks and indexes, references and backlinks, retained
-  version keys, and virtual tree branch entries are all removed or refreshed.
+  version envelopes, and virtual tree branch entries are all removed or
+  refreshed.
 - `remove-version` is a point deletion after document resolution. It is cheap
-  compared with pruning, but it cannot remove the current version.
+  compared with pruning, but it decodes the target snapshot for format checks
+  and cannot remove the current version.
 
 ## Command Details
 
@@ -305,11 +308,13 @@ Complexity is `O(seek(S) + V log V + H + P_delete)`.
 `delete` resolves a path or ID and calls `deleteDocument(_:)`. Missing documents
 return successfully without cleanup work. Existing documents delete the current
 document record, path alias, current chunks, lexical/tag/metadata indexes,
-outbound references, inbound backlink records, retained version keys, and
-affected virtual tree entries.
+outbound references, inbound backlink records, retained version envelopes, and
+affected virtual tree entries. Record envelopes written by a newer metaBrain
+schema are rejected before deletion so older tools do not silently downgrade or
+discard future-format state.
 
 Complexity is
-`O((C + R + E + L) * seek(S) + T + V + X_tree + P_delete + K_delete)`.
+`O((C + R + E + L) * seek(S) + T + V + H + X_tree + P_delete + K_delete)`.
 The exact constant factor depends on how many indexed terms, references, and
 tree branches the deleted document touched.
 
@@ -320,8 +325,8 @@ tree branches the deleted document touched.
 version keys return successfully with no deletion. Removing the current version
 throws a core error so the current document remains readable.
 
-Complexity is `O(seek(S))` for document resolution plus one version-key point
-lookup and, when present, one delete.
+Complexity is `O(seek(S) + B + B_version)` for document resolution plus one
+version-key point lookup/decode and, when present, one delete.
 
 ## Maintenance Guidance
 
