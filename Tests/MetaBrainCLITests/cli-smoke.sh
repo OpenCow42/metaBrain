@@ -642,6 +642,15 @@ if [[ -z "$DUMP_FILE" || ! -f "$DUMP_FILE" ]]; then
     exit 1
 fi
 rg -F -q 'alpha beta updated memory' "$DUMP_FILE"
+PUT_JSON_BODY_JSON="$("${METABRAIN[@]}" put --store "$STORE" /notes/config '{"enabled":true}')"
+assert_put_json "$PUT_JSON_BODY_JSON" /notes/config created 1
+"${METABRAIN[@]}" dump --store "$STORE" /notes/config --output-dir "$DUMP_OUTPUT_DIR" >"$TMP_DIR/dump-json-body-files.jsonl"
+JSON_DUMP_FILE="$(find "$DUMP_OUTPUT_DIR" -type f -name 'config__*__v1__*.json' | head -n 1)"
+if [[ -z "$JSON_DUMP_FILE" || ! -f "$JSON_DUMP_FILE" ]]; then
+    echo "Expected extensionless JSON body dump to create a .json file" >&2
+    exit 1
+fi
+rg -F -q '{"enabled":true}' "$JSON_DUMP_FILE"
 VERSIONS_TODAY_DEFAULT_JSONL="$("${METABRAIN[@]}" versions --store "$STORE" /notes/today)"
 assert_versions_jsonl "$VERSIONS_TODAY_DEFAULT_JSONL" /notes/today 2
 printf '%s\n' "$VERSIONS_TODAY_DEFAULT_JSONL" | rg -F -q '"sequence":1'

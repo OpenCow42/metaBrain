@@ -121,6 +121,9 @@ Export a subtree as JSONL, optionally with UTF-8 body files:
 mb dump /tasks --output-dir ./metabrain-dump
 ```
 
+Dumped body files preserve document path extensions. Extensionless JSON object
+or array bodies are written with `.json`; other extensionless bodies use `.md`.
+
 Inspect history and prune retained versions:
 
 ```bash
