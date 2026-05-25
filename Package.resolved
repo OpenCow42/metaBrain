@@ -1,5 +1,5 @@
 {
-  "originHash" : "7ccfd10e7dfdbee9d490d5b5c20a1cc046bdb600e2442263cf9876f8abc58690",
+  "originHash" : "61715b9887480c2718357919f5aedb56188044858ec85d364b06bb849302b503",
   "pins" : [
     {
       "identity" : "hdrhistogram-swift",
@@ -42,8 +42,8 @@
       "kind" : "remoteSourceControl",
       "location" : "git@github.com:OpenCow42/swift-leveldb.git",
       "state" : {
-        "branch" : "main",
-        "revision" : "4432f66a1dbe381b20e4aea06bf5a99c0df9ff6a"
+        "branch" : "1.23",
+        "revision" : "1d9531151b6dd6ef848fbeb176df4defda34d125"
       }
     },
     {

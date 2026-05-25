@@ -50,7 +50,7 @@ let packageDependencies: [Package.Dependency] = [
     ),
     .package(
         url: "git@github.com:OpenCow42/swift-leveldb.git",
-        branch: "main"
+        revision: "1.23"
     )
 ] + benchmarkDependencies
 
