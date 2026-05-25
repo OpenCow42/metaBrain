@@ -11,6 +11,11 @@ private struct StoredNote: Codable, Equatable, Sendable {
     var body: String
 }
 
+private struct StoredDocumentRecordFixture: Codable, Equatable, Sendable {
+    var document: StoredDocument
+    var retention: VersionRetentionPolicy
+}
+
 private func storeTestCodec<Value: Codable & Sendable>(
     options: MetaBrainStoreOptions,
     for type: Value.Type
@@ -85,7 +90,11 @@ private func storeTestCodec<Value: Codable & Sendable>(
     #expect(MetaBrainStoreError.documentNotFound("/missing").description == "Document not found: /missing.")
     #expect(MetaBrainStoreError.pathAlreadyExists(path, existingID: id).description == "Document path /taken already points to document doc-1.")
     #expect(MetaBrainStoreError.currentVersionCannotBeRemoved(id, sequence: 3).description == "Cannot remove current version 3 of document doc-1.")
-    #expect(MetaBrainStoreError.unsupportedRecordSchemaVersion(2).description == "Unsupported metaBrain record schema version: 2")
+    #expect(MetaBrainStoreError.unsupportedRecordSchemaVersion(0).description == "Unsupported metaBrain record schema version: 0.")
+    #expect(
+        MetaBrainStoreError.newerRecordSchemaVersion(2, operation: "update document").description
+            == "This metaBrain store contains record schema version 2, which is newer than this tool can safely modify during update document. Upgrade metaBrain to modify these records."
+    )
     #expect(MetaBrainStore.storeError(from: .operationFailed("boom"), path: "/tmp/store") == .operationFailed(message: "boom"))
     await #expect(throws: MetaBrainStoreError.operationFailed(message: "boom")) {
         try await MetaBrainStore.mapLevelDBErrors(path: "/tmp/store") {
@@ -295,11 +304,49 @@ private func storeTestCodec<Value: Codable & Sendable>(
     }
 }
 
+@Test func recordSchemaVersionParsesFutureVersions() throws {
+    let data = Data(#"{"schemaVersion":2,"payload":{"id":"note-1","title":"Future","body":"body"}}"#.utf8)
+    let envelope = try JSONDecoder().decode(MetaBrainRecordEnvelope<StoredNote>.self, from: data)
+
+    #expect(envelope.schemaVersion == .future(2))
+    #expect(envelope.schemaVersion.rawValue == 2)
+    #expect(envelope.schemaVersion.isFuture)
+    #expect(!envelope.schemaVersion.isCurrent)
+    #expect(!MetaBrainRecordSchemaVersion.current.isFuture)
+    #expect(String(describing: envelope.schemaVersion) == "2")
+    #expect(
+        [MetaBrainRecordSchemaVersion.future(2), .v1, .unsupported(0)].sorted()
+            == [.unsupported(0), .v1, .future(2)]
+    )
+}
+
+@Test func futureCompressedRecordSchemaVersionReadsCompatiblePayload() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let note = StoredNote(id: "note-1", title: "Future Schema", body: "body")
+        let futureEnvelope = MetaBrainRecordEnvelope(
+            schemaVersion: 2,
+            payload: note
+        )
+        let data = try storeTestCodec(options: store.options, for: StoredNote.self)
+            .encode(futureEnvelope)
+
+        try await store.writeRawValue(data, forKey: "test/future-schema")
+
+        let stored = try await store.compressedRecord(
+            forKey: "test/future-schema",
+            as: StoredNote.self
+        )
+
+        #expect(stored == note)
+    }
+}
+
 @Test func unsupportedCompressedRecordSchemaVersionThrows() async throws {
     try await withTemporaryStoreFixture { fixture in
         let store = try MetaBrainStore(url: fixture.storeURL)
         let invalidEnvelope = MetaBrainRecordEnvelope(
-            schemaVersion: 2,
+            schemaVersion: 0,
             payload: StoredNote(id: "note-1", title: "Bad Schema", body: "body")
         )
         let data = try storeTestCodec(options: store.options, for: StoredNote.self)
@@ -307,7 +354,7 @@ private func storeTestCodec<Value: Codable & Sendable>(
 
         try await store.writeRawValue(data, forKey: "test/bad-schema")
 
-        await #expect(throws: MetaBrainStoreError.unsupportedRecordSchemaVersion(2)) {
+        await #expect(throws: MetaBrainStoreError.unsupportedRecordSchemaVersion(0)) {
             try await store.compressedRecord(
                 forKey: "test/bad-schema",
                 as: StoredNote.self
@@ -316,7 +363,7 @@ private func storeTestCodec<Value: Codable & Sendable>(
     }
 }
 
-@Test func unsupportedVersionAndChunkSchemaVersionsThrow() async throws {
+@Test func futureVersionAndChunkSchemaVersionsReadCompatiblePayloads() async throws {
     try await withTemporaryStoreFixture { fixture in
         let store = try MetaBrainStore(url: fixture.storeURL)
         let id = try DocumentID(rawValue: "doc-1")
@@ -343,12 +390,132 @@ private func storeTestCodec<Value: Codable & Sendable>(
         try await store.writeRawValue(versionData, forKey: MetaBrainKeyspace.version(id: id, sequence: 1))
         try await store.writeRawValue(chunkData, forKey: MetaBrainKeyspace.currentChunk(id: id, ordinal: 0))
 
-        await #expect(throws: MetaBrainStoreError.unsupportedRecordSchemaVersion(2)) {
-            try await store.listVersions(of: .documentID(id))
+        #expect(try await store.listVersions(of: .documentID(id)) == [version])
+        #expect(try await store.currentChunks(for: id) == [chunk])
+    }
+}
+
+@Test func futureDocumentRecordsReadButMutationsRequireUpgrade() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let path = try DocumentPath("/future/document")
+        let created = try await store.putDocument(DocumentInput(
+            path: path,
+            body: "future document",
+            retention: .keepAll
+        ))
+        let futureRecord = StoredDocumentRecordFixture(document: created, retention: .keepAll)
+        let data = try storeTestCodec(options: store.options, for: StoredDocumentRecordFixture.self)
+            .encode(MetaBrainRecordEnvelope(schemaVersion: 2, payload: futureRecord))
+
+        try await store.writeRawValue(data, forKey: MetaBrainKeyspace.document(id: created.id))
+
+        let entry = try #require(try await store.getDocumentEntry(.path(path)))
+        #expect(entry.document == created)
+        #expect(entry.entryMetadata.access.readCount == 0)
+        #expect(try await store.listDirectory(path: try DocumentPath("/future")).map(\.documentID) == [created.id])
+
+        await #expect(throws: MetaBrainStoreError.newerRecordSchemaVersion(2, operation: "update document")) {
+            try await store.putDocument(DocumentInput(path: path, body: "cannot downgrade"))
         }
-        await #expect(throws: MetaBrainStoreError.unsupportedRecordSchemaVersion(2)) {
-            try await store.currentChunks(for: id)
+        await #expect(throws: MetaBrainStoreError.newerRecordSchemaVersion(2, operation: "delete document")) {
+            try await store.deleteDocument(.documentID(created.id))
         }
+    }
+}
+
+@Test func futureVersionRecordsReadButMutationsRequireUpgrade() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let path = try DocumentPath("/future/version")
+        let created = try await store.putDocument(DocumentInput(
+            path: path,
+            body: "v1",
+            retention: .keepAll
+        ))
+        _ = try await store.putDocument(DocumentInput(path: path, body: "v2"))
+        let version = try #require(
+            try await store.listVersions(of: .documentID(created.id)).first { $0.sequence == 1 }
+        )
+        let data = try storeTestCodec(options: store.options, for: DocumentVersion.self)
+            .encode(MetaBrainRecordEnvelope(schemaVersion: 2, payload: version))
+
+        try await store.writeRawValue(data, forKey: MetaBrainKeyspace.version(id: created.id, sequence: 1))
+
+        #expect(try await store.listVersions(of: .documentID(created.id)).map(\.sequence) == [1, 2])
+
+        await #expect(throws: MetaBrainStoreError.newerRecordSchemaVersion(2, operation: "prune versions")) {
+            try await store.prune(PruneRequest(reference: .documentID(created.id), policy: .keepMostRecent(1)))
+        }
+        await #expect(throws: MetaBrainStoreError.newerRecordSchemaVersion(2, operation: "remove version")) {
+            try await store.removeVersion(documentID: created.id, sequence: 1)
+        }
+        await #expect(throws: MetaBrainStoreError.newerRecordSchemaVersion(2, operation: "update document versions")) {
+            try await store.putDocument(DocumentInput(path: path, body: "v3"))
+        }
+    }
+}
+
+@Test func futureEntryMetadataReadsButIsNotOverwrittenByTrackedRead() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let path = try DocumentPath("/future/metadata")
+        let document = try await store.putDocument(DocumentInput(path: path, body: "metadata"))
+        let futureMetadata = DocumentEntryMetadata(
+            access: DocumentAccessCounts(readCount: 7, patchCount: 1, fullWriteCount: 2)
+        )
+        let data = try storeTestCodec(options: store.options, for: DocumentEntryMetadata.self)
+            .encode(MetaBrainRecordEnvelope(schemaVersion: 2, payload: futureMetadata))
+        let key = MetaBrainKeyspace.documentMetadata(id: document.id)
+
+        try await store.writeRawValue(data, forKey: key)
+
+        #expect(try await store.getDocument(.path(path)) == document)
+
+        let rawMetadata = try #require(try await store.rawValue(forKey: key))
+        let envelope = try storeTestCodec(options: store.options, for: DocumentEntryMetadata.self)
+            .decode(rawMetadata)
+        #expect(envelope.schemaVersion == .future(2))
+        #expect(envelope.payload.access.readCount == 7)
+
+        await #expect(throws: MetaBrainStoreError.newerRecordSchemaVersion(2, operation: "update document metadata")) {
+            try await store.putDocument(DocumentInput(path: path, body: "updated"))
+        }
+    }
+}
+
+@Test func updatingDocumentWithoutEntryMetadataSidecarRecreatesMetadata() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let path = try DocumentPath("/metadata/recreated")
+        let document = try await store.putDocument(DocumentInput(
+            path: path,
+            title: "Original",
+            body: "original",
+            tags: ["metadata"]
+        ))
+
+        try await store.deleteRawValue(
+            forKey: MetaBrainKeyspace.documentMetadata(id: document.id)
+        )
+
+        let updated = try await store.putDocument(DocumentInput(
+            path: path,
+            title: "Updated",
+            body: "updated",
+            tags: ["metadata"]
+        ))
+        let metadata = try #require(
+            try await store.entryMetadata(for: .documentID(document.id))
+        )
+
+        #expect(updated.currentVersion == 2)
+        #expect(metadata.featureFlags == ["body", "tags", "title"])
+        #expect(metadata.access == DocumentAccessCounts(
+            readCount: 0,
+            patchCount: 0,
+            fullWriteCount: 1
+        ))
     }
 }
 
@@ -764,6 +931,8 @@ private func storeTestCodec<Value: Codable & Sendable>(
     try await withTemporaryStoreFixture { fixture in
         let store = try MetaBrainStore(url: fixture.storeURL)
         let missingPath = try DocumentPath("/missing/source")
+        let missingID = try DocumentID(rawValue: "missing-id")
+        let missingURL = try #require(URL(string: "https://example.com/missing"))
         let destinationPath = try DocumentPath("/missing/destination")
 
         do {
@@ -773,6 +942,13 @@ private func storeTestCodec<Value: Codable & Sendable>(
             #expect(error == .documentNotFound(missingPath.rawValue))
         } catch {
             Issue.record("Expected MetaBrainStoreError.documentNotFound, got \(error).")
+        }
+
+        await #expect(throws: MetaBrainStoreError.documentNotFound(missingID.rawValue)) {
+            try await store.moveDocument(.documentID(missingID), to: destinationPath)
+        }
+        await #expect(throws: MetaBrainStoreError.documentNotFound(missingURL.absoluteString)) {
+            try await store.moveDocument(.externalURL(missingURL), to: destinationPath)
         }
 
         #expect(try await store.getDocument(.path(destinationPath)) == nil)

@@ -15,6 +15,32 @@ The useful shape of the dependency is:
 
 The core store should use ZSTD-compressed Codable JSON envelopes for document records, version records, and chunk records. Index keys and tiny index values should stay raw and ordered so LevelDB can scan them efficiently.
 
+## Store Format Compatibility
+
+Every compressed record envelope carries a schema version. The current writable
+record schema is `1`. Schema values greater than `1` are treated as future
+versions rather than hard decode failures, so older tools can keep reading
+records when the key layout and Codable payload still match their known model.
+Unsupported schema values that are not readable by this tool should still
+surface as explicit store errors.
+
+Forward compatibility is intentionally read-biased:
+
+- Read-only operations should decode future-version envelopes and return their
+  payload when the current types can decode it.
+- Mutations must require current-version envelopes for every record they would
+  overwrite or delete, including document records, entry metadata, retained
+  versions, current chunks, and tree records.
+- Tracking reads must not rewrite future-version metadata sidecars just to bump
+  access counters. They should return the decoded metadata unchanged.
+- Mutation failures caused by future-version records should say that upgrading
+  `metaBrain` is required, rather than reporting generic corruption.
+
+This policy lets an older `mb` inspect newer stores where possible without
+silently downgrading data it does not fully understand. It does not guarantee
+that every future store can be read by older binaries; future releases may add
+required fields or key families that old code cannot decode.
+
 ## Public Store Shape
 
 The core API should expose an async reference type:
