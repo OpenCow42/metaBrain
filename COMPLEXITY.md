@@ -189,21 +189,28 @@ rows below, plus bounded HTTP request decoding and response encoding. Patch
 requests carry the diff body directly in JSON, so the daemon never reads a
 server-side patch file for this endpoint.
 
-### `mb --server`
+### Daemon-backed CLI and auto probe
 
-Every store-backed `mb` command can opt into an explicit daemon with
-`--server <socket-or-url>`, either before the command name or on the command itself.
-In that mode the CLI does not open LevelDB. It validates command-line options,
-performs client-side file work such as `--body-file`, `--patch-file`, and
-`--output-dir`, sends compact JSON over the Unix socket or loopback HTTP endpoint,
-decodes the response, and formats output locally. The default loopback endpoint is
-`127.0.0.1:6374`, with `6374` chosen as a leetspeak `META` port.
+Default-store-backed `mb` commands first make a short `/health` probe to
+`http://127.0.0.1:6374`. A healthy response selects daemon-backed execution;
+connection refusal, timeout, or an invalid health payload falls back to direct
+LevelDB access. Commands with explicit `--store` skip this probe unless the user
+passes `--server auto`, while `--no-server` disables daemon detection entirely.
+Every store-backed command can still force a daemon with `--server
+<socket-or-url>`, either before the command name or on the command itself. The
+default loopback endpoint is `127.0.0.1:6374`, with `6374` chosen as a
+leetspeak `META` port.
 
-The daemon-backed command complexity is therefore the local CLI preprocessing
-and output cost plus the matching `/v1/...` endpoint cost described above. The
-store scan/write behavior remains the same as the direct command because both
-paths delegate to `MetaBrainCore`; the process-level difference is that LevelDB
-is already owned by the daemon.
+In daemon-backed mode the CLI does not open LevelDB. It validates command-line
+options, performs client-side file work such as `--body-file`, `--patch-file`,
+and `--output-dir`, sends compact JSON over the Unix socket or loopback HTTP
+endpoint, decodes the response, and formats output locally.
+
+The probe is O(1) bounded local I/O. The selected command complexity is
+therefore the local CLI preprocessing and output cost plus the matching
+`/v1/...` endpoint cost described above. The store scan/write behavior remains
+the same as the direct command because both paths delegate to `MetaBrainCore`;
+the process-level difference is that LevelDB is already owned by the daemon.
 
 ### `init`
 

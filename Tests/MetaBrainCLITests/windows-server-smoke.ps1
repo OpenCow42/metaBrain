@@ -113,18 +113,25 @@ try {
     $Init = & $Mb --server $Server init
     Assert-Contains -Text $Init -Needle '"status":"initialized"' -Label "init"
 
-    $Put = & $Mb --server $Server put /windows/smoke "windows daemon memory" --title Windows --tag smoke --format json
+    $AutoInit = & $Mb --server auto init
+    Assert-Contains -Text $AutoInit -Needle '"status":"initialized"' -Label "auto init"
+
+    $Put = & $Mb put /windows/smoke "windows daemon memory" --title Windows --tag smoke --format json
     Assert-Contains -Text $Put -Needle '"status":"created"' -Label "put"
 
-    $Get = & $Mb --server $Server get /windows/smoke --format json
+    $Get = & $Mb get /windows/smoke --format json
     Assert-Contains -Text $Get -Needle '"body":"windows daemon memory"' -Label "get"
     Assert-Contains -Text $Get -Needle '"tags":["smoke"]' -Label "get"
 
-    $Search = & $Mb --server $Server search windows --format jsonl
+    $Search = & $Mb search windows --format jsonl
     Assert-Contains -Text $Search -Needle '"path":"/windows/smoke"' -Label "search"
 
-    $Delete = & $Mb --server $Server delete /windows/smoke --format json
+    $Delete = & $Mb delete /windows/smoke --format json
     Assert-Contains -Text $Delete -Needle '"deleted":true' -Label "delete"
+
+    $NoServerStore = Join-Path $TmpDir "no-server-store.leveldb"
+    $NoServerInit = & $Mb --no-server init --store $NoServerStore
+    Assert-Contains -Text $NoServerInit -Needle '"status":"initialized"' -Label "no-server init"
 
     Write-Output "windows server smoke passed"
     exit 0

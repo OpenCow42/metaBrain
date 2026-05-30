@@ -181,13 +181,19 @@ workspace store, install a user service, or start `mbd`. Use
 `mbd service print --user` or `mbd service install --user --config <path>` when
 you want an inspectable user LaunchAgent or systemd unit.
 
-The `mb` CLI can opt into an explicit daemon instead of opening LevelDB
-directly:
+For the default store, store-backed `mb` commands automatically make a short
+health probe to `http://127.0.0.1:6374`. If a healthy daemon is already
+listening there, the command uses it; if the probe is refused or times out, the
+command opens LevelDB directly as before. Commands with an explicit `--store`
+stay direct unless daemon mode is requested.
 
 ```bash
+mb put /notes/today "uses a healthy default daemon when one is running"
+mb --server auto search "probe the default daemon endpoint explicitly"
 mb --server ~/.metabrain/mbd.sock put /notes/today "daemon-backed note"
 mb --server ~/.metabrain/mbd.sock search "daemon-backed"
 mb --server http://127.0.0.1:6374 search "daemon-backed"
+mb --no-server search "force direct LevelDB access"
 ```
 
 `--body-file`, `--patch-file`, and `--output-dir` remain client-side CLI

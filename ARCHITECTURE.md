@@ -69,12 +69,15 @@ LevelDB allows concurrent access from multiple threads inside one process, but a
 
 The v1 model is:
 
-- CLI: each store-backed command opens the store directly by default, performs
-  one operation, and exits. With explicit `--server <socket-or-url>`, the CLI stays
-  thin by reading client-side files, sending JSON DTOs over the local daemon
-  socket or loopback HTTP endpoint, formatting the response, and avoiding any
-  direct LevelDB open. The default loopback endpoint is `127.0.0.1:6374`, with
-  `6374` chosen as a leetspeak `META` port.
+- CLI: each default-store-backed command first makes a short health probe to
+  `http://127.0.0.1:6374`. If a healthy daemon is already listening there, the
+  CLI stays thin by reading client-side files, sending JSON DTOs over loopback
+  HTTP, formatting the response, and avoiding any direct LevelDB open. If the
+  probe is refused or times out, the CLI opens the store directly, performs one
+  operation, and exits. Commands with explicit `--store` stay direct unless
+  daemon mode is requested with `--server <socket-or-url>` or `--server auto`;
+  `--no-server` disables the probe. The default loopback endpoint is
+  `127.0.0.1:6374`, with `6374` chosen as a leetspeak `META` port.
 - Daemon: `mbd serve` opens one configured store at startup and routes local
   HTTP/1.1 requests through `MetaBrainServerSupport`, keeping business behavior
   in `MetaBrainCore`. Store-backed routes cover the current read and mutation

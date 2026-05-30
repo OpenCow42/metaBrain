@@ -45,8 +45,10 @@ struct MetaBrainCommand: AsyncParsableCommand {
           mb remove-version /notes/today --sequence 1
 
         The default store is .metabrain/store.leveldb. Pass --store to any command
-        when a workspace uses a different location. Pass --server to any store-backed
-        command, or before the command name, to talk to an explicit local daemon.
+        when a workspace uses a different location. Store-backed commands auto-use a
+        healthy local daemon at http://127.0.0.1:6374 when one is already running.
+        Pass --server to force a daemon endpoint, or --no-server to force direct
+        LevelDB access.
         """
 
     static let configuration = CommandConfiguration(
@@ -78,14 +80,37 @@ struct MetaBrainCommand: AsyncParsableCommand {
 }
 
 struct StoreOptions: ParsableArguments {
+    static let defaultLoopbackServer = "http://127.0.0.1:\(ServerServeConfiguration.defaultLoopbackPort)"
+    static let autoProbeTimeoutMilliseconds = 50
+
     @Option(help: "Path to the LevelDB-backed metaBrain store.")
     var store: String = ".metabrain/store.leveldb"
 
-    @Option(help: "Unix socket path, or loopback HTTP URL such as http://127.0.0.1:6374, for explicit daemon mode.")
+    @Option(help: "Unix socket path, loopback HTTP URL such as http://127.0.0.1:6374, or auto for daemon mode.")
     var server: String?
 
+    @Flag(help: "Skip daemon auto-detection and open the LevelDB store directly.")
+    var noServer = false
+
     func serverClient() -> MetaBrainServerClient? {
-        server.map { MetaBrainServerClient(socketPath: $0) }
+        guard !noServer else {
+            return nil
+        }
+        if let server, server != "auto" {
+            return MetaBrainServerClient(socketPath: server)
+        }
+        guard server == "auto" || store == ".metabrain/store.leveldb" else {
+            return nil
+        }
+
+        let probe = MetaBrainServerClient(
+            socketPath: Self.defaultLoopbackServer,
+            requestTimeoutMilliseconds: Self.autoProbeTimeoutMilliseconds
+        )
+        guard (try? probe.health()) == ServerHealthPayload() else {
+            return nil
+        }
+        return MetaBrainServerClient(socketPath: Self.defaultLoopbackServer)
     }
 
     func openStore() throws -> MetaBrainStore {
@@ -1517,17 +1542,27 @@ private let daemonBackedCommands: Set<String> = [
 
 private func cliArgumentsWithGlobalServer(_ arguments: [String]) -> [String] {
     var result = arguments
-    guard let optionIndex = result.firstIndex(of: "--server"), optionIndex + 1 < result.endIndex else {
-        return result
+    var movedOptions: [String] = []
+
+    if let optionIndex = result.firstIndex(of: "--no-server") {
+        result.remove(at: optionIndex)
+        movedOptions.append("--no-server")
     }
 
-    let server = result.remove(at: optionIndex + 1)
-    result.remove(at: optionIndex)
+    if let optionIndex = result.firstIndex(of: "--server"), optionIndex + 1 < result.endIndex {
+        let server = result.remove(at: optionIndex + 1)
+        result.remove(at: optionIndex)
+        movedOptions.append(contentsOf: ["--server", server])
+    }
+
+    guard !movedOptions.isEmpty else {
+        return result
+    }
     guard let commandIndex = result.firstIndex(where: { daemonBackedCommands.contains($0) }) else {
         return result
     }
 
-    result.insert(contentsOf: ["--server", server], at: commandIndex + 1)
+    result.insert(contentsOf: movedOptions, at: commandIndex + 1)
     return result
 }
 

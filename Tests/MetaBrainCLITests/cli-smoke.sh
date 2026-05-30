@@ -361,7 +361,7 @@ if "${METABRAIN[@]}" init --unknown-option 2>"$TMP_DIR/init-invalid.err"; then
     echo "Expected invalid init option to fail" >&2
     exit 1
 fi
-rg -F -q 'Usage: mb init [--store <store>] [--server <server>] [--format <format>]' "$TMP_DIR/init-invalid.err"
+rg -F -q 'Usage: mb init [--store <store>] [--server <server>] [--no-server] [--format <format>]' "$TMP_DIR/init-invalid.err"
 
 if "${METABRAIN[@]}" search query --limit 0 2>"$TMP_DIR/search-invalid.err"; then
     echo "Expected invalid search limit to fail" >&2
@@ -877,7 +877,7 @@ if "${METABRAIN[@]}" get --store "$STORE" --id abc --path /notes/today 2>"$TMP_D
     exit 1
 fi
 rg -q 'Provide exactly one of --id, --path, or a positional path' "$TMP_DIR/double-reference.err"
-rg -F -q 'Usage: mb get [--store <store>] [--server <server>] [--id <id>] [--path <path>] [<path>] [--format <format>]' "$TMP_DIR/double-reference.err"
+rg -F -q 'Usage: mb get [--store <store>] [--server <server>] [--no-server] [--id <id>] [--path <path>] [<path>] [--format <format>]' "$TMP_DIR/double-reference.err"
 
 if "${METABRAIN[@]}" get --store "$STORE" --path /notes/today /notes/file 2>"$TMP_DIR/path-and-positional-reference.err"; then
     echo "Expected option path plus positional path to fail" >&2
@@ -981,28 +981,28 @@ if "${METABRAIN[@]}" versions --store "$STORE" 2>"$TMP_DIR/missing-version-refer
     exit 1
 fi
 rg -q 'Provide exactly one of --id, --path, or a positional path' "$TMP_DIR/missing-version-reference.err"
-rg -F -q 'Usage: mb versions [--store <store>] [--server <server>] [--id <id>] [--path <path>] [<path>] [--format <format>]' "$TMP_DIR/missing-version-reference.err"
+rg -F -q 'Usage: mb versions [--store <store>] [--server <server>] [--no-server] [--id <id>] [--path <path>] [<path>] [--format <format>]' "$TMP_DIR/missing-version-reference.err"
 
 if "${METABRAIN[@]}" delete --store "$STORE" 2>"$TMP_DIR/missing-delete-reference.err"; then
     echo "Expected missing delete reference options to fail" >&2
     exit 1
 fi
 rg -q 'Provide exactly one of --id, --path, or a positional path' "$TMP_DIR/missing-delete-reference.err"
-rg -F -q 'Usage: mb delete [--store <store>] [--server <server>] [--id <id>] [--path <path>] [<path>] [--format <format>]' "$TMP_DIR/missing-delete-reference.err"
+rg -F -q 'Usage: mb delete [--store <store>] [--server <server>] [--no-server] [--id <id>] [--path <path>] [<path>] [--format <format>]' "$TMP_DIR/missing-delete-reference.err"
 
 if "${METABRAIN[@]}" remove-version --store "$STORE" --sequence 1 2>"$TMP_DIR/missing-remove-version-reference.err"; then
     echo "Expected missing remove-version reference options to fail" >&2
     exit 1
 fi
 rg -q 'Provide exactly one of --id, --path, or a positional path' "$TMP_DIR/missing-remove-version-reference.err"
-rg -F -q 'Usage: mb remove-version [--store <store>] [--server <server>] [--id <id>] [--path <path>] [<path>] [--format <format>] --sequence <sequence>' "$TMP_DIR/missing-remove-version-reference.err"
+rg -F -q 'Usage: mb remove-version [--store <store>] [--server <server>] [--no-server] [--id <id>] [--path <path>] [<path>] [--format <format>] --sequence <sequence>' "$TMP_DIR/missing-remove-version-reference.err"
 
 if "${METABRAIN[@]}" remove-version --store "$STORE" /versions/remove-json 2>"$TMP_DIR/missing-remove-version-sequence.err"; then
     echo "Expected missing remove-version sequence to fail" >&2
     exit 1
 fi
 rg -q 'Missing expected (argument|option).*--sequence <sequence>' "$TMP_DIR/missing-remove-version-sequence.err"
-rg -F -q 'Usage: mb remove-version [--store <store>] [--server <server>] [--id <id>] [--path <path>] [<path>] [--format <format>] --sequence <sequence>' "$TMP_DIR/missing-remove-version-sequence.err"
+rg -F -q 'Usage: mb remove-version [--store <store>] [--server <server>] [--no-server] [--id <id>] [--path <path>] [<path>] [--format <format>] --sequence <sequence>' "$TMP_DIR/missing-remove-version-sequence.err"
 
 if "${METABRAIN[@]}" remove-version --store "$STORE" /versions/remove-json --sequence 0 2>"$TMP_DIR/zero-remove-version-sequence.err"; then
     echo "Expected zero remove-version sequence to fail" >&2
@@ -1015,14 +1015,14 @@ if "${METABRAIN[@]}" prune --store "$STORE" --path /notes/today 2>"$TMP_DIR/miss
     exit 1
 fi
 rg -q 'Provide one of --keep-all, --keep-last, or --keep-within' "$TMP_DIR/missing-retention.err"
-rg -F -q 'Usage: mb prune [--store <store>] [--server <server>] [--id <id>] [--path <path>] [<path>] [--keep-all] [--keep-last <keep-last>] [--keep-within <keep-within>] [--format <format>]' "$TMP_DIR/missing-retention.err"
+rg -F -q 'Usage: mb prune [--store <store>] [--server <server>] [--no-server] [--id <id>] [--path <path>] [<path>] [--keep-all] [--keep-last <keep-last>] [--keep-within <keep-within>] [--format <format>]' "$TMP_DIR/missing-retention.err"
 
 if "${METABRAIN[@]}" get --store "$STORE" 2>"$TMP_DIR/missing-reference.err"; then
     echo "Expected missing reference options to fail" >&2
     exit 1
 fi
 rg -q 'Provide exactly one of --id, --path, or a positional path' "$TMP_DIR/missing-reference.err"
-rg -F -q 'Usage: mb get [--store <store>] [--server <server>] [--id <id>] [--path <path>] [<path>] [--format <format>]' "$TMP_DIR/missing-reference.err"
+rg -F -q 'Usage: mb get [--store <store>] [--server <server>] [--no-server] [--id <id>] [--path <path>] [<path>] [--format <format>]' "$TMP_DIR/missing-reference.err"
 
 SERVER_STORE="$TMP_DIR/server-store.leveldb"
 SERVER_SOCKET="$TMP_DIR/mbd.sock"
@@ -1125,6 +1125,55 @@ rg -F -q 'server returned HTTP 404 document_not_found' "$TMP_DIR/server-get-dele
 "${SERVER_MB[@]}" put /daemon/remove-version 'remove daemon v2' --keep-all --format text | rg -q '^version: 2$'
 SERVER_REMOVE_VERSION_JSON="$("${SERVER_MB[@]}" remove-version /daemon/remove-version --sequence 1 --format json)"
 assert_remove_version_json "$SERVER_REMOVE_VERSION_JSON" /daemon/remove-version true 1
+
+kill "$daemon_server_pid" 2>/dev/null || true
+wait "$daemon_server_pid" 2>/dev/null || true
+daemon_server_pid=""
+
+AUTO_SERVER_STORE="$TMP_DIR/auto-server-store.leveldb"
+"${METABRAIN_DAEMON[@]}" serve --store "$AUTO_SERVER_STORE" --host 127.0.0.1 --log-level error >"$TMP_DIR/mbd-auto.out" 2>"$TMP_DIR/mbd-auto.err" &
+daemon_server_pid="$!"
+AUTO_SERVER_PORT=""
+for _ in $(seq 1 400); do
+    if [[ -s "$TMP_DIR/mbd-auto.out" ]]; then
+        AUTO_SERVER_PORT="$(sed -n 's/^mbd serving on loopback http 127\.0\.0\.1:\([0-9][0-9]*\)$/\1/p' "$TMP_DIR/mbd-auto.out" | head -n 1)"
+        if [[ -n "$AUTO_SERVER_PORT" ]]; then
+            break
+        fi
+    fi
+    if ! kill -0 "$daemon_server_pid" 2>/dev/null; then
+        echo "Auto daemon exited early." >&2
+        cat "$TMP_DIR/mbd-auto.err" >&2
+        exit 1
+    fi
+    sleep 0.05
+done
+if [[ "$AUTO_SERVER_PORT" != "6374" ]]; then
+    echo "Expected auto daemon to use default port 6374, got: ${AUTO_SERVER_PORT:-<none>}" >&2
+    cat "$TMP_DIR/mbd-auto.out" >&2 || true
+    cat "$TMP_DIR/mbd-auto.err" >&2 || true
+    exit 1
+fi
+
+AUTO_INIT_JSON="$("${METABRAIN[@]}" --server auto init)"
+AUTO_EXPECTED_INIT_JSON="{\"operation\":\"init\",\"status\":\"initialized\",\"storePath\":\"$AUTO_SERVER_STORE\"}"
+if [[ "$AUTO_INIT_JSON" != "$AUTO_EXPECTED_INIT_JSON" ]]; then
+    echo "Expected auto daemon init JSON output, got: $AUTO_INIT_JSON" >&2
+    exit 1
+fi
+AUTO_PUT_JSON="$("${METABRAIN[@]}" put /auto/today 'auto daemon memory' --tag auto)"
+assert_put_json "$AUTO_PUT_JSON" /auto/today created 1
+AUTO_GET_JSON="$("${METABRAIN[@]}" get /auto/today)"
+assert_get_json "$AUTO_GET_JSON" /auto/today 'auto daemon memory' 1
+printf '%s\n' "$AUTO_GET_JSON" | rg -F -q '"tags":["auto"]'
+
+NO_SERVER_STORE="$TMP_DIR/no-server-store.leveldb"
+NO_SERVER_INIT_JSON="$("${METABRAIN[@]}" --no-server init --store "$NO_SERVER_STORE")"
+NO_SERVER_EXPECTED_INIT_JSON="{\"operation\":\"init\",\"status\":\"initialized\",\"storePath\":\"$NO_SERVER_STORE\"}"
+if [[ "$NO_SERVER_INIT_JSON" != "$NO_SERVER_EXPECTED_INIT_JSON" ]]; then
+    echo "Expected --no-server init JSON output, got: $NO_SERVER_INIT_JSON" >&2
+    exit 1
+fi
 
 kill "$daemon_server_pid" 2>/dev/null || true
 wait "$daemon_server_pid" 2>/dev/null || true

@@ -32,11 +32,19 @@ public struct MetaBrainServerClient: Sendable {
     private let codec: ServerHTTPCodec
     private let transport: @Sendable (Data) throws -> Data
 
-    public init(socketPath: String, codec: ServerHTTPCodec = ServerHTTPCodec()) {
+    public init(
+        socketPath: String,
+        codec: ServerHTTPCodec = ServerHTTPCodec(),
+        requestTimeoutMilliseconds: Int? = nil
+    ) {
         self.codec = codec
         if let endpoint = Self.loopbackHTTPEndpoint(from: socketPath) {
             self.transport = { requestData in
-                try Self.loopbackHTTPRoundTrip(endpoint: endpoint, requestData: requestData)
+                try Self.loopbackHTTPRoundTrip(
+                    endpoint: endpoint,
+                    requestData: requestData,
+                    requestTimeoutMilliseconds: requestTimeoutMilliseconds
+                )
             }
         } else {
             let expandedPath = NSString(string: socketPath).expandingTildeInPath
@@ -72,6 +80,10 @@ public struct MetaBrainServerClient: Sendable {
             body: MetaBrainJSON.encoder().encode(request),
             response: response
         )
+    }
+
+    public func health() throws -> ServerHealthPayload {
+        try request(method: .get, path: "/health", body: Data(), response: ServerHealthPayload.self)
     }
 
     private func request<Response: Decodable & Sendable>(
@@ -126,6 +138,36 @@ private struct ServerLoopbackHTTPEndpoint: Sendable {
 
 #if canImport(Darwin) || canImport(Glibc)
 extension MetaBrainServerClient {
+    private static func loopbackHTTPRoundTrip(
+        endpoint: ServerLoopbackHTTPEndpoint,
+        requestData: Data,
+        requestTimeoutMilliseconds: Int?
+    ) throws -> Data {
+        let descriptor = socket(AF_INET, clientSocketStreamType, 0)
+        guard descriptor >= 0 else { throw ServerClientError.socketOperationFailed("socket") }
+        defer { closeSocket(descriptor) }
+        try configureTimeout(requestTimeoutMilliseconds, for: descriptor)
+
+        var address = sockaddr_in()
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = UInt16(endpoint.port).bigEndian
+        address.sin_addr = in_addr(s_addr: UInt32(INADDR_LOOPBACK).bigEndian)
+
+        try withUnsafePointer(to: &address) { pointer in
+            try pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { socketAddress in
+                guard connect(
+                    descriptor,
+                    socketAddress,
+                    socklen_t(MemoryLayout<sockaddr_in>.size)
+                ) == 0 else { throw ServerClientError.socketOperationFailed("connect") }
+            }
+        }
+
+        try writeAll(requestData, to: descriptor)
+        _ = shutdown(descriptor, Int32(SHUT_WR))
+        return try readAll(from: descriptor)
+    }
+
     private static func unixSocketRoundTrip(path: String, requestData: Data) throws -> Data {
         let descriptor = try openUnixSocket(path: path)
         defer { closeSocket(descriptor) }
@@ -189,8 +231,32 @@ extension MetaBrainServerClient {
         }
         return data
     }
+
+    private static func configureTimeout(_ milliseconds: Int?, for descriptor: Int32) throws {
+        guard let milliseconds else {
+            return
+        }
+        let clamped = max(1, milliseconds)
+        var timeout = timeval()
+        timeout.tv_sec = .init(clamped / 1000)
+        timeout.tv_usec = .init((clamped % 1000) * 1000)
+        guard setsockopt(
+            descriptor,
+            SOL_SOCKET,
+            SO_RCVTIMEO,
+            &timeout,
+            socklen_t(MemoryLayout<timeval>.size)
+        ) == 0 else { throw ServerClientError.socketOperationFailed("setsockopt(SO_RCVTIMEO)") }
+        guard setsockopt(
+            descriptor,
+            SOL_SOCKET,
+            SO_SNDTIMEO,
+            &timeout,
+            socklen_t(MemoryLayout<timeval>.size)
+        ) == 0 else { throw ServerClientError.socketOperationFailed("setsockopt(SO_SNDTIMEO)") }
+    }
 }
-#else
+#elseif !canImport(Darwin) && !canImport(Glibc)
 extension MetaBrainServerClient {
     private static func unixSocketRoundTrip(path: String, requestData: Data) throws -> Data {
         _ = path
@@ -202,11 +268,16 @@ extension MetaBrainServerClient {
 
 #if canImport(WinSDK)
 extension MetaBrainServerClient {
-    private static func loopbackHTTPRoundTrip(endpoint: ServerLoopbackHTTPEndpoint, requestData: Data) throws -> Data {
+    private static func loopbackHTTPRoundTrip(
+        endpoint: ServerLoopbackHTTPEndpoint,
+        requestData: Data,
+        requestTimeoutMilliseconds: Int?
+    ) throws -> Data {
         try withClientWinsock {
             let descriptor = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP.rawValue)
             guard descriptor != INVALID_SOCKET else { throw ServerClientError.socketOperationFailed("socket") }
             defer { closeSocket(descriptor) }
+            try configureTimeout(requestTimeoutMilliseconds, for: descriptor)
 
             var address = sockaddr_in()
             address.sin_family = ADDRESS_FAMILY(AF_INET)
@@ -256,12 +327,36 @@ extension MetaBrainServerClient {
         }
         return data
     }
+
+    private static func configureTimeout(_ milliseconds: Int?, for descriptor: SOCKET) throws {
+        guard let milliseconds else {
+            return
+        }
+        let timeout = DWORD(max(1, milliseconds))
+        try withUnsafePointer(to: timeout) { pointer in
+            let result = pointer.withMemoryRebound(to: CChar.self, capacity: MemoryLayout<DWORD>.size) { option in
+                setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, option, Int32(MemoryLayout<DWORD>.size))
+            }
+            guard result == 0 else { throw ServerClientError.socketOperationFailed("setsockopt(SO_RCVTIMEO)") }
+        }
+        try withUnsafePointer(to: timeout) { pointer in
+            let result = pointer.withMemoryRebound(to: CChar.self, capacity: MemoryLayout<DWORD>.size) { option in
+                setsockopt(descriptor, SOL_SOCKET, SO_SNDTIMEO, option, Int32(MemoryLayout<DWORD>.size))
+            }
+            guard result == 0 else { throw ServerClientError.socketOperationFailed("setsockopt(SO_SNDTIMEO)") }
+        }
+    }
 }
-#else
+#elseif !canImport(Darwin) && !canImport(Glibc)
 extension MetaBrainServerClient {
-    private static func loopbackHTTPRoundTrip(endpoint: ServerLoopbackHTTPEndpoint, requestData: Data) throws -> Data {
+    private static func loopbackHTTPRoundTrip(
+        endpoint: ServerLoopbackHTTPEndpoint,
+        requestData: Data,
+        requestTimeoutMilliseconds: Int?
+    ) throws -> Data {
         _ = endpoint
         _ = requestData
+        _ = requestTimeoutMilliseconds
         throw ServerClientError.socketOperationFailed("loopback HTTP is unavailable on this platform")
     }
 }
