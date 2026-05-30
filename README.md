@@ -213,6 +213,14 @@ swift build -c release --product mb --product mbd
 Tests/MetaBrainCLITests/cli-server-performance.sh
 ```
 
+For daemon-backed concurrent CLI read/write coverage, build the debug binaries
+and run:
+
+```bash
+swift build --product mb --product mbd
+Tests/MetaBrainCLITests/cli-server-concurrency.sh
+```
+
 `--body-file`, `--patch-file`, and `--output-dir` remain client-side CLI
 features. The daemon receives JSON request bodies and never reads or writes
 those paths on behalf of a client.
