@@ -167,6 +167,14 @@ extension MetaBrainServerClient {
         return data
     }
 }
+#else
+extension MetaBrainServerClient {
+    private static func unixSocketRoundTrip(path: String, requestData: Data) throws -> Data {
+        _ = path
+        _ = requestData
+        throw ServerClientError.socketOperationFailed("unix sockets are unavailable on this platform")
+    }
+}
 #endif
 
 #if canImport(Darwin) || canImport(Glibc)
