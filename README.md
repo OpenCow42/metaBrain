@@ -27,6 +27,8 @@ brew tap OpenCow42/tap && brew install mb
 The Homebrew package installs both `mb` and `mbd`. It does not start the daemon
 automatically.
 
+To run `mbd` automatically at login, see [Daemon Autostart](docs/daemon-autostart.md).
+
 ## Install On Ubuntu
 
 Install from the public OpenCow42 APT repository on Ubuntu 24.04 or 26.04.
@@ -50,6 +52,9 @@ sudo apt install metabrain
 
 The current Ubuntu package is published for `amd64`. The repository uses
 `trusted=yes` until signed APT metadata is available.
+
+To run `mbd` automatically with a user systemd unit, see
+[Daemon Autostart](docs/daemon-autostart.md).
 
 ## Why Try It
 
@@ -197,14 +202,9 @@ loopback port because it reads as `META` in leetspeak and avoids commonly used
 mainstream service ports.
 
 Package managers install the daemon binary passively; they do not create a
-workspace store, install a user service, or start `mbd`. Use
-`mbd service print --user` to inspect the generated LaunchAgent or systemd unit,
-`mbd service install --user --config <path>` to install it, and `mbd service
-install --user --config <path> --now` to install, enable, and start it. After
-installation, `mbd service start --user`, `mbd service stop --user`, and `mbd
-service status --user` wrap the platform user service manager. On Linux, the
-service runs under `systemctl --user`; enable lingering with `loginctl
-enable-linger "$USER"` if the daemon should survive after logout.
+workspace store, install a user service, or start `mbd`. See
+[Daemon Autostart](docs/daemon-autostart.md) for macOS LaunchAgent, Linux
+systemd user service, and Windows Task Scheduler setup.
 
 For the selected store, store-backed `mb` commands automatically make a short
 health probe to `http://127.0.0.1:6374`. If a healthy daemon is already
