@@ -10,7 +10,7 @@ import Testing
     #expect(response.statusCode == 200)
     #expect(response.headers["Content-Type"] == "application/json; charset=utf-8")
     #expect(response.headers["Cache-Control"] == "no-store")
-    #expect(response.bodyText == #"{"service":"mbd","status":"ok"}"#)
+    #expect(response.bodyText == #"{"service":"mbd","status":"ok","version":"\#(MetaBrainVersion.currentSoftwareTag())"}"#)
     #expect(try MetaBrainJSON.decoder().decode(ServerHealthPayload.self, from: response.body) == ServerHealthPayload())
 }
 
@@ -27,7 +27,9 @@ import Testing
     let response = await ServerRouter().route(ServerHTTPRequest(method: .get, path: "/v1/version"))
 
     #expect(response.statusCode == 200)
-    #expect(try MetaBrainJSON.decoder().decode(VersionOutput.self, from: response.body).releaseCheck == nil)
+    let version = try MetaBrainJSON.decoder().decode(VersionOutput.self, from: response.body)
+    #expect(version.currentTag == MetaBrainVersion.currentSoftwareTag())
+    #expect(version.releaseCheck == nil)
 
     let wrongMethod = await ServerRouter().route(ServerHTTPRequest(method: .post, path: "/v1/version"))
     #expect(wrongMethod.statusCode == 405)
@@ -427,7 +429,7 @@ import Testing
         #expect(response.headers["Cache-Control"] == "no-store")
         if index.isMultiple(of: 2) {
             #expect(response.statusCode == 200)
-            #expect(response.bodyText == #"{"service":"mbd","status":"ok"}"#)
+            #expect(response.bodyText == #"{"service":"mbd","status":"ok","version":"\#(MetaBrainVersion.currentSoftwareTag())"}"#)
         } else {
             #expect(response.statusCode == 404)
             #expect(response.bodyText == #"{"error":"not_found","message":"No server route exists for POST /v1/run."}"#)

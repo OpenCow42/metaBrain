@@ -11,7 +11,7 @@ import FoundationNetworking
     let output = VersionOutput(currentTag: "9.8.7", releaseCheck: nil)
     let encoded = try encode(output)
 
-    #expect(encoded == #"{"currentTag":"9.8.7","releaseCheck":null}"#)
+    #expect(encoded == #"{"currentTag":"9.8.7","releaseCheck":null,"server":null}"#)
 
     let decoded = try MetaBrainJSON.decoder().decode(VersionOutput.self, from: Data(encoded.utf8))
     #expect(decoded == output)
@@ -174,7 +174,7 @@ import FoundationNetworking
     #expect(request.headers == [:])
     #expect(request.body.isEmpty)
     #expect(response.bodyText == "ok")
-    #expect(ServerHealthPayload() == ServerHealthPayload(service: "mbd", status: "ok"))
+    #expect(ServerHealthPayload(version: "1.2.3") == ServerHealthPayload(service: "mbd", status: "ok", version: "1.2.3"))
     #expect(ServerErrorPayload(error: "invalid_request", message: "path is required.").message == "path is required.")
 }
 

@@ -107,7 +107,7 @@ struct StoreOptions: ParsableArguments {
             socketPath: Self.defaultLoopbackServer,
             requestTimeoutMilliseconds: Self.autoProbeTimeoutMilliseconds
         )
-        guard (try? probe.health()) == ServerHealthPayload() else {
+        guard let health = try? probe.health(), health.service == "mbd", health.status == "ok" else {
             return nil
         }
         return MetaBrainServerClient(socketPath: Self.defaultLoopbackServer)
@@ -972,10 +972,16 @@ extension MetaBrainCommand {
     struct Version: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "version",
-            abstract: "Print the metaBrain version and check GitHub releases."
+            abstract: "Print the metaBrain version, local daemon version, and GitHub release status."
         )
 
         @OptionGroup var output: TextOutputFormatOptions
+
+        @Option(help: "Unix socket path, loopback HTTP URL such as http://127.0.0.1:6374, or auto for the default local daemon.")
+        var server: String?
+
+        @Flag(help: "Skip local daemon version detection.")
+        var noServer = false
 
         @Flag(name: .customLong("no-release-check"), help: "Skip the GitHub latest release check.")
         var noReleaseCheck = false
@@ -998,6 +1004,7 @@ extension MetaBrainCommand {
 
         func run() async throws {
             let currentTag = currentSoftwareTag()
+            let serverVersion = resolveServerVersion(server: server, noServer: noServer)
             let releaseCheck: ReleaseCheckOutput?
 
             if noReleaseCheck {
@@ -1012,12 +1019,27 @@ extension MetaBrainCommand {
 
             let result = VersionOutput(
                 currentTag: currentTag,
-                releaseCheck: releaseCheck
+                releaseCheck: releaseCheck,
+                server: serverVersion
             )
 
             switch output.format {
             case .text:
                 print("version: \(currentTag)")
+                if let serverVersion {
+                    print("server: \(serverVersion.endpoint)")
+                    print("serverReachable: \(serverVersion.reachable)")
+                    if let currentTag = serverVersion.currentTag {
+                        print("serverVersion: \(currentTag)")
+                    } else {
+                        print("serverVersion: unavailable")
+                    }
+                    if let error = serverVersion.error {
+                        print("serverError: \(error)")
+                    }
+                } else {
+                    print("server: skipped")
+                }
                 if let releaseCheck {
                     print("latest: \(releaseCheck.latestTag ?? "unknown")")
                     print("updateAvailable: \(releaseCheck.updateAvailable.map(String.init) ?? "unknown")")
@@ -1037,6 +1059,41 @@ extension MetaBrainCommand {
                 try printJSONLine(result)
             }
         }
+    }
+}
+
+private func resolveServerVersion(server: String?, noServer: Bool) -> ServerVersionOutput? {
+    guard !noServer else {
+        return nil
+    }
+
+    let endpoint: String
+    if let server, server != "auto" {
+        endpoint = server
+    } else {
+        endpoint = StoreOptions.defaultLoopbackServer
+    }
+
+    let client = MetaBrainServerClient(
+        socketPath: endpoint,
+        requestTimeoutMilliseconds: StoreOptions.autoProbeTimeoutMilliseconds
+    )
+
+    do {
+        let version = try client.version()
+        return ServerVersionOutput(
+            currentTag: version.currentTag,
+            endpoint: endpoint,
+            error: nil,
+            reachable: true
+        )
+    } catch {
+        return ServerVersionOutput(
+            currentTag: nil,
+            endpoint: endpoint,
+            error: String(describing: error),
+            reachable: false
+        )
     }
 }
 
@@ -1538,6 +1595,7 @@ private let daemonBackedCommands: Set<String> = [
     "prune",
     "delete",
     "remove-version",
+    "version",
 ]
 
 private func cliArgumentsWithGlobalServer(_ arguments: [String]) -> [String] {

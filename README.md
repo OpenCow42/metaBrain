@@ -142,7 +142,8 @@ mb help dump
 
 ## Commands
 
-- `version` prints the current release tag and checks GitHub for newer releases.
+- `version` prints the current release tag, probes the default local daemon, and
+  checks GitHub for newer releases.
 - `init` creates or opens a store.
 - `put` creates or updates a document at a path.
 - `patch` applies a single-file unified diff to an existing document body.
@@ -160,8 +161,8 @@ mb help dump
 ## Daemon
 
 `mbd` runs the local daemon surface. The daemon opens one configured
-`MetaBrainCore` store for its lifetime, serves `/health`, and exposes
-store-backed JSON endpoints for version, init, put, patch, move, get, list,
+`MetaBrainCore` store for its lifetime, serves `/health` with daemon version
+metadata, and exposes store-backed JSON endpoints for version, init, put, patch, move, get, list,
 tree, search, dump, versions, prune, delete, and remove-version.
 
 ```bash
@@ -170,6 +171,14 @@ mbd serve --store .metabrain/store.leveldb --host 127.0.0.1
 mbd service print --user
 mbd version
 ```
+
+`mb version` reports the CLI version and also probes the default local daemon at
+`http://127.0.0.1:6374`. If the daemon is reachable, the output includes the
+daemon endpoint and version. If it is not reachable, the command still exits
+successfully and reports the daemon as unavailable. Use `mb version --server
+<socket-or-url>` to query a specific daemon, `mb version --server auto` to probe
+the default local daemon explicitly, or `mb version --no-server` for the CLI
+version only.
 
 Unix sockets are the default local transport on macOS and Linux. Loopback HTTP
 is available with `--host 127.0.0.1 --port 6374`. Port `6374` is the default

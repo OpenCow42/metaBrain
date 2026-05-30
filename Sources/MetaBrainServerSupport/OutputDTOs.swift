@@ -598,21 +598,39 @@ public struct RemoveVersionOutput: Codable, Equatable, Sendable {
 public struct VersionOutput: Codable, Equatable, Sendable {
     public var currentTag: String
     public var releaseCheck: ReleaseCheckOutput?
+    public var server: ServerVersionOutput?
 
-    public init(currentTag: String, releaseCheck: ReleaseCheckOutput?) {
+    public init(currentTag: String, releaseCheck: ReleaseCheckOutput?, server: ServerVersionOutput? = nil) {
         self.currentTag = currentTag
         self.releaseCheck = releaseCheck
+        self.server = server
     }
 
     private enum CodingKeys: String, CodingKey {
         case currentTag
         case releaseCheck
+        case server
     }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(currentTag, forKey: .currentTag)
         try container.encode(releaseCheck, forKey: .releaseCheck)
+        try container.encode(server, forKey: .server)
+    }
+}
+
+public struct ServerVersionOutput: Codable, Equatable, Sendable {
+    public var currentTag: String?
+    public var endpoint: String
+    public var error: String?
+    public var reachable: Bool
+
+    public init(currentTag: String?, endpoint: String, error: String?, reachable: Bool) {
+        self.currentTag = currentTag
+        self.endpoint = endpoint
+        self.error = error
+        self.reachable = reachable
     }
 }
 

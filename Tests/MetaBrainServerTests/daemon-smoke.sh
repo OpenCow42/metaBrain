@@ -34,7 +34,7 @@ fi
 "${daemon_bin}" | rg -q 'Run the metaBrain local daemon'
 
 VERSION_JSON="$(METABRAIN_VERSION=9.8.7 "${daemon_bin}" version)"
-if [[ "${VERSION_JSON}" != '{"currentTag":"9.8.7","releaseCheck":null}' ]]; then
+if [[ "${VERSION_JSON}" != '{"currentTag":"9.8.7","releaseCheck":null,"server":null}' ]]; then
     echo "Expected daemon version JSON, got: ${VERSION_JSON}" >&2
     exit 1
 fi
@@ -132,7 +132,7 @@ PY
 )"
 
 printf '%s\n' "$HEALTH_RESPONSE" | rg -q 'HTTP/1.1 200 OK'
-printf '%s\n' "$HEALTH_RESPONSE" | rg -F -q '{"service":"mbd","status":"ok"}'
+printf '%s\n' "$HEALTH_RESPONSE" | rg -F -q '{"service":"mbd","status":"ok","version":'
 
 API_RESPONSE="$(python3 - "$socket_path" <<'PY'
 import json
@@ -274,7 +274,7 @@ PY
 )"
 
 printf '%s\n' "$LOOPBACK_RESPONSE" | rg -q 'HTTP/1.1 200 OK'
-printf '%s\n' "$LOOPBACK_RESPONSE" | rg -F -q '{"service":"mbd","status":"ok"}'
+printf '%s\n' "$LOOPBACK_RESPONSE" | rg -F -q '{"service":"mbd","status":"ok","version":'
 
 kill "$serve_pid" 2>/dev/null || true
 wait "$serve_pid" 2>/dev/null || true

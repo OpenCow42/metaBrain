@@ -86,6 +86,10 @@ public struct MetaBrainServerClient: Sendable {
         try request(method: .get, path: "/health", body: Data(), response: ServerHealthPayload.self)
     }
 
+    public func version() throws -> VersionOutput {
+        try request(method: .get, path: "/v1/version", body: Data(), response: VersionOutput.self)
+    }
+
     private func request<Response: Decodable & Sendable>(
         method: ServerHTTPMethod,
         path: String,

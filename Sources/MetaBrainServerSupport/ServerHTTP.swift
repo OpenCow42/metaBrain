@@ -261,10 +261,12 @@ public struct ServerHTTPCodec: Sendable {
 public struct ServerHealthPayload: Codable, Equatable, Sendable {
     public var service: String
     public var status: String
+    public var version: String
 
-    public init(service: String = "mbd", status: String = "ok") {
+    public init(service: String = "mbd", status: String = "ok", version: String = MetaBrainVersion.currentSoftwareTag()) {
         self.service = service
         self.status = status
+        self.version = version
     }
 }
 

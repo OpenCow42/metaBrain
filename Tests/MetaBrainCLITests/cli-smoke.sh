@@ -233,7 +233,7 @@ assert_remove_version_json() {
 "${METABRAIN[@]}" help | rg -q 'mb help move'
 "${METABRAIN[@]}" help | rg -q 'mb help version'
 "${METABRAIN[@]}" help init | rg -q 'Create or open a metaBrain store'
-"${METABRAIN[@]}" help version | rg -q 'Print the metaBrain version and check GitHub releases'
+"${METABRAIN[@]}" help version | rg -q 'Print the metaBrain version, local daemon version, and GitHub release status'
 "${METABRAIN[@]}" help put | rg -q 'Create or update a document at a path'
 "${METABRAIN[@]}" help patch | rg -q 'Patch a document body with a unified diff'
 "${METABRAIN[@]}" help move | rg -q 'Move an existing document to a new path without changing its ID'
@@ -249,22 +249,24 @@ assert_remove_version_json() {
 "${METABRAIN[@]}" help delete | rg -q 'Delete a document and all retained versions'
 "${METABRAIN[@]}" help remove-version | rg -q 'Remove one retained historical document version'
 VERSION_DEFAULT_JSON="$(METABRAIN_VERSION=9.8.7 "${METABRAIN[@]}" version --no-release-check)"
-if [[ "$VERSION_DEFAULT_JSON" != '{"currentTag":"9.8.7","releaseCheck":null}' ]]; then
+if ! printf '%s\n' "$VERSION_DEFAULT_JSON" | rg -F -q '"currentTag":"9.8.7"'; then
     echo "Expected version default JSON output without release check, got: $VERSION_DEFAULT_JSON" >&2
     exit 1
 fi
-VERSION_TEXT="$(METABRAIN_VERSION=9.8.7 "${METABRAIN[@]}" version --no-release-check --format text)"
-if [[ "$VERSION_TEXT" != $'version: 9.8.7\nreleaseCheck: skipped' ]]; then
+printf '%s\n' "$VERSION_DEFAULT_JSON" | rg -F -q '"endpoint":"http://127.0.0.1:6374"'
+printf '%s\n' "$VERSION_DEFAULT_JSON" | rg -F -q '"reachable":false'
+VERSION_TEXT="$(METABRAIN_VERSION=9.8.7 "${METABRAIN[@]}" version --no-server --no-release-check --format text)"
+if [[ "$VERSION_TEXT" != $'version: 9.8.7\nserver: skipped\nreleaseCheck: skipped' ]]; then
     echo "Expected version text output without release check, got: $VERSION_TEXT" >&2
     exit 1
 fi
-VERSION_JSON="$(METABRAIN_VERSION=9.8.7 "${METABRAIN[@]}" version --no-release-check --format json)"
-if [[ "$VERSION_JSON" != "$VERSION_DEFAULT_JSON" ]]; then
+VERSION_JSON="$(METABRAIN_VERSION=9.8.7 "${METABRAIN[@]}" version --no-server --no-release-check --format json)"
+if [[ "$VERSION_JSON" != '{"currentTag":"9.8.7","releaseCheck":null,"server":null}' ]]; then
     echo "Expected version JSON output without release check, got: $VERSION_JSON" >&2
     exit 1
 fi
-VERSION_JSONL="$(METABRAIN_VERSION=9.8.7 "${METABRAIN[@]}" version --no-release-check --format jsonl)"
-if [[ "$VERSION_JSONL" != "$VERSION_DEFAULT_JSON" ]]; then
+VERSION_JSONL="$(METABRAIN_VERSION=9.8.7 "${METABRAIN[@]}" version --no-server --no-release-check --format jsonl)"
+if [[ "$VERSION_JSONL" != "$VERSION_JSON" ]]; then
     echo "Expected version JSONL output without release check, got: $VERSION_JSONL" >&2
     exit 1
 fi
@@ -1052,9 +1054,16 @@ if [[ "$SERVER_INIT_JSON" != "$SERVER_EXPECTED_INIT_JSON" ]]; then
     echo "Expected daemon init JSON output, got: $SERVER_INIT_JSON" >&2
     exit 1
 fi
-SERVER_VERSION_IGNORED="$(METABRAIN_VERSION=4.5.6 "${METABRAIN[@]}" --server "$SERVER_SOCKET" version --no-release-check)"
-if [[ "$SERVER_VERSION_IGNORED" != '{"currentTag":"4.5.6","releaseCheck":null}' ]]; then
-    echo "Expected non-store version command to ignore global daemon option, got: $SERVER_VERSION_IGNORED" >&2
+SERVER_VERSION_JSON="$(METABRAIN_VERSION=4.5.6 "${METABRAIN[@]}" --server "$SERVER_SOCKET" version --no-release-check)"
+if ! printf '%s\n' "$SERVER_VERSION_JSON" | rg -F -q '"currentTag":"4.5.6"'; then
+    echo "Expected CLI version in daemon version JSON output, got: $SERVER_VERSION_JSON" >&2
+    exit 1
+fi
+printf '%s\n' "$SERVER_VERSION_JSON" | rg -F -q "\"endpoint\":\"$SERVER_SOCKET\""
+printf '%s\n' "$SERVER_VERSION_JSON" | rg -F -q '"reachable":true'
+printf '%s\n' "$SERVER_VERSION_JSON" | rg -F -q '"error":null'
+if ! printf '%s\n' "$SERVER_VERSION_JSON" | rg -F -q '"server":{"currentTag":"'; then
+    echo "Expected server version in daemon version JSON output, got: $SERVER_VERSION_JSON" >&2
     exit 1
 fi
 
@@ -1131,7 +1140,7 @@ wait "$daemon_server_pid" 2>/dev/null || true
 daemon_server_pid=""
 
 AUTO_SERVER_STORE="$TMP_DIR/auto-server-store.leveldb"
-"${METABRAIN_DAEMON[@]}" serve --store "$AUTO_SERVER_STORE" --host 127.0.0.1 --log-level error >"$TMP_DIR/mbd-auto.out" 2>"$TMP_DIR/mbd-auto.err" &
+METABRAIN_VERSION=6.7.8 "${METABRAIN_DAEMON[@]}" serve --store "$AUTO_SERVER_STORE" --host 127.0.0.1 --log-level error >"$TMP_DIR/mbd-auto.out" 2>"$TMP_DIR/mbd-auto.err" &
 daemon_server_pid="$!"
 AUTO_SERVER_PORT=""
 for _ in $(seq 1 400); do
@@ -1161,6 +1170,9 @@ if [[ "$AUTO_INIT_JSON" != "$AUTO_EXPECTED_INIT_JSON" ]]; then
     echo "Expected auto daemon init JSON output, got: $AUTO_INIT_JSON" >&2
     exit 1
 fi
+AUTO_VERSION_JSON="$(METABRAIN_VERSION=4.5.6 "${METABRAIN[@]}" version --no-release-check)"
+printf '%s\n' "$AUTO_VERSION_JSON" | rg -F -q '"currentTag":"4.5.6"'
+printf '%s\n' "$AUTO_VERSION_JSON" | rg -F -q '"server":{"currentTag":"6.7.8","endpoint":"http://127.0.0.1:6374","error":null,"reachable":true}'
 AUTO_PUT_JSON="$("${METABRAIN[@]}" put /auto/today 'auto daemon memory' --tag auto)"
 assert_put_json "$AUTO_PUT_JSON" /auto/today created 1
 AUTO_GET_JSON="$("${METABRAIN[@]}" get /auto/today)"

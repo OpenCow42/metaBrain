@@ -76,7 +76,7 @@ and [LevelDB options](https://github.com/google/leveldb/blob/main/include/leveld
 | CLI command | Core methods | Estimated complexity | Notes |
 | --- | --- | --- | --- |
 | `metabrain` / `help` | ArgumentParser help generation, `commandHelpMessage` | `O(1)` relative to store size | Does not open or scan the store. |
-| `version` | `MetaBrainVersion.currentSoftwareTag`, optional GitHub latest release request | `O(1)` relative to store size | Does not open the store. With the default release check, it performs one bounded HTTP request to GitHub's latest release API. |
+| `version` | `MetaBrainVersion.currentSoftwareTag`, optional local daemon probe, optional GitHub latest release request | `O(1)` relative to store size | Does not open the store. By default it performs one short local daemon version probe; with the default release check, it also performs one bounded HTTP request to GitHub's latest release API. |
 | `init` | `StoreOptions.openStore`, `MetaBrainStore.init` | `O(1)` relative to documents, plus LevelDB open/recovery work | Creates the parent directory and opens LevelDB. Recovery can replay logs and clean stale files. |
 | `put` new document | `putDocument`, `writeNewDocument`, `writeDocumentBatch` | `O(B + T + R + L * seek(S) + X_tree + D)` | Body chunking now advances indices incrementally. Tree maintenance touches only the new path branch instead of rebuilding the whole tree index. |
 | `put` existing document | `putDocument`, `writeDocumentUpdate`, `writeDocumentBatch`, retention helpers | `O(B + B_old + T + T_old + R + R_old + V log V + H + L * seek(S) + X_tree + D)` | Updates delete stale chunks/indexes/references, may scan all versions for retention, and update only old/new tree branches. |
@@ -139,7 +139,11 @@ and [LevelDB options](https://github.com/google/leveldb/blob/main/include/leveld
 ### `version`
 
 `version` resolves the current CLI tag from `METABRAIN_VERSION` or the bundled
-release version. It does not open the document store.
+release version. It does not open the document store. By default it also makes a
+short `/v1/version` probe to `http://127.0.0.1:6374` so the command can report
+whether the default local daemon is reachable and, if reachable, which version
+it is running. `--server <socket-or-url>` queries a specific daemon endpoint,
+and `--no-server` disables the probe.
 
 By default, it also fetches GitHub's latest release endpoint once with a bounded
 timeout and compares semantic release tags. Passing `--no-release-check` keeps

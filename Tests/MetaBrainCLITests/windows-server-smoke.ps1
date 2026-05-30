@@ -109,12 +109,20 @@ try {
     if ($Health.service -ne "mbd" -or $Health.status -ne "ok") {
         throw "Unexpected health payload: $($Health | ConvertTo-Json -Compress)"
     }
+    if (-not $Health.version) {
+        throw "Expected health payload to include server version: $($Health | ConvertTo-Json -Compress)"
+    }
 
     $Init = & $Mb --server $Server init
     Assert-Contains -Text $Init -Needle '"status":"initialized"' -Label "init"
 
     $AutoInit = & $Mb --server auto init
     Assert-Contains -Text $AutoInit -Needle '"status":"initialized"' -Label "auto init"
+
+    $Version = & $Mb version --no-release-check
+    Assert-Contains -Text $Version -Needle '"endpoint":"http://127.0.0.1:6374"' -Label "version"
+    Assert-Contains -Text $Version -Needle '"reachable":true' -Label "version"
+    Assert-Contains -Text $Version -Needle '"error":null' -Label "version"
 
     $Put = & $Mb put /windows/smoke "windows daemon memory" --title Windows --tag smoke --format json
     Assert-Contains -Text $Put -Needle '"status":"created"' -Label "put"

@@ -29,7 +29,7 @@ import Glibc
     #expect(port > 0)
     #expect(response.contains("HTTP/1.1 200 OK\r\n"))
     #expect(response.contains("Content-Type: application/json; charset=utf-8\r\n"))
-    #expect(response.hasSuffix(#"{"service":"mbd","status":"ok"}"#))
+    #expect(response.hasSuffix(#"{"service":"mbd","status":"ok","version":"\#(MetaBrainVersion.currentSoftwareTag())"}"#))
 }
 
 @Test func httpServerServesHealthOverUnixSocket() throws {
@@ -53,7 +53,7 @@ import Glibc
     #expect(boundPath == socket.path)
     #expect(!FileManager.default.fileExists(atPath: socket.path))
     #expect(response.contains("HTTP/1.1 200 OK\r\n"))
-    #expect(response.hasSuffix(#"{"service":"mbd","status":"ok"}"#))
+    #expect(response.hasSuffix(#"{"service":"mbd","status":"ok","version":"\#(MetaBrainVersion.currentSoftwareTag())"}"#))
 }
 
 @Test func httpServerRejectsExistingRegularFileAtUnixSocketPathWithoutDeletingIt() throws {
@@ -194,7 +194,7 @@ import Glibc
 
     try running.wait()
     #expect(response.contains("HTTP/1.1 200 OK\r\n"))
-    #expect(response.hasSuffix(#"{"service":"mbd","status":"ok"}"#))
+    #expect(response.hasSuffix(#"{"service":"mbd","status":"ok","version":"\#(MetaBrainVersion.currentSoftwareTag())"}"#))
 }
 
 @Test func httpServerRejectsRequestsMissingAuthorizationHeader() throws {
