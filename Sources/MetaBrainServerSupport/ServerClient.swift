@@ -107,7 +107,7 @@ extension MetaBrainServerClient {
         let descriptor = try openUnixSocket(path: path)
         defer { closeSocket(descriptor) }
         try writeAll(requestData, to: descriptor)
-        _ = shutdown(descriptor, SHUT_WR)
+        _ = shutdown(descriptor, Int32(SHUT_WR))
         return try readAll(from: descriptor)
     }
 
