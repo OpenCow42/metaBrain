@@ -113,8 +113,6 @@ import Testing
     }
 }
 
-#endif
-
 @Test func serverClientRejectsOverlongUnixSocketPaths() {
     let path = "/tmp/" + String(repeating: "x", count: 200)
     let client = MetaBrainServerClient(socketPath: path)
@@ -123,6 +121,8 @@ import Testing
         let _: InitializeOutput = try client.post("/v1/init", response: InitializeOutput.self)
     }
 }
+
+#endif
 
 @Test func serverClientErrorDescriptionsAreStable() {
     #expect(ServerClientError.socketPathTooLong("/tmp/socket").description == "unix socket path is too long: /tmp/socket")
