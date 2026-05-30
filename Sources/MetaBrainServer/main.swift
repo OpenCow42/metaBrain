@@ -111,13 +111,14 @@ extension MetaBrainDaemonCommand {
                 defer { shutdownSignals.cancel() }
 
                 try server.run { mode in
+                    let line: String
                     switch mode {
                     case .unixSocket(let path):
-                        print("mbd serving on unix socket \(path)")
+                        line = "mbd serving on unix socket \(path)"
                     case .loopback(let host, let port):
-                        print("mbd serving on loopback http \(host):\(port)")
+                        line = "mbd serving on loopback http \(host):\(port)"
                     }
-                    fflush(stdout)
+                    FileHandle.standardOutput.write(Data((line + "\n").utf8))
                 }
             } catch {
                 throw ValidationError(String(describing: error))
