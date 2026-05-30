@@ -93,6 +93,9 @@ let package = Package(
             name: "MetaBrainServerSupport",
             dependencies: [
                 "MetaBrainCore"
+            ],
+            linkerSettings: [
+                .linkedLibrary("ws2_32", .when(platforms: [.windows]))
             ]
         ),
         .executableTarget(

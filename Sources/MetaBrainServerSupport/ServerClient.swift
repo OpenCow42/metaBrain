@@ -4,6 +4,8 @@ import Foundation
 import Darwin
 #elseif canImport(Glibc)
 import Glibc
+#elseif canImport(WinSDK)
+import WinSDK
 #endif
 
 public enum ServerClientError: Error, Equatable, Sendable, CustomStringConvertible {
@@ -31,10 +33,16 @@ public struct MetaBrainServerClient: Sendable {
     private let transport: @Sendable (Data) throws -> Data
 
     public init(socketPath: String, codec: ServerHTTPCodec = ServerHTTPCodec()) {
-        let expandedPath = NSString(string: socketPath).expandingTildeInPath
         self.codec = codec
-        self.transport = { requestData in
-            try Self.unixSocketRoundTrip(path: expandedPath, requestData: requestData)
+        if let endpoint = Self.loopbackHTTPEndpoint(from: socketPath) {
+            self.transport = { requestData in
+                try Self.loopbackHTTPRoundTrip(endpoint: endpoint, requestData: requestData)
+            }
+        } else {
+            let expandedPath = NSString(string: socketPath).expandingTildeInPath
+            self.transport = { requestData in
+                try Self.unixSocketRoundTrip(path: expandedPath, requestData: requestData)
+            }
         }
     }
 
@@ -99,6 +107,21 @@ public struct MetaBrainServerClient: Sendable {
         data.append(body)
         return data
     }
+
+    private static func loopbackHTTPEndpoint(from value: String) -> ServerLoopbackHTTPEndpoint? {
+        guard value.hasPrefix("http://"), let components = URLComponents(string: value) else {
+            return nil
+        }
+        guard let host = components.host, host == "127.0.0.1" || host == "localhost", let port = components.port else {
+            return nil
+        }
+        return ServerLoopbackHTTPEndpoint(host: host, port: port)
+    }
+}
+
+private struct ServerLoopbackHTTPEndpoint: Sendable {
+    var host: String
+    var port: Int
 }
 
 #if canImport(Darwin) || canImport(Glibc)
@@ -177,6 +200,73 @@ extension MetaBrainServerClient {
 }
 #endif
 
+#if canImport(WinSDK)
+extension MetaBrainServerClient {
+    private static func loopbackHTTPRoundTrip(endpoint: ServerLoopbackHTTPEndpoint, requestData: Data) throws -> Data {
+        try withClientWinsock {
+            let descriptor = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP.rawValue)
+            guard descriptor != INVALID_SOCKET else { throw ServerClientError.socketOperationFailed("socket") }
+            defer { closeSocket(descriptor) }
+
+            var address = sockaddr_in()
+            address.sin_family = ADDRESS_FAMILY(AF_INET)
+            address.sin_port = USHORT(UInt16(endpoint.port).bigEndian)
+            address.sin_addr.S_un.S_addr = UInt32(INADDR_LOOPBACK).bigEndian
+
+            try withUnsafePointer(to: &address) { pointer in
+                try pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { socketAddress in
+                    guard connect(descriptor, socketAddress, Int32(MemoryLayout<sockaddr_in>.size)) == 0 else {
+                        throw ServerClientError.socketOperationFailed("connect")
+                    }
+                }
+            }
+
+            try writeAll(requestData, to: descriptor)
+            _ = shutdown(descriptor, SD_SEND)
+            return try readAll(from: descriptor)
+        }
+    }
+
+    private static func writeAll(_ data: Data, to descriptor: SOCKET) throws {
+        try data.withUnsafeBytes { rawBuffer in
+            var offset = 0
+            while offset < rawBuffer.count {
+                let sent = send(
+                    descriptor,
+                    rawBuffer.baseAddress!.advanced(by: offset).assumingMemoryBound(to: CChar.self),
+                    Int32(rawBuffer.count - offset),
+                    0
+                )
+                guard sent > 0 else { throw ServerClientError.socketOperationFailed("send") }
+                offset += Int(sent)
+            }
+        }
+    }
+
+    private static func readAll(from descriptor: SOCKET) throws -> Data {
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while true {
+            let count = buffer.withUnsafeMutableBytes { rawBuffer in
+                recv(descriptor, rawBuffer.baseAddress!.assumingMemoryBound(to: CChar.self), Int32(rawBuffer.count), 0)
+            }
+            guard count >= 0 else { throw ServerClientError.socketOperationFailed("recv") }
+            guard count > 0 else { break }
+            data.append(buffer, count: Int(count))
+        }
+        return data
+    }
+}
+#else
+extension MetaBrainServerClient {
+    private static func loopbackHTTPRoundTrip(endpoint: ServerLoopbackHTTPEndpoint, requestData: Data) throws -> Data {
+        _ = endpoint
+        _ = requestData
+        throw ServerClientError.socketOperationFailed("loopback HTTP is unavailable on this platform")
+    }
+}
+#endif
+
 #if canImport(Darwin) || canImport(Glibc)
 private let clientSocketStreamType: Int32 = {
     #if canImport(Glibc)
@@ -188,5 +278,18 @@ private let clientSocketStreamType: Int32 = {
 
 private func closeSocket(_ descriptor: Int32) {
     _ = close(descriptor)
+}
+#elseif canImport(WinSDK)
+private func closeSocket(_ descriptor: SOCKET) {
+    _ = closesocket(descriptor)
+}
+
+private func withClientWinsock<Result>(_ operation: () throws -> Result) throws -> Result {
+    var data = WSADATA()
+    guard WSAStartup(WORD(0x0202), &data) == 0 else {
+        throw ServerClientError.socketOperationFailed("WSAStartup")
+    }
+    defer { WSACleanup() }
+    return try operation()
 }
 #endif

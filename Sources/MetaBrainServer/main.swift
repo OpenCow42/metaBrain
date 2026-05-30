@@ -98,7 +98,7 @@ extension MetaBrainDaemonCommand {
                     logLevel: logLevel,
                     fileConfiguration: fileConfiguration
                 )
-                #if canImport(Darwin) || canImport(Glibc)
+                #if canImport(Darwin) || canImport(Glibc) || canImport(WinSDK)
                 let logger = ServerStructuredLogger(
                     minimumLevel: try ServerLogLevel(validating: configuration.logLevel)
                 ) { line in
@@ -248,7 +248,7 @@ extension MetaBrainDaemonCommand {
     }
 }
 
-#if canImport(Darwin) || canImport(Glibc)
+#if canImport(Darwin) || canImport(Glibc) || canImport(WinSDK)
 private final class ServerShutdownSignalHandler: @unchecked Sendable {
     private let lock = NSLock()
     private var sources: [DispatchSourceSignal] = []
