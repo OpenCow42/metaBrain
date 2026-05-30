@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PRODUCT_NAME="mb"
+PRODUCT_NAMES=("mb" "mbd")
 PACKAGE_NAME="metabrain"
 VERSION="${METABRAIN_RELEASE_VERSION:-}"
 TAG="${METABRAIN_RELEASE_TAG:-}"
@@ -15,7 +15,7 @@ usage() {
   cat <<'USAGE'
 Usage: Scripts/build-linux-release.sh --version <version> [options]
 
-Build Ubuntu/Linux release artifacts for the mb CLI:
+Build Ubuntu/Linux release artifacts for the mb CLI and mbd daemon:
   - dist/mb-<version>-linux-x86_64.tar.gz
   - dist/metabrain_<version>_amd64.deb
   - SHA-256 checksum files for both artifacts
@@ -159,20 +159,10 @@ if [[ "$UPLOAD" -eq 1 ]]; then
   fi
 fi
 
-echo "Building ${PRODUCT_NAME} ${VERSION} for ${platform_slug}..."
-swift build -c release --product "$PRODUCT_NAME" --static-swift-stdlib
-bin_dir="$(swift build -c release --product "$PRODUCT_NAME" --show-bin-path)"
-built_binary="${bin_dir}/${PRODUCT_NAME}"
-
-if [[ ! -x "$built_binary" ]]; then
-  echo "Expected executable not found: $built_binary" >&2
-  exit 1
-fi
-
 rm -rf "$BUILD_ROOT"
 mkdir -p "$DIST_DIR" "$BUILD_ROOT"
 
-archive_name="${PRODUCT_NAME}-${VERSION}-${platform_slug}"
+archive_name="mb-${VERSION}-${platform_slug}"
 archive_dir="${BUILD_ROOT}/${archive_name}"
 archive_path="${DIST_DIR}/${archive_name}.tar.gz"
 deb_name="${PACKAGE_NAME}_${VERSION}_${deb_arch}"
@@ -182,8 +172,20 @@ deb_path="${DIST_DIR}/${deb_name}.deb"
 rm -rf "$archive_dir" "$deb_root" "$archive_path" "${archive_path}.sha256" "$deb_path" "${deb_path}.sha256"
 
 install -d "$archive_dir/bin"
-install -m 0755 "$built_binary" "$archive_dir/bin/$PRODUCT_NAME"
-strip "$archive_dir/bin/$PRODUCT_NAME"
+for product_name in "${PRODUCT_NAMES[@]}"; do
+  echo "Building ${product_name} ${VERSION} for ${platform_slug}..."
+  swift build -c release --product "$product_name" --static-swift-stdlib
+  bin_dir="$(swift build -c release --product "$product_name" --show-bin-path)"
+  built_binary="${bin_dir}/${product_name}"
+
+  if [[ ! -x "$built_binary" ]]; then
+    echo "Expected executable not found: $built_binary" >&2
+    exit 1
+  fi
+
+  install -m 0755 "$built_binary" "$archive_dir/bin/$product_name"
+  strip "$archive_dir/bin/$product_name"
+done
 install -m 0644 README.md "$archive_dir/README.md"
 install -m 0644 LICENSE "$archive_dir/LICENSE"
 
@@ -191,7 +193,9 @@ tar -C "$BUILD_ROOT" -czf "$archive_path" "$archive_name"
 write_checksum "$archive_path"
 
 install -d "$deb_root/DEBIAN" "$deb_root/usr/bin" "$deb_root/usr/share/doc/$PACKAGE_NAME"
-install -m 0755 "$archive_dir/bin/$PRODUCT_NAME" "$deb_root/usr/bin/$PRODUCT_NAME"
+for product_name in "${PRODUCT_NAMES[@]}"; do
+  install -m 0755 "$archive_dir/bin/$product_name" "$deb_root/usr/bin/$product_name"
+done
 install -m 0644 README.md "$deb_root/usr/share/doc/$PACKAGE_NAME/README.md"
 install -m 0644 LICENSE "$deb_root/usr/share/doc/$PACKAGE_NAME/LICENSE"
 
@@ -205,9 +209,9 @@ Architecture: $deb_arch
 Depends: libc6, libstdc++6, libgcc-s1
 Installed-Size: $installed_size
 Maintainer: OpenCow42 <noreply@github.com>
-Description: AI-native local memory store CLI
- metaBrain provides the mb command line tool for storing, inspecting,
- searching, and linking structured local memory documents.
+Description: AI-native local memory store CLI and daemon
+ metaBrain provides the mb command line tool and mbd local daemon for storing,
+ inspecting, searching, and linking structured local memory documents.
 EOF
 
 dpkg-deb --root-owner-group --build "$deb_root" "$deb_path"
@@ -222,10 +226,10 @@ if [[ "$UPLOAD" -eq 1 ]]; then
 Initial Ubuntu/Linux packaging support for metaBrain.
 
 Artifacts:
-- ${archive_name}.tar.gz: portable Linux CLI archive
-- ${deb_name}.deb: Ubuntu/Debian package installing /usr/bin/mb
+- ${archive_name}.tar.gz: portable Linux archive with mb and mbd
+- ${deb_name}.deb: Ubuntu/Debian package installing /usr/bin/mb and /usr/bin/mbd
 
-The Linux binary is built with --static-swift-stdlib and only depends on standard Ubuntu runtime libraries.
+The Linux binaries are built with --static-swift-stdlib and only depend on standard Ubuntu runtime libraries.
 EOF
 
   if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then

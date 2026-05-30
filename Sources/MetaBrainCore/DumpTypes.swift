@@ -159,7 +159,7 @@ public struct DocumentDumpFileWriter {
         let components = pathComponents(for: entry.path)
         let parentComponents = components.dropLast()
         let rawFileName = components.last!
-        let splitName = splitFileName(rawFileName)
+        let splitName = splitFileName(rawFileName, body: entry.body)
         let versionStamp = utcFileStamp(for: entry.versionCreatedAt)
         let fileName = "\(splitName.base)__\(entry.documentID.rawValue)__v\(entry.version)__\(versionStamp)\(splitName.extension)"
 
@@ -175,17 +175,27 @@ public struct DocumentDumpFileWriter {
         return components.isEmpty ? ["root"] : components
     }
 
-    private static func splitFileName(_ fileName: String) -> (base: String, extension: String) {
+    private static func splitFileName(_ fileName: String, body: String) -> (base: String, extension: String) {
         guard let dotIndex = fileName.lastIndex(of: "."),
               dotIndex != fileName.startIndex,
               dotIndex != fileName.index(before: fileName.endIndex) else {
-            return (fileName, ".md")
+            return (fileName, inferredExtension(for: body))
         }
 
         return (
             String(fileName[..<dotIndex]),
             String(fileName[dotIndex...])
         )
+    }
+
+    private static func inferredExtension(for body: String) -> String {
+        let data = Data(body.utf8)
+        guard let value = try? JSONSerialization.jsonObject(with: data),
+              value is [String: Any] || value is [Any] else {
+            return ".md"
+        }
+
+        return ".json"
     }
 
     private static func fileSystemSafeComponent(_ component: String) -> String {

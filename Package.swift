@@ -67,6 +67,10 @@ let package = Package(
         .executable(
             name: "mb",
             targets: ["MetaBrainCLI"]
+        ),
+        .executable(
+            name: "mbd",
+            targets: ["MetaBrainServer"]
         )
     ],
     dependencies: packageDependencies,
@@ -81,6 +85,23 @@ let package = Package(
             name: "MetaBrainCLI",
             dependencies: [
                 "MetaBrainCore",
+                "MetaBrainServerSupport",
+                .product(name: "ArgumentParser", package: "swift-argument-parser")
+            ]
+        ),
+        .target(
+            name: "MetaBrainServerSupport",
+            dependencies: [
+                "MetaBrainCore"
+            ],
+            linkerSettings: [
+                .linkedLibrary("ws2_32", .when(platforms: [.windows]))
+            ]
+        ),
+        .executableTarget(
+            name: "MetaBrainServer",
+            dependencies: [
+                "MetaBrainServerSupport",
                 .product(name: "ArgumentParser", package: "swift-argument-parser")
             ]
         ),
@@ -102,6 +123,12 @@ let package = Package(
             dependencies: [
                 "MetaBrainCore",
                 .product(name: "PropertyBased", package: "swift-property-based")
+            ]
+        ),
+        .testTarget(
+            name: "MetaBrainServerSupportTests",
+            dependencies: [
+                "MetaBrainServerSupport"
             ]
         ),
     ] + benchmarkTargets,
