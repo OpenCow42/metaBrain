@@ -18,9 +18,27 @@ import Testing
     #expect(initialized.storePath == storePath)
     #expect(await registry.openStoreCount == 1)
 
-    try await Task.sleep(nanoseconds: 150_000_000)
+    #expect(await eventually(timeoutSeconds: 2) {
+        await registry.openStoreCount == 0
+    })
 
-    #expect(await registry.openStoreCount == 0)
+    let reopened = try MetaBrainStoreServer(storePath: storePath)
+    await reopened.close()
+}
+
+private func eventually(
+    timeoutSeconds: Double,
+    intervalNanoseconds: UInt64 = 25_000_000,
+    _ condition: () async -> Bool
+) async -> Bool {
+    let deadline = ContinuousClock.now + .seconds(timeoutSeconds)
+    while ContinuousClock.now < deadline {
+        if await condition() {
+            return true
+        }
+        try? await Task.sleep(nanoseconds: intervalNanoseconds)
+    }
+    return await condition()
 }
 
 @Test func storeRegistryKeepsDistinctStoreActorsByCanonicalPath() async throws {

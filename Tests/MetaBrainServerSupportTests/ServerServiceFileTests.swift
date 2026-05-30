@@ -191,7 +191,8 @@ import Testing
             == ServerUserServiceCommandPlan(
                 commands: [
                     ["systemctl", "--user", "daemon-reload"],
-                    ["systemctl", "--user", "enable", "--now", "mbd.service"],
+                    ["systemctl", "--user", "enable", "mbd.service"],
+                    ["systemctl", "--user", "start", "--no-block", "mbd.service"],
                 ],
                 message: "started mbd.service"
             )
@@ -218,7 +219,7 @@ import Testing
     )
     #expect(
         statusPlan == ServerUserServiceCommandPlan(
-            commands: [["systemctl", "--user", "status", "mbd.service"]]
+            commands: [["systemctl", "--user", "--no-pager", "status", "mbd.service"]]
         )
     )
 }
