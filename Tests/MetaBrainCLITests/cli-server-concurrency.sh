@@ -93,7 +93,7 @@ assert_get_body() {
     local expected="$2"
     local actual
 
-    actual="$("$MB_BIN" --server "$SERVER_ENDPOINT" --store "$STORE" get "$path" --format json)"
+    actual="$("$MB_BIN" --server "$SERVER_ENDPOINT" get "$path" --store "$STORE" --format json)"
     printf '%s\n' "$actual" | rg -F -q '"path":"'"$path"'"'
     printf '%s\n' "$actual" | rg -F -q '"body":"'"$expected"'"'
 }
@@ -133,12 +133,13 @@ wait_for_workload() {
 }
 
 start_server
-"$MB_BIN" --server "$SERVER_ENDPOINT" --store "$STORE" init >/dev/null
+"$MB_BIN" --server "$SERVER_ENDPOINT" init --store "$STORE" >/dev/null
 
 for i in $(seq 1 "$SEED_COUNT"); do
-    "$MB_BIN" --server "$SERVER_ENDPOINT" --store "$STORE" put \
+    "$MB_BIN" --server "$SERVER_ENDPOINT" put \
         "/concurrent/seed-$i" \
         "seed body $i concurrent-token" \
+        --store "$STORE" \
         --tag concurrent \
         --meta kind=seed \
         --keep-all \
@@ -149,19 +150,20 @@ done
 for i in $(seq 1 "$READ_COUNT"); do
     doc=$(( (i - 1) % SEED_COUNT + 1 ))
     run_bg "read-$i" \
-        "$MB_BIN" --server "$SERVER_ENDPOINT" --store "$STORE" get "/concurrent/seed-$doc" --format json
+        "$MB_BIN" --server "$SERVER_ENDPOINT" get "/concurrent/seed-$doc" --store "$STORE" --format json
 done
 
 for i in $(seq 1 "$SEARCH_COUNT"); do
     run_bg "search-$i" \
-        "$MB_BIN" --server "$SERVER_ENDPOINT" --store "$STORE" search concurrent-token --path-prefix /concurrent --limit 5 --format jsonl
+        "$MB_BIN" --server "$SERVER_ENDPOINT" search concurrent-token --store "$STORE" --path-prefix /concurrent --limit 5 --format jsonl
 done
 
 for i in $(seq 1 "$WRITE_COUNT"); do
     run_bg "write-$i" \
-        "$MB_BIN" --server "$SERVER_ENDPOINT" --store "$STORE" put \
+        "$MB_BIN" --server "$SERVER_ENDPOINT" put \
         "/concurrent/write-$i" \
         "write body $i concurrent-token" \
+        --store "$STORE" \
         --tag concurrent \
         --meta kind=write \
         --format json
@@ -169,9 +171,10 @@ done
 
 for i in $(seq 1 "$SEED_COUNT"); do
     run_bg "update-$i" \
-        "$MB_BIN" --server "$SERVER_ENDPOINT" --store "$STORE" put \
+        "$MB_BIN" --server "$SERVER_ENDPOINT" put \
         "/concurrent/seed-$i" \
         "updated seed body $i concurrent-token" \
+        --store "$STORE" \
         --tag concurrent \
         --meta kind=updated \
         --keep-all \
@@ -186,7 +189,7 @@ done
 
 for i in $(seq 1 "$SEED_COUNT"); do
     assert_get_body "/concurrent/seed-$i" "updated seed body $i concurrent-token"
-    versions="$("$MB_BIN" --server "$SERVER_ENDPOINT" --store "$STORE" versions "/concurrent/seed-$i" --format jsonl)"
+    versions="$("$MB_BIN" --server "$SERVER_ENDPOINT" versions "/concurrent/seed-$i" --store "$STORE" --format jsonl)"
     version_count="$(printf '%s\n' "$versions" | wc -l | tr -d ' ')"
     if [[ "$version_count" != "2" ]]; then
         echo "Expected two versions for /concurrent/seed-$i, got $version_count: $versions" >&2
@@ -194,7 +197,7 @@ for i in $(seq 1 "$SEED_COUNT"); do
     fi
 done
 
-LIST_JSONL="$("$MB_BIN" --server "$SERVER_ENDPOINT" --store "$STORE" list /concurrent --format jsonl)"
+LIST_JSONL="$("$MB_BIN" --server "$SERVER_ENDPOINT" list /concurrent --store "$STORE" --format jsonl)"
 listed_count="$(printf '%s\n' "$LIST_JSONL" | rg -c '"path":"/concurrent/(seed|write)-[0-9]+"')"
 expected_count=$((SEED_COUNT + WRITE_COUNT))
 if [[ "$listed_count" != "$expected_count" ]]; then
@@ -202,7 +205,7 @@ if [[ "$listed_count" != "$expected_count" ]]; then
     exit 1
 fi
 
-SEARCH_JSONL="$("$MB_BIN" --server "$SERVER_ENDPOINT" --store "$STORE" search concurrent-token --path-prefix /concurrent --limit "$expected_count" --format jsonl)"
+SEARCH_JSONL="$("$MB_BIN" --server "$SERVER_ENDPOINT" search concurrent-token --store "$STORE" --path-prefix /concurrent --limit "$expected_count" --format jsonl)"
 search_count="$(printf '%s\n' "$SEARCH_JSONL" | rg -c '"path":"/concurrent/(seed|write)-[0-9]+"')"
 if [[ "$search_count" -lt "$expected_count" ]]; then
     echo "Expected search to find at least $expected_count concurrent documents, got $search_count: $SEARCH_JSONL" >&2
