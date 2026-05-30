@@ -82,10 +82,12 @@ The v1 model is:
   default so the user can see whether `http://127.0.0.1:6374` is reachable and
   which daemon version is serving. `mb version --server <socket-or-url>` queries
   a specific daemon, and `mb version --no-server` prints only the CLI version.
-- Daemon: `mbd serve` opens one configured store at startup and routes local
+- Daemon: `mbd serve` listens on one configured local endpoint and routes local
   HTTP/1.1 requests through `MetaBrainServerSupport`, keeping business behavior
-  in `MetaBrainCore`. Store-backed routes cover the current read and mutation
-  command surface; dump file emission remains a client-side CLI concern.
+  in `MetaBrainCore`. Store-backed routes resolve the selected store through a
+  registry keyed by canonical store path, with one actor per active store and
+  idle store release to drop LevelDB locks. Dump file emission remains a
+  client-side CLI concern.
 - UI app: keep one `MetaBrainStore` instance alive and call it with `async`/`await`.
 - Multiple processes: do not promise direct concurrent access to the same store.
 - Multiple tools should use the daemon when they need concurrent access to the

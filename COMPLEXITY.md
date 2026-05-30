@@ -157,8 +157,7 @@ and does not open the store.
 
 The daemon server opens a foreground HTTP/1.1 listener over a Unix socket by
 default, or loopback HTTP when explicitly configured. It validates
-configuration, opens one configured `MetaBrainStore` for the daemon lifetime,
-applies request size limits and optional bearer-token authorization, and routes
+configuration, creates a store registry, applies request size limits, and routes
 `GET /health` without touching the document store. Startup is `O(1)` relative
 to store size.
 
@@ -166,12 +165,15 @@ Per health request, parsing, validation, routing, and JSON response encoding are
 `O(H_req + B_req + B_resp)`, where request and response sizes are bounded by
 the configured limits. Current request handling uses a single concurrency
 limiter with bounded queued admission. Store-backed routes use the daemon-owned
-`MetaBrainStoreServer` actor, so document operations are serialized through one
-long-lived store handle in the first implementation.
+`MetaBrainStoreRegistry`, keyed by canonical store path. Each active store path
+owns one `MetaBrainStoreServer` actor, so document operations are serialized
+within one store but can proceed independently across unrelated stores. Idle
+stores close after the configured idle timeout and release their LevelDB locks.
 
 `GET /v1/version` reports local daemon version metadata and does not perform
-the GitHub release check. `POST /v1/init` returns the daemon-owned store path.
-Both are `O(1)` relative to store size.
+the GitHub release check. `POST /v1/init` returns the selected store path,
+opening that store through the registry if needed. Both are `O(1)` relative to
+store size.
 
 `POST /v1/put` delegates to `MetaBrainStore.putDocument(_:)`; its complexity
 matches the core write path for creating or replacing one document and its
@@ -208,13 +210,15 @@ leetspeak `META` port.
 In daemon-backed mode the CLI does not open LevelDB. It validates command-line
 options, performs client-side file work such as `--body-file`, `--patch-file`,
 and `--output-dir`, sends compact JSON over the Unix socket or loopback HTTP
-endpoint, decodes the response, and formats output locally.
+endpoint, includes the explicit `--store` path as request metadata when one is
+provided, decodes the response, and formats output locally.
 
 The probe is O(1) bounded local I/O. The selected command complexity is
 therefore the local CLI preprocessing and output cost plus the matching
 `/v1/...` endpoint cost described above. The store scan/write behavior remains
 the same as the direct command because both paths delegate to `MetaBrainCore`;
-the process-level difference is that LevelDB is already owned by the daemon.
+the process-level difference is that active LevelDB handles are owned by the
+daemon registry and reused until they go idle.
 
 ### `init`
 
