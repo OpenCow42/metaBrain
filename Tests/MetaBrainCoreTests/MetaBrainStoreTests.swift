@@ -2470,6 +2470,30 @@ private func storeTestCodec<Value: Codable & Sendable>(
             tags: [],
             metadata: [:],
             references: []
+        ),
+        DocumentDumpEntry(
+            documentID: id,
+            path: try DocumentPath("/notes/config"),
+            title: nil,
+            body: #"{"enabled":true}"#,
+            version: 4,
+            versionCreatedAt: Date(timeIntervalSince1970: 0),
+            isCurrent: false,
+            tags: [],
+            metadata: [:],
+            references: []
+        ),
+        DocumentDumpEntry(
+            documentID: id,
+            path: try DocumentPath("/notes/list"),
+            title: nil,
+            body: #"[{"name":"first"}]"#,
+            version: 5,
+            versionCreatedAt: Date(timeIntervalSince1970: 0),
+            isCurrent: false,
+            tags: [],
+            metadata: [:],
+            references: []
         )
     ]
 
@@ -2479,11 +2503,25 @@ private func storeTestCodec<Value: Codable & Sendable>(
         .appendingPathComponent("readme__doc-1__v7__20260517T110203Z.md")
     let rootURL = outputDirectory.appendingPathComponent("root__doc-1__v2__19700101T000000Z.md")
     let colonURL = outputDirectory.appendingPathComponent("bad_name__doc-1__v3__19700101T000000Z.md")
+    let jsonURL = outputDirectory
+        .appendingPathComponent("notes", isDirectory: true)
+        .appendingPathComponent("config__doc-1__v4__19700101T000000Z.json")
+    let jsonArrayURL = outputDirectory
+        .appendingPathComponent("notes", isDirectory: true)
+        .appendingPathComponent("list__doc-1__v5__19700101T000000Z.json")
 
-    #expect(copied.map(\.fileSystemPath) == [readmeURL.path, rootURL.path, colonURL.path])
+    #expect(copied.map(\.fileSystemPath) == [
+        readmeURL.path,
+        rootURL.path,
+        colonURL.path,
+        jsonURL.path,
+        jsonArrayURL.path
+    ])
     #expect(try String(contentsOf: readmeURL, encoding: .utf8) == "hello é")
     #expect(try String(contentsOf: rootURL, encoding: .utf8) == "root")
     #expect(try String(contentsOf: colonURL, encoding: .utf8) == "colon")
+    #expect(try String(contentsOf: jsonURL, encoding: .utf8) == #"{"enabled":true}"#)
+    #expect(try String(contentsOf: jsonArrayURL, encoding: .utf8) == #"[{"name":"first"}]"#)
 }
 
 @Test func dumpEntryEncodesStableJSONFields() throws {

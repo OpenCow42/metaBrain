@@ -13,8 +13,8 @@ state across loose `.md`, `.json`, and scratch files, `metaBrain` stores content
 in a compact LevelDB-backed database while keeping it discoverable through a
 small CLI.
 
-The first public release ships the `mb` command-line tool and the
-`MetaBrainCore` Swift library.
+The first public release ships the `mb` command-line tool, the `mbd` local
+daemon, and the `MetaBrainCore` Swift library.
 
 ## Install On macOS
 
@@ -24,10 +24,13 @@ Install from the public OpenCow42 Homebrew tap:
 brew tap OpenCow42/tap && brew install mb
 ```
 
+The Homebrew package installs both `mb` and `mbd`. It does not start the daemon
+automatically.
+
 ## Install On Ubuntu
 
 Install from the public OpenCow42 APT repository on Ubuntu 24.04 or 26.04.
-The package name is `metabrain`, and it installs the `mb` command.
+The package name is `metabrain`, and it installs both `mb` and `mbd`.
 
 Ubuntu 24.04:
 
@@ -118,6 +121,9 @@ Export a subtree as JSONL, optionally with UTF-8 body files:
 mb dump /tasks --output-dir ./metabrain-dump
 ```
 
+Dumped body files preserve document path extensions. Extensionless JSON object
+or array bodies are written with `.json`; other extensionless bodies use `.md`.
+
 Inspect history and prune retained versions:
 
 ```bash
@@ -136,7 +142,8 @@ mb help dump
 
 ## Commands
 
-- `version` prints the current release tag and checks GitHub for newer releases.
+- `version` prints the current release tag, probes the default local daemon, and
+  checks GitHub for newer releases.
 - `init` creates or opens a store.
 - `put` creates or updates a document at a path.
 - `patch` applies a single-file unified diff to an existing document body.
@@ -151,16 +158,93 @@ mb help dump
 - `delete` removes a current document and all retained versions.
 - `remove-version` removes one retained historical version.
 
+## Daemon
+
+`mbd` runs the local daemon surface. The daemon listens on one local endpoint,
+serves `/health` with daemon version metadata, and exposes store-backed JSON
+endpoints for version, init, put, patch, move, get, list, tree, search, dump,
+versions, prune, delete, and remove-version.
+
+```bash
+mbd serve --store .metabrain/store.leveldb --socket ~/.metabrain/mbd.sock
+mbd serve --store .metabrain/store.leveldb --host 127.0.0.1
+mbd service print --user
+mbd version
+```
+
+One daemon process can serve multiple stores through the same socket or
+loopback port. The CLI sends the selected `--store` path with each daemon-backed
+request, and the daemon keeps one actor per active store path. Operations for
+different stores can proceed independently, while operations inside one store
+remain serialized at that store actor. Idle stores are closed after
+`--store-idle-timeout-seconds` seconds, defaulting to 30 seconds, which releases
+the underlying LevelDB lock while the daemon keeps listening.
+
+`mb version` reports the CLI version and also probes the default local daemon at
+`http://127.0.0.1:6374`. If the daemon is reachable, the output includes the
+daemon endpoint and version. If it is not reachable, the command still exits
+successfully and reports the daemon as unavailable. Use `mb version --server
+<socket-or-url>` to query a specific daemon, `mb version --server auto` to probe
+the default local daemon explicitly, or `mb version --no-server` for the CLI
+version only.
+
+Unix sockets are the default local transport on macOS and Linux. Loopback HTTP
+is available with `--host 127.0.0.1 --port 6374`. Port `6374` is the default
+loopback port because it reads as `META` in leetspeak and avoids commonly used
+mainstream service ports.
+
+Package managers install the daemon binary passively; they do not create a
+workspace store, install a user service, or start `mbd`. Use
+`mbd service print --user` or `mbd service install --user --config <path>` when
+you want an inspectable user LaunchAgent or systemd unit.
+
+For the default store, store-backed `mb` commands automatically make a short
+health probe to `http://127.0.0.1:6374`. If a healthy daemon is already
+listening there, the command uses it; if the probe is refused or times out, the
+command opens LevelDB directly as before. Commands with an explicit `--store`
+stay direct unless daemon mode is requested.
+
+```bash
+mb put /notes/today "uses a healthy default daemon when one is running"
+mb --server auto search "probe the default daemon endpoint explicitly"
+mb --server ~/.metabrain/mbd.sock put /notes/today "daemon-backed note"
+mb --server ~/.metabrain/mbd.sock search "daemon-backed"
+mb --server http://127.0.0.1:6374 search "daemon-backed"
+mb --no-server search "force direct LevelDB access"
+```
+
+For a local serial CLI comparison between direct LevelDB command execution and
+daemon-backed command execution, build release binaries and run:
+
+```bash
+swift build -c release --product mb --product mbd
+Tests/MetaBrainCLITests/cli-server-performance.sh
+```
+
+For daemon-backed concurrent CLI read/write coverage, build the debug binaries
+and run:
+
+```bash
+swift build --product mb --product mbd
+Tests/MetaBrainCLITests/cli-server-concurrency.sh
+```
+
+`--body-file`, `--patch-file`, and `--output-dir` remain client-side CLI
+features. The daemon receives JSON request bodies and never reads or writes
+those paths on behalf of a client.
+
 ## Project Shape
 
-This repository is a Swift package with two products:
+This repository is a Swift package with three products:
 
 - `MetaBrainCore`: the shared library for storage, indexing, retrieval, and
   domain behavior.
 - `mb`: the command-line tool.
+- `mbd`: the local daemon executable.
 
-The CLI stays thin. Shared behavior belongs in `MetaBrainCore` so every future
-interface uses the same underlying model.
+The CLI and daemon stay thin. Shared behavior belongs in `MetaBrainCore`, while
+server-facing transport DTOs live in the internal `MetaBrainServerSupport`
+target when they are not part of the core storage model.
 
 The native Apple platform GUI lives in the sibling
 [`metaBrainExplorer`](../metaBrainExplorer) repository. It depends on

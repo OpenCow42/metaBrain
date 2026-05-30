@@ -2,15 +2,44 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-TMP_PARENT="${METABRAIN_TMPDIR:-/private/tmp}"
+TMP_PARENT="${METABRAIN_TMPDIR:-}"
+if [[ -z "$TMP_PARENT" ]]; then
+    if [[ -d /private/tmp ]]; then
+        TMP_PARENT=/private/tmp
+    else
+        TMP_PARENT=/tmp
+    fi
+fi
 TMP_DIR="$(mktemp -d "$TMP_PARENT/metabrain-cli.XXXXXX")"
 STORE="$TMP_DIR/store.leveldb"
-trap 'rm -rf "$TMP_DIR"' EXIT
+release_server_pid=""
+daemon_server_pid=""
+
+cleanup() {
+    if [[ -n "$daemon_server_pid" ]] && kill -0 "$daemon_server_pid" 2>/dev/null; then
+        kill "$daemon_server_pid" 2>/dev/null || true
+        wait "$daemon_server_pid" 2>/dev/null || true
+    fi
+    if [[ -n "$release_server_pid" ]] && kill -0 "$release_server_pid" 2>/dev/null; then
+        kill "$release_server_pid" 2>/dev/null || true
+        wait "$release_server_pid" 2>/dev/null || true
+    fi
+    rm -rf "$TMP_DIR"
+}
+trap cleanup EXIT
 
 if [[ -n "${METABRAIN_BIN:-}" ]]; then
     METABRAIN=("$METABRAIN_BIN")
 else
     METABRAIN=(swift run mb)
+fi
+
+if [[ -n "${METABRAIN_DAEMON_BIN:-}" ]]; then
+    METABRAIN_DAEMON=("$METABRAIN_DAEMON_BIN")
+elif [[ -x "$ROOT_DIR/.build/debug/mbd" ]]; then
+    METABRAIN_DAEMON=("$ROOT_DIR/.build/debug/mbd")
+else
+    METABRAIN_DAEMON=(swift run mbd)
 fi
 
 cd "$ROOT_DIR"
@@ -204,7 +233,7 @@ assert_remove_version_json() {
 "${METABRAIN[@]}" help | rg -q 'mb help move'
 "${METABRAIN[@]}" help | rg -q 'mb help version'
 "${METABRAIN[@]}" help init | rg -q 'Create or open a metaBrain store'
-"${METABRAIN[@]}" help version | rg -q 'Print the metaBrain version and check GitHub releases'
+"${METABRAIN[@]}" help version | rg -q 'Print the metaBrain version'
 "${METABRAIN[@]}" help put | rg -q 'Create or update a document at a path'
 "${METABRAIN[@]}" help patch | rg -q 'Patch a document body with a unified diff'
 "${METABRAIN[@]}" help move | rg -q 'Move an existing document to a new path without changing its ID'
@@ -220,20 +249,107 @@ assert_remove_version_json() {
 "${METABRAIN[@]}" help delete | rg -q 'Delete a document and all retained versions'
 "${METABRAIN[@]}" help remove-version | rg -q 'Remove one retained historical document version'
 VERSION_DEFAULT_JSON="$(METABRAIN_VERSION=9.8.7 "${METABRAIN[@]}" version --no-release-check)"
-if [[ "$VERSION_DEFAULT_JSON" != '{"currentTag":"9.8.7","releaseCheck":null}' ]]; then
+if ! printf '%s\n' "$VERSION_DEFAULT_JSON" | rg -F -q '"currentTag":"9.8.7"'; then
     echo "Expected version default JSON output without release check, got: $VERSION_DEFAULT_JSON" >&2
     exit 1
 fi
-VERSION_TEXT="$(METABRAIN_VERSION=9.8.7 "${METABRAIN[@]}" version --no-release-check --format text)"
-if [[ "$VERSION_TEXT" != $'version: 9.8.7\nreleaseCheck: skipped' ]]; then
+printf '%s\n' "$VERSION_DEFAULT_JSON" | rg -F -q '"endpoint":"http://127.0.0.1:6374"'
+printf '%s\n' "$VERSION_DEFAULT_JSON" | rg -F -q '"reachable":false'
+VERSION_TEXT="$(METABRAIN_VERSION=9.8.7 "${METABRAIN[@]}" version --no-server --no-release-check --format text)"
+if [[ "$VERSION_TEXT" != $'version: 9.8.7\nserver: skipped\nreleaseCheck: skipped' ]]; then
     echo "Expected version text output without release check, got: $VERSION_TEXT" >&2
     exit 1
 fi
-VERSION_JSON="$(METABRAIN_VERSION=9.8.7 "${METABRAIN[@]}" version --no-release-check --format json)"
-if [[ "$VERSION_JSON" != "$VERSION_DEFAULT_JSON" ]]; then
+VERSION_JSON="$(METABRAIN_VERSION=9.8.7 "${METABRAIN[@]}" version --no-server --no-release-check --format json)"
+if [[ "$VERSION_JSON" != '{"currentTag":"9.8.7","releaseCheck":null,"server":null}' ]]; then
     echo "Expected version JSON output without release check, got: $VERSION_JSON" >&2
     exit 1
 fi
+VERSION_JSONL="$(METABRAIN_VERSION=9.8.7 "${METABRAIN[@]}" version --no-server --no-release-check --format jsonl)"
+if [[ "$VERSION_JSONL" != "$VERSION_JSON" ]]; then
+    echo "Expected version JSONL output without release check, got: $VERSION_JSONL" >&2
+    exit 1
+fi
+
+release_port_file="$TMP_DIR/release-port"
+python3 - "$release_port_file" <<'PY' &
+import http.server
+import os
+import socketserver
+import sys
+
+class Server(http.server.HTTPServer):
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path != "/latest":
+            body = b'{}'
+            self.send_response(503)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        body = b'{"html_url":"https://example.com/metabrain/releases/9.9.9","tag_name":"9.9.9"}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args):
+        pass
+
+server = Server(("127.0.0.1", 0), Handler)
+with open(sys.argv[1], "w", encoding="utf-8") as file:
+    file.write(str(server.server_port))
+    file.flush()
+    os.fsync(file.fileno())
+server.serve_forever()
+PY
+release_server_pid="$!"
+for _ in $(seq 1 400); do
+    if [[ -s "$release_port_file" ]]; then
+        break
+    fi
+    if ! kill -0 "$release_server_pid" 2>/dev/null; then
+        echo "Release test server exited early." >&2
+        exit 1
+    fi
+    sleep 0.05
+done
+if [[ ! -s "$release_port_file" ]]; then
+    echo "Release test server did not report a port." >&2
+    exit 1
+fi
+release_port="$(cat "$release_port_file")"
+VERSION_CHECKED_TEXT="$(METABRAIN_VERSION=9.8.7 "${METABRAIN[@]}" version --format text --release-api-url "http://127.0.0.1:${release_port}/latest")"
+printf '%s\n' "$VERSION_CHECKED_TEXT" | rg -F -q 'version: 9.8.7'
+printf '%s\n' "$VERSION_CHECKED_TEXT" | rg -F -q 'latest: 9.9.9'
+printf '%s\n' "$VERSION_CHECKED_TEXT" | rg -F -q 'updateAvailable: true'
+printf '%s\n' "$VERSION_CHECKED_TEXT" | rg -F -q 'releaseCheck: checked'
+printf '%s\n' "$VERSION_CHECKED_TEXT" | rg -F -q 'releaseURL: https://example.com/metabrain/releases/9.9.9'
+VERSION_FAILED_TEXT="$(METABRAIN_VERSION=9.8.7 "${METABRAIN[@]}" version --format text --release-api-url "http://127.0.0.1:${release_port}/failed")"
+printf '%s\n' "$VERSION_FAILED_TEXT" | rg -F -q 'releaseCheck: failed'
+printf '%s\n' "$VERSION_FAILED_TEXT" | rg -F -q 'message: GitHub releases request returned HTTP 503.'
+
+if "${METABRAIN[@]}" version --release-check-timeout 0 2>"$TMP_DIR/version-timeout.err"; then
+    echo "Expected invalid release timeout to fail" >&2
+    exit 1
+fi
+rg -F -q -- '--release-check-timeout must be greater than zero' "$TMP_DIR/version-timeout.err"
+
+if "${METABRAIN[@]}" version --release-api-url relative/path 2>"$TMP_DIR/version-url.err"; then
+    echo "Expected invalid release API URL to fail" >&2
+    exit 1
+fi
+rg -F -q -- '--release-api-url must be an absolute URL' "$TMP_DIR/version-url.err"
 
 if "${METABRAIN[@]}" help missing 2>"$TMP_DIR/help-missing.err"; then
     echo "Expected unknown help topic to fail" >&2
@@ -247,7 +363,7 @@ if "${METABRAIN[@]}" init --unknown-option 2>"$TMP_DIR/init-invalid.err"; then
     echo "Expected invalid init option to fail" >&2
     exit 1
 fi
-rg -F -q 'Usage: mb init [--store <store>] [--format <format>]' "$TMP_DIR/init-invalid.err"
+rg -F -q 'Usage: mb init [--store <store>] [--server <server>] [--no-server] [--format <format>]' "$TMP_DIR/init-invalid.err"
 
 if "${METABRAIN[@]}" search query --limit 0 2>"$TMP_DIR/search-invalid.err"; then
     echo "Expected invalid search limit to fail" >&2
@@ -535,6 +651,15 @@ if [[ -z "$DUMP_FILE" || ! -f "$DUMP_FILE" ]]; then
     exit 1
 fi
 rg -F -q 'alpha beta updated memory' "$DUMP_FILE"
+PUT_JSON_BODY_JSON="$("${METABRAIN[@]}" put --store "$STORE" /notes/config '{"enabled":true}')"
+assert_put_json "$PUT_JSON_BODY_JSON" /notes/config created 1
+"${METABRAIN[@]}" dump --store "$STORE" /notes/config --output-dir "$DUMP_OUTPUT_DIR" >"$TMP_DIR/dump-json-body-files.jsonl"
+JSON_DUMP_FILE="$(find "$DUMP_OUTPUT_DIR" -type f -name 'config__*__v1__*.json' | head -n 1)"
+if [[ -z "$JSON_DUMP_FILE" || ! -f "$JSON_DUMP_FILE" ]]; then
+    echo "Expected extensionless JSON body dump to create a .json file" >&2
+    exit 1
+fi
+rg -F -q '{"enabled":true}' "$JSON_DUMP_FILE"
 VERSIONS_TODAY_DEFAULT_JSONL="$("${METABRAIN[@]}" versions --store "$STORE" /notes/today)"
 assert_versions_jsonl "$VERSIONS_TODAY_DEFAULT_JSONL" /notes/today 2
 printf '%s\n' "$VERSIONS_TODAY_DEFAULT_JSONL" | rg -F -q '"sequence":1'
@@ -604,6 +729,10 @@ MOVE_SOURCE_ID="$(printf '%s\n' "$PUT_MOVE_SOURCE_JSON" | sed -E 's/.*"documentI
 MOVE_SOURCE_JSON="$("${METABRAIN[@]}" move --store "$STORE" /move/source /move/archive/source)"
 assert_move_json "$MOVE_SOURCE_JSON" /move/source /move/archive/source moved 2
 printf '%s\n' "$MOVE_SOURCE_JSON" | rg -F -q '"documentID":"'"$MOVE_SOURCE_ID"'"'
+MOVE_JSONL_TARGET_JSON="$("${METABRAIN[@]}" put --store "$STORE" /move/jsonl-source 'jsonl relocated body')"
+assert_put_json "$MOVE_JSONL_TARGET_JSON" /move/jsonl-source created 1
+MOVE_JSONL_OUTPUT="$("${METABRAIN[@]}" move --store "$STORE" /move/jsonl-source /move/jsonl-target --format jsonl)"
+assert_move_json "$MOVE_JSONL_OUTPUT" /move/jsonl-source /move/jsonl-target moved 2
 if "${METABRAIN[@]}" get --store "$STORE" /move/source 2>"$TMP_DIR/move-old-get.err"; then
     echo "Expected moved old path get to fail" >&2
     exit 1
@@ -627,6 +756,16 @@ if "${METABRAIN[@]}" move --store "$STORE" /move/missing /move/new-missing 2>"$T
     exit 1
 fi
 rg -F -q 'Document not found: /move/missing.' "$TMP_DIR/move-missing.err"
+if "${METABRAIN[@]}" move --store "$STORE" /move/only-one-path 2>"$TMP_DIR/move-one-path.err"; then
+    echo "Expected move with one path and no ID to fail" >&2
+    exit 1
+fi
+rg -F -q 'Provide a source path and a destination path, or use --id with one destination path.' "$TMP_DIR/move-one-path.err"
+if "${METABRAIN[@]}" move --store "$STORE" --id "$MOVE_SOURCE_ID" /move/a /move/b 2>"$TMP_DIR/move-id-two-paths.err"; then
+    echo "Expected move with ID and two paths to fail" >&2
+    exit 1
+fi
+rg -F -q 'Use --id with exactly one destination path.' "$TMP_DIR/move-id-two-paths.err"
 
 "${METABRAIN[@]}" put --store "$STORE" --format text /delete/target 'delete target v1 needle' --keep-all | rg -q '^version: 1$'
 "${METABRAIN[@]}" put --store "$STORE" --format text /delete/target 'delete target v2 needle' --keep-all | rg -q '^version: 2$'
@@ -740,7 +879,7 @@ if "${METABRAIN[@]}" get --store "$STORE" --id abc --path /notes/today 2>"$TMP_D
     exit 1
 fi
 rg -q 'Provide exactly one of --id, --path, or a positional path' "$TMP_DIR/double-reference.err"
-rg -F -q 'Usage: mb get [--store <store>] [--id <id>] [--path <path>] [<path>] [--format <format>]' "$TMP_DIR/double-reference.err"
+rg -F -q 'Usage: mb get [--store <store>] [--server <server>] [--no-server] [--id <id>] [--path <path>] [<path>] [--format <format>]' "$TMP_DIR/double-reference.err"
 
 if "${METABRAIN[@]}" get --store "$STORE" --path /notes/today /notes/file 2>"$TMP_DIR/path-and-positional-reference.err"; then
     echo "Expected option path plus positional path to fail" >&2
@@ -844,28 +983,28 @@ if "${METABRAIN[@]}" versions --store "$STORE" 2>"$TMP_DIR/missing-version-refer
     exit 1
 fi
 rg -q 'Provide exactly one of --id, --path, or a positional path' "$TMP_DIR/missing-version-reference.err"
-rg -F -q 'Usage: mb versions [--store <store>] [--id <id>] [--path <path>] [<path>] [--format <format>]' "$TMP_DIR/missing-version-reference.err"
+rg -F -q 'Usage: mb versions [--store <store>] [--server <server>] [--no-server] [--id <id>] [--path <path>] [<path>] [--format <format>]' "$TMP_DIR/missing-version-reference.err"
 
 if "${METABRAIN[@]}" delete --store "$STORE" 2>"$TMP_DIR/missing-delete-reference.err"; then
     echo "Expected missing delete reference options to fail" >&2
     exit 1
 fi
 rg -q 'Provide exactly one of --id, --path, or a positional path' "$TMP_DIR/missing-delete-reference.err"
-rg -F -q 'Usage: mb delete [--store <store>] [--id <id>] [--path <path>] [<path>] [--format <format>]' "$TMP_DIR/missing-delete-reference.err"
+rg -F -q 'Usage: mb delete [--store <store>] [--server <server>] [--no-server] [--id <id>] [--path <path>] [<path>] [--format <format>]' "$TMP_DIR/missing-delete-reference.err"
 
 if "${METABRAIN[@]}" remove-version --store "$STORE" --sequence 1 2>"$TMP_DIR/missing-remove-version-reference.err"; then
     echo "Expected missing remove-version reference options to fail" >&2
     exit 1
 fi
 rg -q 'Provide exactly one of --id, --path, or a positional path' "$TMP_DIR/missing-remove-version-reference.err"
-rg -F -q 'Usage: mb remove-version [--store <store>] [--id <id>] [--path <path>] [<path>] [--format <format>] --sequence <sequence>' "$TMP_DIR/missing-remove-version-reference.err"
+rg -F -q 'Usage: mb remove-version [--store <store>] [--server <server>] [--no-server] [--id <id>] [--path <path>] [<path>] [--format <format>] --sequence <sequence>' "$TMP_DIR/missing-remove-version-reference.err"
 
 if "${METABRAIN[@]}" remove-version --store "$STORE" /versions/remove-json 2>"$TMP_DIR/missing-remove-version-sequence.err"; then
     echo "Expected missing remove-version sequence to fail" >&2
     exit 1
 fi
 rg -q 'Missing expected (argument|option).*--sequence <sequence>' "$TMP_DIR/missing-remove-version-sequence.err"
-rg -F -q 'Usage: mb remove-version [--store <store>] [--id <id>] [--path <path>] [<path>] [--format <format>] --sequence <sequence>' "$TMP_DIR/missing-remove-version-sequence.err"
+rg -F -q 'Usage: mb remove-version [--store <store>] [--server <server>] [--no-server] [--id <id>] [--path <path>] [<path>] [--format <format>] --sequence <sequence>' "$TMP_DIR/missing-remove-version-sequence.err"
 
 if "${METABRAIN[@]}" remove-version --store "$STORE" /versions/remove-json --sequence 0 2>"$TMP_DIR/zero-remove-version-sequence.err"; then
     echo "Expected zero remove-version sequence to fail" >&2
@@ -878,11 +1017,197 @@ if "${METABRAIN[@]}" prune --store "$STORE" --path /notes/today 2>"$TMP_DIR/miss
     exit 1
 fi
 rg -q 'Provide one of --keep-all, --keep-last, or --keep-within' "$TMP_DIR/missing-retention.err"
-rg -F -q 'Usage: mb prune [--store <store>] [--id <id>] [--path <path>] [<path>] [--keep-all] [--keep-last <keep-last>] [--keep-within <keep-within>] [--format <format>]' "$TMP_DIR/missing-retention.err"
+rg -F -q 'Usage: mb prune [--store <store>] [--server <server>] [--no-server] [--id <id>] [--path <path>] [<path>] [--keep-all] [--keep-last <keep-last>] [--keep-within <keep-within>] [--format <format>]' "$TMP_DIR/missing-retention.err"
 
 if "${METABRAIN[@]}" get --store "$STORE" 2>"$TMP_DIR/missing-reference.err"; then
     echo "Expected missing reference options to fail" >&2
     exit 1
 fi
 rg -q 'Provide exactly one of --id, --path, or a positional path' "$TMP_DIR/missing-reference.err"
-rg -F -q 'Usage: mb get [--store <store>] [--id <id>] [--path <path>] [<path>] [--format <format>]' "$TMP_DIR/missing-reference.err"
+rg -F -q 'Usage: mb get [--store <store>] [--server <server>] [--no-server] [--id <id>] [--path <path>] [<path>] [--format <format>]' "$TMP_DIR/missing-reference.err"
+
+SERVER_STORE="$TMP_DIR/server-store.leveldb"
+SERVER_SOCKET="$TMP_DIR/mbd.sock"
+"${METABRAIN_DAEMON[@]}" serve --store "$SERVER_STORE" --socket "$SERVER_SOCKET" --log-level error >"$TMP_DIR/mbd.out" 2>"$TMP_DIR/mbd.err" &
+daemon_server_pid="$!"
+for _ in $(seq 1 400); do
+    if [[ -S "$SERVER_SOCKET" ]]; then
+        break
+    fi
+    if ! kill -0 "$daemon_server_pid" 2>/dev/null; then
+        echo "Daemon exited early." >&2
+        cat "$TMP_DIR/mbd.err" >&2
+        exit 1
+    fi
+    sleep 0.05
+done
+if [[ ! -S "$SERVER_SOCKET" ]]; then
+    echo "Daemon did not create socket." >&2
+    cat "$TMP_DIR/mbd.err" >&2
+    exit 1
+fi
+
+SERVER_MB=("${METABRAIN[@]}" --server "$SERVER_SOCKET")
+SERVER_INIT_JSON="$("${SERVER_MB[@]}" init)"
+SERVER_EXPECTED_INIT_JSON="{\"operation\":\"init\",\"status\":\"initialized\",\"storePath\":\"$SERVER_STORE\"}"
+if [[ "$SERVER_INIT_JSON" != "$SERVER_EXPECTED_INIT_JSON" ]]; then
+    echo "Expected daemon init JSON output, got: $SERVER_INIT_JSON" >&2
+    exit 1
+fi
+
+SERVER_FIRST_STORE="$TMP_DIR/server-first-store.leveldb"
+SERVER_SECOND_STORE="$TMP_DIR/server-second-store.leveldb"
+SERVER_FIRST_INIT_JSON="$("${METABRAIN[@]}" init --server "$SERVER_SOCKET" --store "$SERVER_FIRST_STORE")"
+SERVER_SECOND_INIT_JSON="$("${METABRAIN[@]}" init --server "$SERVER_SOCKET" --store "$SERVER_SECOND_STORE")"
+if [[ "$SERVER_FIRST_INIT_JSON" != "{\"operation\":\"init\",\"status\":\"initialized\",\"storePath\":\"$SERVER_FIRST_STORE\"}" ]]; then
+    echo "Expected first daemon store init JSON output, got: $SERVER_FIRST_INIT_JSON" >&2
+    exit 1
+fi
+if [[ "$SERVER_SECOND_INIT_JSON" != "{\"operation\":\"init\",\"status\":\"initialized\",\"storePath\":\"$SERVER_SECOND_STORE\"}" ]]; then
+    echo "Expected second daemon store init JSON output, got: $SERVER_SECOND_INIT_JSON" >&2
+    exit 1
+fi
+SERVER_FIRST_PUT_JSON="$("${METABRAIN[@]}" put /daemon/shared 'first daemon store' --server "$SERVER_SOCKET" --store "$SERVER_FIRST_STORE")"
+SERVER_SECOND_PUT_JSON="$("${METABRAIN[@]}" put /daemon/shared 'second daemon store' --server "$SERVER_SOCKET" --store "$SERVER_SECOND_STORE")"
+assert_put_json "$SERVER_FIRST_PUT_JSON" /daemon/shared created 1
+assert_put_json "$SERVER_SECOND_PUT_JSON" /daemon/shared created 1
+SERVER_FIRST_GET_JSON="$("${METABRAIN[@]}" get /daemon/shared --server "$SERVER_SOCKET" --store "$SERVER_FIRST_STORE")"
+SERVER_SECOND_GET_JSON="$("${METABRAIN[@]}" get /daemon/shared --server "$SERVER_SOCKET" --store "$SERVER_SECOND_STORE")"
+assert_get_json "$SERVER_FIRST_GET_JSON" /daemon/shared 'first daemon store' 1
+assert_get_json "$SERVER_SECOND_GET_JSON" /daemon/shared 'second daemon store' 1
+
+SERVER_VERSION_JSON="$(METABRAIN_VERSION=4.5.6 "${METABRAIN[@]}" --server "$SERVER_SOCKET" version --no-release-check)"
+if ! printf '%s\n' "$SERVER_VERSION_JSON" | rg -F -q '"currentTag":"4.5.6"'; then
+    echo "Expected CLI version in daemon version JSON output, got: $SERVER_VERSION_JSON" >&2
+    exit 1
+fi
+printf '%s\n' "$SERVER_VERSION_JSON" | rg -F -q "\"endpoint\":\"$SERVER_SOCKET\""
+printf '%s\n' "$SERVER_VERSION_JSON" | rg -F -q '"reachable":true'
+if ! printf '%s\n' "$SERVER_VERSION_JSON" | rg -F -q '"server":{"currentTag":"'; then
+    echo "Expected server version in daemon version JSON output, got: $SERVER_VERSION_JSON" >&2
+    exit 1
+fi
+
+SERVER_PUT_TODAY_JSON="$("${SERVER_MB[@]}" put /daemon/today 'daemon alpha memory' --title Daemon --tag daemon --meta kind=server --keep-all)"
+assert_put_json "$SERVER_PUT_TODAY_JSON" /daemon/today created 1
+SERVER_GET_TODAY_JSON="$("${SERVER_MB[@]}" get /daemon/today)"
+assert_get_json "$SERVER_GET_TODAY_JSON" /daemon/today 'daemon alpha memory' 1
+printf '%s\n' "$SERVER_GET_TODAY_JSON" | rg -F -q '"title":"Daemon"'
+printf '%s\n' "$SERVER_GET_TODAY_JSON" | rg -F -q '"tags":["daemon"]'
+printf '%s\n' "$SERVER_GET_TODAY_JSON" | rg -F -q '"metadata":{"kind":"server"}'
+SERVER_TODAY_ID="$(printf '%s\n' "$SERVER_GET_TODAY_JSON" | sed -E 's/.*"documentID":"([^"]+)".*/\1/')"
+
+SERVER_BODY_FILE="$TMP_DIR/server-body.txt"
+printf 'daemon body file memory\n' >"$SERVER_BODY_FILE"
+SERVER_PUT_FILE_JSON="$("${SERVER_MB[@]}" put /daemon/file --body-file "$SERVER_BODY_FILE" --ref-path /daemon/today --ref-url https://example.com/server-ref)"
+assert_put_json "$SERVER_PUT_FILE_JSON" /daemon/file created 1
+
+SERVER_PATCHABLE_JSON="$("${SERVER_MB[@]}" put /daemon/patchable 'old daemon patch memory' --tag patch --keep-all)"
+assert_put_json "$SERVER_PATCHABLE_JSON" /daemon/patchable created 1
+SERVER_PATCH_FILE="$TMP_DIR/server.patch"
+cat >"$SERVER_PATCH_FILE" <<'PATCH'
+@@ -1 +1 @@
+-old daemon patch memory
+\ No newline at end of file
++fresh daemon patch memory
+\ No newline at end of file
+PATCH
+SERVER_PATCH_CHECK_JSON="$("${SERVER_MB[@]}" patch /daemon/patchable --patch-file "$SERVER_PATCH_FILE" --check)"
+assert_patch_check_json "$SERVER_PATCH_CHECK_JSON"
+SERVER_PATCH_WRITE_JSON="$("${SERVER_MB[@]}" patch /daemon/patchable --patch-file "$SERVER_PATCH_FILE" --keep-last 2)"
+assert_patch_write_json "$SERVER_PATCH_WRITE_JSON" /daemon/patchable 2
+
+SERVER_LIST_JSONL="$("${SERVER_MB[@]}" list /daemon)"
+printf '%s\n' "$SERVER_LIST_JSONL" | rg -F -q '"path":"/daemon/today"'
+SERVER_TREE_JSONL="$("${SERVER_MB[@]}" tree /daemon --max-depth 1)"
+printf '%s\n' "$SERVER_TREE_JSONL" | rg -F -q '"kind":"root","name":"daemon","path":"/daemon"'
+printf '%s\n' "$SERVER_TREE_JSONL" | rg -F -q '"path":"/daemon/patchable"'
+SERVER_SEARCH_JSONL="$("${SERVER_MB[@]}" search fresh --tag patch)"
+assert_search_jsonl_result "$SERVER_SEARCH_JSONL" /daemon/patchable fresh
+
+SERVER_TODAY_UPDATE_JSON="$("${SERVER_MB[@]}" put /daemon/today 'daemon alpha updated memory' --keep-all)"
+assert_put_json "$SERVER_TODAY_UPDATE_JSON" /daemon/today updated 2
+SERVER_VERSIONS_JSONL="$("${SERVER_MB[@]}" versions --id "$SERVER_TODAY_ID")"
+assert_versions_jsonl "$SERVER_VERSIONS_JSONL" /daemon/today 2
+SERVER_DUMP_DIR="$TMP_DIR/server-dump-files"
+"${SERVER_MB[@]}" dump /daemon/today --versions --output-dir "$SERVER_DUMP_DIR" >"$TMP_DIR/server-dump.jsonl"
+rg -F -q '"fileSystemPath":"' "$TMP_DIR/server-dump.jsonl"
+SERVER_DUMP_FILE="$(find "$SERVER_DUMP_DIR" -type f -name 'today__*__v2__*.md' | head -n 1)"
+if [[ -z "$SERVER_DUMP_FILE" || ! -f "$SERVER_DUMP_FILE" ]]; then
+    echo "Expected daemon dump --output-dir to create a versioned copy" >&2
+    exit 1
+fi
+rg -F -q 'daemon alpha updated memory' "$SERVER_DUMP_FILE"
+
+SERVER_MOVE_JSON="$("${SERVER_MB[@]}" move /daemon/file /daemon/archive/file)"
+assert_move_json "$SERVER_MOVE_JSON" /daemon/file /daemon/archive/file moved 2
+SERVER_PRUNE_JSON="$("${SERVER_MB[@]}" prune /daemon/today --keep-last 1)"
+assert_prune_json "$SERVER_PRUNE_JSON" 1 1
+SERVER_DELETE_JSON="$("${SERVER_MB[@]}" delete /daemon/archive/file --format json)"
+assert_delete_json "$SERVER_DELETE_JSON" /daemon/archive/file true
+if "${SERVER_MB[@]}" get /daemon/archive/file 2>"$TMP_DIR/server-get-deleted.err"; then
+    echo "Expected daemon deleted document get to fail" >&2
+    exit 1
+fi
+rg -F -q 'server returned HTTP 404 document_not_found' "$TMP_DIR/server-get-deleted.err"
+
+"${SERVER_MB[@]}" put /daemon/remove-version 'remove daemon v1' --keep-all --format text | rg -q '^version: 1$'
+"${SERVER_MB[@]}" put /daemon/remove-version 'remove daemon v2' --keep-all --format text | rg -q '^version: 2$'
+SERVER_REMOVE_VERSION_JSON="$("${SERVER_MB[@]}" remove-version /daemon/remove-version --sequence 1 --format json)"
+assert_remove_version_json "$SERVER_REMOVE_VERSION_JSON" /daemon/remove-version true 1
+
+kill "$daemon_server_pid" 2>/dev/null || true
+wait "$daemon_server_pid" 2>/dev/null || true
+daemon_server_pid=""
+
+AUTO_SERVER_STORE="$TMP_DIR/auto-server-store.leveldb"
+METABRAIN_VERSION=6.7.8 "${METABRAIN_DAEMON[@]}" serve --store "$AUTO_SERVER_STORE" --host 127.0.0.1 --log-level error >"$TMP_DIR/mbd-auto.out" 2>"$TMP_DIR/mbd-auto.err" &
+daemon_server_pid="$!"
+AUTO_SERVER_PORT=""
+for _ in $(seq 1 400); do
+    if [[ -s "$TMP_DIR/mbd-auto.out" ]]; then
+        AUTO_SERVER_PORT="$(sed -n 's/^mbd serving on loopback http 127\.0\.0\.1:\([0-9][0-9]*\)$/\1/p' "$TMP_DIR/mbd-auto.out" | head -n 1)"
+        if [[ -n "$AUTO_SERVER_PORT" ]]; then
+            break
+        fi
+    fi
+    if ! kill -0 "$daemon_server_pid" 2>/dev/null; then
+        echo "Auto daemon exited early." >&2
+        cat "$TMP_DIR/mbd-auto.err" >&2
+        exit 1
+    fi
+    sleep 0.05
+done
+if [[ "$AUTO_SERVER_PORT" != "6374" ]]; then
+    echo "Expected auto daemon to use default port 6374, got: ${AUTO_SERVER_PORT:-<none>}" >&2
+    cat "$TMP_DIR/mbd-auto.out" >&2 || true
+    cat "$TMP_DIR/mbd-auto.err" >&2 || true
+    exit 1
+fi
+
+AUTO_INIT_JSON="$("${METABRAIN[@]}" --server auto init)"
+AUTO_EXPECTED_INIT_JSON="{\"operation\":\"init\",\"status\":\"initialized\",\"storePath\":\"$AUTO_SERVER_STORE\"}"
+if [[ "$AUTO_INIT_JSON" != "$AUTO_EXPECTED_INIT_JSON" ]]; then
+    echo "Expected auto daemon init JSON output, got: $AUTO_INIT_JSON" >&2
+    exit 1
+fi
+AUTO_VERSION_JSON="$(METABRAIN_VERSION=4.5.6 "${METABRAIN[@]}" version --no-release-check)"
+printf '%s\n' "$AUTO_VERSION_JSON" | rg -F -q '"currentTag":"4.5.6"'
+printf '%s\n' "$AUTO_VERSION_JSON" | rg -F -q '"server":{"currentTag":"6.7.8","endpoint":"http://127.0.0.1:6374","reachable":true}'
+AUTO_PUT_JSON="$("${METABRAIN[@]}" put /auto/today 'auto daemon memory' --tag auto)"
+assert_put_json "$AUTO_PUT_JSON" /auto/today created 1
+AUTO_GET_JSON="$("${METABRAIN[@]}" get /auto/today)"
+assert_get_json "$AUTO_GET_JSON" /auto/today 'auto daemon memory' 1
+printf '%s\n' "$AUTO_GET_JSON" | rg -F -q '"tags":["auto"]'
+
+NO_SERVER_STORE="$TMP_DIR/no-server-store.leveldb"
+NO_SERVER_INIT_JSON="$("${METABRAIN[@]}" --no-server init --store "$NO_SERVER_STORE")"
+NO_SERVER_EXPECTED_INIT_JSON="{\"operation\":\"init\",\"status\":\"initialized\",\"storePath\":\"$NO_SERVER_STORE\"}"
+if [[ "$NO_SERVER_INIT_JSON" != "$NO_SERVER_EXPECTED_INIT_JSON" ]]; then
+    echo "Expected --no-server init JSON output, got: $NO_SERVER_INIT_JSON" >&2
+    exit 1
+fi
+
+kill "$daemon_server_pid" 2>/dev/null || true
+wait "$daemon_server_pid" 2>/dev/null || true
+daemon_server_pid=""

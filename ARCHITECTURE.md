@@ -69,10 +69,29 @@ LevelDB allows concurrent access from multiple threads inside one process, but a
 
 The v1 model is:
 
-- CLI: each command opens the store, performs one operation, and exits.
+- CLI: each default-store-backed command first makes a short health probe to
+  `http://127.0.0.1:6374`. If a healthy daemon is already listening there, the
+  CLI stays thin by reading client-side files, sending JSON DTOs over loopback
+  HTTP, formatting the response, and avoiding any direct LevelDB open. If the
+  probe is refused or times out, the CLI opens the store directly, performs one
+  operation, and exits. Commands with explicit `--store` stay direct unless
+  daemon mode is requested with `--server <socket-or-url>` or `--server auto`;
+  `--no-server` disables the probe. The default loopback endpoint is
+  `127.0.0.1:6374`, with `6374` chosen as a leetspeak `META` port.
+- `mb version` is not store-backed, but it follows the same short local probe by
+  default so the user can see whether `http://127.0.0.1:6374` is reachable and
+  which daemon version is serving. `mb version --server <socket-or-url>` queries
+  a specific daemon, and `mb version --no-server` prints only the CLI version.
+- Daemon: `mbd serve` listens on one configured local endpoint and routes local
+  HTTP/1.1 requests through `MetaBrainServerSupport`, keeping business behavior
+  in `MetaBrainCore`. Store-backed routes resolve the selected store through a
+  registry keyed by canonical store path, with one actor per active store and
+  idle store release to drop LevelDB locks. Dump file emission remains a
+  client-side CLI concern.
 - UI app: keep one `MetaBrainStore` instance alive and call it with `async`/`await`.
 - Multiple processes: do not promise direct concurrent access to the same store.
-- Future daemon: may own one store instance and expose process-safe access to many tools.
+- Multiple tools should use the daemon when they need concurrent access to the
+  same workspace store from separate processes.
 
 If a CLI command cannot open a store because another process owns it, surface a clear lock/open error rather than trying to bypass LevelDB's process lock.
 

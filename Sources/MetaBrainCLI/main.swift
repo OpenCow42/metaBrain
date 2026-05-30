@@ -1,12 +1,15 @@
 import ArgumentParser
 import Foundation
 import MetaBrainCore
-
-#if canImport(FoundationNetworking)
-import FoundationNetworking
-#endif
+import MetaBrainServerSupport
 
 @main
+enum MetaBrainCommandMain {
+    static func main() async {
+        await MetaBrainCommand.main(cliArgumentsWithGlobalServer(Array(CommandLine.arguments.dropFirst())))
+    }
+}
+
 struct MetaBrainCommand: AsyncParsableCommand {
     private static let agentDiscoveryGuide = """
         metaBrain is a local document memory for agents and tools. Use it to keep
@@ -42,7 +45,10 @@ struct MetaBrainCommand: AsyncParsableCommand {
           mb remove-version /notes/today --sequence 1
 
         The default store is .metabrain/store.leveldb. Pass --store to any command
-        when a workspace uses a different location.
+        when a workspace uses a different location. Store-backed commands auto-use a
+        healthy local daemon at http://127.0.0.1:6374 when one is already running.
+        Pass --server to force a daemon endpoint, or --no-server to force direct
+        LevelDB access.
         """
 
     static let configuration = CommandConfiguration(
@@ -74,11 +80,58 @@ struct MetaBrainCommand: AsyncParsableCommand {
 }
 
 struct StoreOptions: ParsableArguments {
+    static let defaultLoopbackServer = "http://127.0.0.1:\(ServerServeConfiguration.defaultLoopbackPort)"
+    static let autoProbeTimeoutMilliseconds = 50
+    static let daemonRequestTimeoutMilliseconds = 30_000
+
     @Option(help: "Path to the LevelDB-backed metaBrain store.")
-    var store: String = ".metabrain/store.leveldb"
+    var store: String?
+
+    @Option(help: "Unix socket path, loopback HTTP URL such as http://127.0.0.1:6374, or auto for daemon mode.")
+    var server: String?
+
+    @Flag(help: "Skip daemon auto-detection and open the LevelDB store directly.")
+    var noServer = false
+
+    func serverClient() -> MetaBrainServerClient? {
+        guard !noServer else {
+            return nil
+        }
+        if let server, server != "auto" {
+            return MetaBrainServerClient(
+                socketPath: server,
+                storePath: explicitStorePath,
+                requestTimeoutMilliseconds: Self.daemonRequestTimeoutMilliseconds
+            )
+        }
+        guard server == "auto" || store == nil else {
+            return nil
+        }
+
+        let probe = MetaBrainServerClient(
+            socketPath: Self.defaultLoopbackServer,
+            requestTimeoutMilliseconds: Self.autoProbeTimeoutMilliseconds
+        )
+        guard let health = try? probe.health(), health.service == "mbd", health.status == "ok" else {
+            return nil
+        }
+        return MetaBrainServerClient(
+            socketPath: Self.defaultLoopbackServer,
+            storePath: explicitStorePath,
+            requestTimeoutMilliseconds: Self.daemonRequestTimeoutMilliseconds
+        )
+    }
+
+    var effectiveStore: String {
+        store ?? ".metabrain/store.leveldb"
+    }
+
+    private var explicitStorePath: String? {
+        store.map { URL.expandingShellPath($0, isDirectory: true).standardizedFileURL.path }
+    }
 
     func openStore() throws -> MetaBrainStore {
-        let url = URL.expandingShellPath(store, isDirectory: true)
+        let url = URL.expandingShellPath(effectiveStore, isDirectory: true)
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(),
             withIntermediateDirectories: true
@@ -237,21 +290,19 @@ extension MetaBrainCommand {
         @OptionGroup var output: OutputFormatOptions
 
         func run() async throws {
+            if let client = storeOptions.serverClient() {
+                let result: InitializeOutput = try client.post("/v1/init", response: InitializeOutput.self)
+                try printInitializeOutput(result, format: output.format)
+                return
+            }
+
             try await storeOptions.withOpenStore { store in
                 let result = InitializeOutput(
                     operation: "init",
                     status: "initialized",
                     storePath: store.url.path
                 )
-
-                switch output.format {
-                case .text:
-                    print("Initialized metaBrain store at \(store.url.path)")
-                case .json:
-                    try printJSON(result)
-                case .jsonl:
-                    try printJSONLine(result)
-                }
+                try printInitializeOutput(result, format: output.format)
             }
         }
     }
@@ -306,40 +357,53 @@ extension MetaBrainCommand {
 
         func run() async throws {
             let documentBody = try readBody(argument: body, filePath: bodyFile)
+            let documentReferences = try parseReferences(
+                ids: referenceIDs,
+                paths: referencePaths,
+                urls: referenceURLs
+            )
+            let retentionPolicy = try retention.optionalPolicy()
+            let metadata = try parseMetadata(metadataPairs)
+
+            if let client = storeOptions.serverClient() {
+                let result: PutOutput = try client.post(
+                    "/v1/put",
+                    request: ServerPutRequest(
+                        path: path,
+                        body: documentBody,
+                        title: title,
+                        tags: tags,
+                        metadata: metadata,
+                        references: documentReferences.map(DocumentReferenceDTO.init),
+                        retention: retentionPolicy.map(DocumentRetentionPolicyDTO.init)
+                    ),
+                    response: PutOutput.self
+                )
+                try printPutOutput(result, format: output.format)
+                return
+            }
+
             let input = DocumentInput(
                 path: try DocumentPath(path),
                 title: title,
                 body: documentBody,
                 tags: tags,
-                metadata: try parseMetadata(metadataPairs),
-                references: try parseReferences(
-                    ids: referenceIDs,
-                    paths: referencePaths,
-                    urls: referenceURLs
-                ),
-                retention: try retention.optionalPolicy()
+                metadata: metadata,
+                references: documentReferences,
+                retention: retentionPolicy
             )
             let document = try await storeOptions.withOpenStore { store in
                 try await store.putDocument(input)
             }
-            let result = PutOutput(
-                documentID: document.id.rawValue,
-                operation: "put",
-                path: document.path.rawValue,
-                status: document.currentVersion == 1 ? "created" : "updated",
-                version: document.currentVersion
+            try printPutOutput(
+                PutOutput(
+                    documentID: document.id.rawValue,
+                    path: document.path.rawValue,
+                    status: document.currentVersion == 1 ? "created" : "updated",
+                    version: document.currentVersion
+                ),
+                format: output.format
             )
-
-            switch output.format {
-            case .text:
-                print("id: \(document.id.rawValue)")
-                print("path: \(document.path.rawValue)")
-                print("version: \(document.currentVersion)")
-            case .json:
-                try printJSON(result)
-            case .jsonl:
-                try printJSONLine(result)
-            }
         }
     }
 
@@ -366,52 +430,52 @@ extension MetaBrainCommand {
         }
 
         func run() async throws {
+            let reference = try referenceOptions.reference()
+            let patchText = try readPatch(filePath: patchFile)
+            let retentionPolicy = try retention.optionalPolicy()
+
+            if let client = storeOptions.serverClient() {
+                let request = ServerPatchRequest(
+                    reference: DocumentReferenceDTO(reference),
+                    unifiedDiff: patchText,
+                    check: check,
+                    retention: retentionPolicy.map(DocumentRetentionPolicyDTO.init)
+                )
+
+                if check {
+                    let result: PatchCheckOutput = try client.post(
+                        "/v1/patch",
+                        request: request,
+                        response: PatchCheckOutput.self
+                    )
+                    try printPatchCheckOutput(result, format: output.format)
+                    return
+                }
+
+                let result: PatchOutput = try client.post(
+                    "/v1/patch",
+                    request: request,
+                    response: PatchOutput.self
+                )
+                try printPatchOutput(result, format: output.format)
+                return
+            }
+
             let request = DocumentPatchRequest(
-                reference: try referenceOptions.reference(),
-                unifiedDiff: try readPatch(filePath: patchFile),
-                retention: try retention.optionalPolicy()
+                reference: reference,
+                unifiedDiff: patchText,
+                retention: retentionPolicy
             )
 
             try await storeOptions.withOpenStore { store in
                 if check {
                     try await store.checkDocumentPatch(request)
-                    let result = PatchCheckOutput(
-                        check: true,
-                        operation: "patch",
-                        status: "applies",
-                        success: true
-                    )
-
-                    switch output.format {
-                    case .text:
-                        print("patch applies")
-                    case .json:
-                        try printJSON(result)
-                    case .jsonl:
-                        try printJSONLine(result)
-                    }
+                    try printPatchCheckOutput(PatchCheckOutput(), format: output.format)
                     return
                 }
 
                 let document = try await store.patchDocument(request)
-                let result = PatchOutput(
-                    documentID: document.id.rawValue,
-                    operation: "patch",
-                    path: document.path.rawValue,
-                    status: "patched",
-                    version: document.currentVersion
-                )
-
-                switch output.format {
-                case .text:
-                    print("id: \(document.id.rawValue)")
-                    print("path: \(document.path.rawValue)")
-                    print("version: \(document.currentVersion)")
-                case .json:
-                    try printJSON(result)
-                case .jsonl:
-                    try printJSONLine(result)
-                }
+                try printPatchOutput(PatchOutput(document), format: output.format)
             }
         }
     }
@@ -455,23 +519,24 @@ extension MetaBrainCommand {
         func run() async throws {
             let reference = try sourceReference()
             let destination = try destinationPath()
+
+            if let client = storeOptions.serverClient() {
+                let result: MoveOutput = try client.post(
+                    "/v1/move",
+                    request: ServerMoveRequest(
+                        reference: DocumentReferenceDTO(reference),
+                        destinationPath: destination.rawValue
+                    ),
+                    response: MoveOutput.self
+                )
+                try printMoveOutput(result, format: output.format)
+                return
+            }
+
             let result = try await storeOptions.withOpenStore { store in
                 try await store.moveDocument(reference, to: destination)
             }
-            let outputResult = MoveOutput(result)
-
-            switch output.format {
-            case .text:
-                print("id: \(result.document.id.rawValue)")
-                print("from: \(result.sourcePath.rawValue)")
-                print("path: \(result.document.path.rawValue)")
-                print("version: \(result.document.currentVersion)")
-                print("status: \(outputResult.status)")
-            case .json:
-                try printJSON(outputResult)
-            case .jsonl:
-                try printJSONLine(outputResult)
-            }
+            try printMoveOutput(MoveOutput(result), format: output.format)
         }
 
         private func sourceReference() throws -> DocumentReference {
@@ -498,6 +563,16 @@ extension MetaBrainCommand {
         @OptionGroup var output: OutputFormatOptions
 
         func run() async throws {
+            if let client = storeOptions.serverClient() {
+                let result: GetOutput = try client.post(
+                    "/v1/get",
+                    request: ServerGetRequest(reference: DocumentReferenceDTO(try referenceOptions.reference())),
+                    response: GetOutput.self
+                )
+                try printGetOutput(result, format: output.format)
+                return
+            }
+
             let document = try await storeOptions.withOpenStore { store in
                 try await store.getDocument(referenceOptions.reference())
             }
@@ -506,14 +581,7 @@ extension MetaBrainCommand {
                 throw ValidationError("Document not found.")
             }
 
-            switch output.format {
-            case .text:
-                printDocument(document)
-            case .json:
-                try printJSON(GetOutput(document))
-            case .jsonl:
-                try printJSONLine(GetOutput(document))
-            }
+            try printGetOutput(GetOutput(document), format: output.format)
         }
     }
 
@@ -544,31 +612,36 @@ extension MetaBrainCommand {
 
         func run() async throws {
             let root = try DocumentPath(path)
-            let entries = try await storeOptions.withOpenStore { store in
-                try await store.listDirectory(
-                    path: root,
-                    recursive: recursive,
-                    directoriesOnly: directoriesOnly
+            let outputEntries: [ListOutput]
+
+            if let client = storeOptions.serverClient() {
+                outputEntries = try client.post(
+                    "/v1/list",
+                    request: ServerListRequest(
+                        path: root.rawValue,
+                        recursive: recursive,
+                        directoriesOnly: directoriesOnly
+                    ),
+                    response: [ListOutput].self
                 )
+            } else {
+                let entries = try await storeOptions.withOpenStore { store in
+                    try await store.listDirectory(
+                        path: root,
+                        recursive: recursive,
+                        directoriesOnly: directoriesOnly
+                    )
+                }
+                outputEntries = entries.map(ListOutput.init)
             }
 
-            let outputEntries = entries.map(ListOutput.init)
-
-            switch output.format {
-            case .text:
-                guard !entries.isEmpty else {
-                    print("No documents.")
-                    return
-                }
-
-                for entry in entries {
-                    print(formatListEntry(entry, relativeTo: root, recursive: recursive, includeDates: dates))
-                }
-            case .json:
-                try printJSON(outputEntries)
-            case .jsonl:
-                try printJSONLines(outputEntries)
-            }
+            try printListOutputs(
+                outputEntries,
+                root: root,
+                recursive: recursive,
+                includeDates: dates,
+                format: output.format
+            )
         }
     }
 
@@ -599,27 +672,30 @@ extension MetaBrainCommand {
 
         func run() async throws {
             let root = try DocumentPath(path)
-            let entries = try await storeOptions.withOpenStore { store in
-                try await store.tree(TreeQuery(
-                    path: root,
-                    directoriesOnly: directoriesOnly,
-                    maxDepth: maxDepth
-                ))
-            }
+            let outputEntries: [TreeOutput]
 
-            switch output.format {
-            case .text:
-                if entries.isEmpty, maxDepth != 0 {
-                    print("No documents.")
-                    return
+            if let client = storeOptions.serverClient() {
+                outputEntries = try client.post(
+                    "/v1/tree",
+                    request: ServerTreeRequest(
+                        path: root.rawValue,
+                        directoriesOnly: directoriesOnly,
+                        maxDepth: maxDepth
+                    ),
+                    response: [TreeOutput].self
+                )
+            } else {
+                let entries = try await storeOptions.withOpenStore { store in
+                    try await store.tree(TreeQuery(
+                        path: root,
+                        directoriesOnly: directoriesOnly,
+                        maxDepth: maxDepth
+                    ))
                 }
-
-                printTree(root: root, entries: entries)
-            case .json:
-                try printJSON(treeOutputs(root: root, entries: entries, maxDepth: maxDepth))
-            case .jsonl:
-                try printJSONLines(treeOutputs(root: root, entries: entries, maxDepth: maxDepth))
+                outputEntries = treeOutputs(root: root, entries: entries, maxDepth: maxDepth)
             }
+
+            try printTreeOutputs(outputEntries, root: root, maxDepth: maxDepth, format: output.format)
         }
     }
 
@@ -672,19 +748,30 @@ extension MetaBrainCommand {
                 includeBacklinks: includeBacklinks,
                 limit: limit
             )
-            let results = try await storeOptions.withOpenStore { store in
-                try await store.search(searchQuery)
-            }
-            let outputResults = results.map(SearchOutput.init)
+            let outputResults: [SearchOutput]
 
-            switch output.format {
-            case .text:
-                printSearchResults(results)
-            case .json:
-                try printJSON(outputResults)
-            case .jsonl:
-                try printJSONLines(outputResults)
+            if let client = storeOptions.serverClient() {
+                outputResults = try client.post(
+                    "/v1/search",
+                    request: ServerSearchRequest(
+                        query: searchQuery.text,
+                        pathPrefix: searchQuery.pathPrefix?.rawValue,
+                        tags: searchQuery.tags,
+                        metadata: searchQuery.metadata,
+                        includeLinkedDocuments: searchQuery.includeLinkedDocuments,
+                        includeBacklinks: searchQuery.includeBacklinks,
+                        limit: searchQuery.limit
+                    ),
+                    response: [SearchOutput].self
+                )
+            } else {
+                let results = try await storeOptions.withOpenStore { store in
+                    try await store.search(searchQuery)
+                }
+                outputResults = results.map(SearchOutput.init)
             }
+
+            try printSearchOutputs(outputResults, format: output.format)
         }
     }
 
@@ -715,27 +802,26 @@ extension MetaBrainCommand {
                 path: try DocumentPath(path),
                 versionSelection: versions ? .allRetained : .current
             )
-            let entries = try await storeOptions.withOpenStore { store in
-                try await store.dump(query)
-            }
-            let outputEntries: [DocumentDumpEntry]
-            if let outputDirectory {
-                outputEntries = try DocumentDumpFileWriter().write(
-                    entries,
-                    to: URL.expandingShellPath(outputDirectory, isDirectory: true)
+            var dumpOutputs: [DumpOutput]
+
+            if let client = storeOptions.serverClient() {
+                dumpOutputs = try client.post(
+                    "/v1/dump",
+                    request: ServerDumpRequest(path: query.path.rawValue, versions: versions),
+                    response: [DumpOutput].self
                 )
             } else {
-                outputEntries = entries
+                let entries = try await storeOptions.withOpenStore { store in
+                    try await store.dump(query)
+                }
+                dumpOutputs = entries.map(DumpOutput.init)
             }
 
-            let dumpOutputs = outputEntries.map(DumpOutput.init)
-
-            switch output.format {
-            case .text, .jsonl:
-                try printJSONLines(dumpOutputs)
-            case .json:
-                try printJSON(dumpOutputs)
+            if let outputDirectory {
+                dumpOutputs = try writeDumpOutputs(dumpOutputs, to: outputDirectory)
             }
+
+            try printDumpOutputs(dumpOutputs, format: output.format)
         }
     }
 
@@ -750,26 +836,22 @@ extension MetaBrainCommand {
         @OptionGroup var output: ListOutputFormatOptions
 
         func run() async throws {
-            let versions = try await storeOptions.withOpenStore { store in
-                try await store.listVersions(of: referenceOptions.reference())
-            }
-            let outputVersions = versions.map(VersionsOutput.init)
+            let outputVersions: [VersionsOutput]
 
-            switch output.format {
-            case .text:
-                if versions.isEmpty {
-                    print("No versions.")
-                    return
+            if let client = storeOptions.serverClient() {
+                outputVersions = try client.post(
+                    "/v1/versions",
+                    request: ServerVersionsRequest(reference: DocumentReferenceDTO(try referenceOptions.reference())),
+                    response: [VersionsOutput].self
+                )
+            } else {
+                let versions = try await storeOptions.withOpenStore { store in
+                    try await store.listVersions(of: referenceOptions.reference())
                 }
-
-                for version in versions {
-                    print("\(version.sequence) \(version.createdAt.ISO8601Format()) path=\(version.snapshot.path.rawValue) pinned=\(version.isPinned)")
-                }
-            case .json:
-                try printJSON(outputVersions)
-            case .jsonl:
-                try printJSONLines(outputVersions)
+                outputVersions = versions.map(VersionsOutput.init)
             }
+
+            try printVersionsOutputs(outputVersions, format: output.format)
         }
     }
 
@@ -794,18 +876,24 @@ extension MetaBrainCommand {
                 reference: try referenceOptions.reference(),
                 policy: try retention.requiredPolicy()
             )
+
+            if let client = storeOptions.serverClient() {
+                let result: PruneOutput = try client.post(
+                    "/v1/prune",
+                    request: ServerPruneRequest(
+                        reference: DocumentReferenceDTO(request.reference),
+                        retention: DocumentRetentionPolicyDTO(request.policy)
+                    ),
+                    response: PruneOutput.self
+                )
+                try printPruneOutput(result, format: output.format)
+                return
+            }
+
             let result = try await storeOptions.withOpenStore { store in
                 try await store.prune(request)
             }
-
-            let outputResult = PruneOutput(result)
-            switch output.format {
-            case .text:
-                print("pruned: \(result.prunedVersionCount)")
-                print("retained: \(result.retainedVersionCount)")
-            case .json, .jsonl:
-                try printJSONLine(outputResult)
-            }
+            try printPruneOutput(PruneOutput(result), format: output.format)
         }
     }
 
@@ -826,18 +914,22 @@ extension MetaBrainCommand {
         func run() async throws {
             let reference = try referenceOptions.reference()
             let formattedReference = formatReference(reference)
+
+            if let client = storeOptions.serverClient() {
+                let result: DeleteOutput = try client.post(
+                    "/v1/delete",
+                    request: ServerDeleteRequest(reference: DocumentReferenceDTO(reference)),
+                    response: DeleteOutput.self
+                )
+                try printDeleteOutput(result, format: output.format)
+                return
+            }
+
             let deleted = try await storeOptions.withOpenStore { store in
                 try await store.deleteDocument(reference)
             }
             let result = DeleteOutput(reference: formattedReference, deleted: deleted)
-
-            switch output.format {
-            case .text:
-                print("deleted: \(deleted)")
-                print("reference: \(formattedReference)")
-            case .json, .jsonl:
-                try printJSONLine(result)
-            }
+            try printDeleteOutput(result, format: output.format)
         }
     }
 
@@ -864,6 +956,20 @@ extension MetaBrainCommand {
         func run() async throws {
             let reference = try referenceOptions.reference()
             let formattedReference = formatReference(reference)
+
+            if let client = storeOptions.serverClient() {
+                let result: RemoveVersionOutput = try client.post(
+                    "/v1/remove-version",
+                    request: ServerRemoveVersionRequest(
+                        reference: DocumentReferenceDTO(reference),
+                        sequence: sequence
+                    ),
+                    response: RemoveVersionOutput.self
+                )
+                try printRemoveVersionOutput(result, format: output.format)
+                return
+            }
+
             let removed = try await storeOptions.withOpenStore { store in
                 guard let document = try await store.getDocument(reference, trackingRead: false) else {
                     return false
@@ -876,25 +982,23 @@ extension MetaBrainCommand {
                 removed: removed,
                 sequence: sequence
             )
-
-            switch output.format {
-            case .text:
-                print("removed: \(removed)")
-                print("sequence: \(sequence)")
-                print("reference: \(formattedReference)")
-            case .json, .jsonl:
-                try printJSONLine(result)
-            }
+            try printRemoveVersionOutput(result, format: output.format)
         }
     }
 
     struct Version: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "version",
-            abstract: "Print the metaBrain version and check GitHub releases."
+            abstract: "Print the metaBrain version, local daemon version, and GitHub release status."
         )
 
         @OptionGroup var output: TextOutputFormatOptions
+
+        @Option(help: "Unix socket path, loopback HTTP URL such as http://127.0.0.1:6374, or auto for the default local daemon.")
+        var server: String?
+
+        @Flag(help: "Skip local daemon version detection.")
+        var noServer = false
 
         @Flag(name: .customLong("no-release-check"), help: "Skip the GitHub latest release check.")
         var noReleaseCheck = false
@@ -917,12 +1021,13 @@ extension MetaBrainCommand {
 
         func run() async throws {
             let currentTag = currentSoftwareTag()
+            let serverVersion = resolveServerVersion(server: server, noServer: noServer)
             let releaseCheck: ReleaseCheckOutput?
 
             if noReleaseCheck {
                 releaseCheck = nil
             } else {
-                releaseCheck = await checkLatestRelease(
+                releaseCheck = await MetaBrainReleaseChecker.checkLatestRelease(
                     currentTag: currentTag,
                     releaseAPIURL: releaseAPIURL,
                     timeout: releaseCheckTimeout
@@ -931,12 +1036,27 @@ extension MetaBrainCommand {
 
             let result = VersionOutput(
                 currentTag: currentTag,
-                releaseCheck: releaseCheck
+                releaseCheck: releaseCheck,
+                server: serverVersion
             )
 
             switch output.format {
             case .text:
                 print("version: \(currentTag)")
+                if let serverVersion {
+                    print("server: \(serverVersion.endpoint)")
+                    print("serverReachable: \(serverVersion.reachable)")
+                    if let currentTag = serverVersion.currentTag {
+                        print("serverVersion: \(currentTag)")
+                    } else {
+                        print("serverVersion: unavailable")
+                    }
+                    if let error = serverVersion.error {
+                        print("serverError: \(error)")
+                    }
+                } else {
+                    print("server: skipped")
+                }
                 if let releaseCheck {
                     print("latest: \(releaseCheck.latestTag ?? "unknown")")
                     print("updateAvailable: \(releaseCheck.updateAvailable.map(String.init) ?? "unknown")")
@@ -959,380 +1079,41 @@ extension MetaBrainCommand {
     }
 }
 
-private struct InitializeOutput: Encodable {
-    let operation: String
-    let status: String
-    let storePath: String
-}
-
-private struct PutOutput: Encodable {
-    let documentID: String
-    let operation: String
-    let path: String
-    let status: String
-    let version: UInt64
-}
-
-private struct PatchOutput: Encodable {
-    let documentID: String
-    let operation: String
-    let path: String
-    let status: String
-    let version: UInt64
-}
-
-private struct PatchCheckOutput: Encodable {
-    let check: Bool
-    let operation: String
-    let status: String
-    let success: Bool
-}
-
-private struct MoveOutput: Encodable {
-    let documentID: String
-    let from: String
-    let operation: String
-    let path: String
-    let status: String
-    let version: UInt64
-
-    init(_ result: DocumentMoveResult) {
-        documentID = result.document.id.rawValue
-        from = result.sourcePath.rawValue
-        operation = "move"
-        path = result.document.path.rawValue
-        status = result.moved ? "moved" : "unchanged"
-        version = result.document.currentVersion
-    }
-}
-
-private struct PruneOutput: Encodable {
-    let operation: String
-    let prunedVersionCount: Int
-    let retainedVersionCount: Int
-    let status: String
-
-    init(_ result: PruneResult) {
-        operation = "prune"
-        prunedVersionCount = result.prunedVersionCount
-        retainedVersionCount = result.retainedVersionCount
-        status = "completed"
-    }
-}
-
-private struct DeleteOutput: Encodable {
-    let deleted: Bool
-    let operation: String
-    let reference: String
-    let status: String
-
-    init(reference: String, deleted: Bool) {
-        self.deleted = deleted
-        operation = "delete"
-        self.reference = reference
-        status = "completed"
-    }
-}
-
-private struct RemoveVersionOutput: Encodable {
-    let operation: String
-    let reference: String
-    let removed: Bool
-    let sequence: UInt64
-    let status: String
-
-    init(reference: String, removed: Bool, sequence: UInt64) {
-        operation = "remove-version"
-        self.reference = reference
-        self.removed = removed
-        self.sequence = sequence
-        status = "completed"
-    }
-}
-
-private struct VersionOutput: Encodable {
-    let currentTag: String
-    let releaseCheck: ReleaseCheckOutput?
-
-    private enum CodingKeys: String, CodingKey {
-        case currentTag
-        case releaseCheck
+private func resolveServerVersion(server: String?, noServer: Bool) -> ServerVersionOutput? {
+    guard !noServer else {
+        return nil
     }
 
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(currentTag, forKey: .currentTag)
-        try container.encode(releaseCheck, forKey: .releaseCheck)
-    }
-}
-
-private struct ReleaseCheckOutput: Encodable {
-    let htmlURL: String?
-    let latestTag: String?
-    let message: String?
-    let status: String
-    let updateAvailable: Bool?
-}
-
-private struct GitHubReleaseResponse: Decodable {
-    let htmlURL: String?
-    let tagName: String
-
-    private enum CodingKeys: String, CodingKey {
-        case htmlURL = "html_url"
-        case tagName = "tag_name"
-    }
-}
-
-private struct GetOutput: Encodable {
-    let body: String
-    let createdAt: Date
-    let documentID: String
-    let metadata: [String: String]
-    let path: String
-    let references: [DocumentDumpReference]
-    let tags: [String]
-    let title: String?
-    let updatedAt: Date
-    let version: UInt64
-
-    init(_ document: StoredDocument) {
-        body = document.body
-        createdAt = document.createdAt
-        documentID = document.id.rawValue
-        metadata = document.metadata
-        path = document.path.rawValue
-        references = document.references.map(DocumentDumpReference.init)
-        tags = document.tags
-        title = document.title
-        updatedAt = document.updatedAt
-        version = document.currentVersion
+    let endpoint: String
+    if let server, server != "auto" {
+        endpoint = server
+    } else {
+        endpoint = StoreOptions.defaultLoopbackServer
     }
 
-    private enum CodingKeys: String, CodingKey {
-        case body
-        case createdAt
-        case documentID
-        case metadata
-        case path
-        case references
-        case tags
-        case title
-        case updatedAt
-        case version
-    }
+    let timeout = server == nil || server == "auto"
+        ? StoreOptions.autoProbeTimeoutMilliseconds
+        : StoreOptions.daemonRequestTimeoutMilliseconds
+    let client = MetaBrainServerClient(
+        socketPath: endpoint,
+        requestTimeoutMilliseconds: timeout
+    )
 
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(body, forKey: .body)
-        try container.encode(createdAt, forKey: .createdAt)
-        try container.encode(documentID, forKey: .documentID)
-        try container.encode(metadata, forKey: .metadata)
-        try container.encode(path, forKey: .path)
-        try container.encode(references, forKey: .references)
-        try container.encode(tags, forKey: .tags)
-        try container.encode(title, forKey: .title)
-        try container.encode(updatedAt, forKey: .updatedAt)
-        try container.encode(version, forKey: .version)
-    }
-}
-
-private struct ListOutput: Encodable {
-    let path: String
-    let name: String
-    let hasChildren: Bool
-    let documentID: String?
-    let createdAt: Date?
-    let updatedAt: Date?
-
-    init(_ entry: DocumentTreeEntry) {
-        path = entry.path.rawValue
-        name = entry.name
-        hasChildren = entry.hasChildren
-        documentID = entry.documentID?.rawValue
-        createdAt = entry.createdAt
-        updatedAt = entry.updatedAt
-    }
-}
-
-private struct TreeOutput: Encodable {
-    let path: String
-    let name: String
-    let hasChildren: Bool
-    let documentID: String?
-    let createdAt: Date?
-    let updatedAt: Date?
-    let kind: String
-
-    enum CodingKeys: String, CodingKey {
-        case createdAt
-        case documentID
-        case hasChildren
-        case kind
-        case name
-        case path
-        case updatedAt
-    }
-
-    init(root: DocumentPath, hasChildren: Bool) {
-        path = root.rawValue
-        name = treeRootName(root)
-        self.hasChildren = hasChildren
-        documentID = nil
-        createdAt = nil
-        updatedAt = nil
-        kind = "root"
-    }
-
-    init(_ entry: DocumentTreeEntry) {
-        path = entry.path.rawValue
-        name = entry.name
-        hasChildren = entry.hasChildren
-        documentID = entry.documentID?.rawValue
-        createdAt = entry.createdAt
-        updatedAt = entry.updatedAt
-        kind = "entry"
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(createdAt, forKey: .createdAt)
-        try container.encode(documentID, forKey: .documentID)
-        try container.encode(hasChildren, forKey: .hasChildren)
-        try container.encode(kind, forKey: .kind)
-        try container.encode(name, forKey: .name)
-        try container.encode(path, forKey: .path)
-        try container.encode(updatedAt, forKey: .updatedAt)
-    }
-}
-
-private struct SearchOutput: Encodable {
-    let backlinks: [DocumentDumpReference]
-    let chunkOrdinal: UInt32
-    let context: [SearchContextChunk]
-    let documentID: String
-    let linkedDocuments: [DocumentDumpReference]
-    let path: String
-    let score: Double
-    let snippet: String
-    let title: String?
-
-    init(_ result: SearchResult) {
-        backlinks = result.backlinks.map(DocumentDumpReference.init)
-        chunkOrdinal = result.chunkOrdinal
-        context = result.context
-        documentID = result.documentID.rawValue
-        linkedDocuments = result.linkedDocuments.map(DocumentDumpReference.init)
-        path = result.path.rawValue
-        score = result.score
-        snippet = result.snippet
-        title = result.title
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case backlinks
-        case chunkOrdinal
-        case context
-        case documentID
-        case linkedDocuments
-        case path
-        case score
-        case snippet
-        case title
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(backlinks, forKey: .backlinks)
-        try container.encode(chunkOrdinal, forKey: .chunkOrdinal)
-        try container.encode(context, forKey: .context)
-        try container.encode(documentID, forKey: .documentID)
-        try container.encode(linkedDocuments, forKey: .linkedDocuments)
-        try container.encode(path, forKey: .path)
-        try container.encode(score, forKey: .score)
-        try container.encode(snippet, forKey: .snippet)
-        try container.encode(title, forKey: .title)
-    }
-}
-
-private struct DumpOutput: Encodable {
-    let body: String
-    let bodyCharacterCount: Int
-    let bodyUTF8ByteCount: Int
-    let documentID: String
-    let fileSystemPath: String?
-    let isCurrent: Bool
-    let metadata: [String: String]
-    let path: String
-    let references: [DocumentDumpReference]
-    let tags: [String]
-    let title: String?
-    let version: UInt64
-    let versionCreatedAt: Date
-
-    init(_ entry: DocumentDumpEntry) {
-        body = entry.body
-        bodyCharacterCount = entry.bodyCharacterCount
-        bodyUTF8ByteCount = entry.bodyUTF8ByteCount
-        documentID = entry.documentID.rawValue
-        fileSystemPath = entry.fileSystemPath
-        isCurrent = entry.isCurrent
-        metadata = entry.metadata
-        path = entry.path.rawValue
-        references = entry.references
-        tags = entry.tags
-        title = entry.title
-        version = entry.version
-        versionCreatedAt = entry.versionCreatedAt
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case body
-        case bodyCharacterCount
-        case bodyUTF8ByteCount
-        case documentID
-        case fileSystemPath
-        case isCurrent
-        case metadata
-        case path
-        case references
-        case tags
-        case title
-        case version
-        case versionCreatedAt
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(body, forKey: .body)
-        try container.encode(bodyCharacterCount, forKey: .bodyCharacterCount)
-        try container.encode(bodyUTF8ByteCount, forKey: .bodyUTF8ByteCount)
-        try container.encode(documentID, forKey: .documentID)
-        try container.encodeIfPresent(fileSystemPath, forKey: .fileSystemPath)
-        try container.encode(isCurrent, forKey: .isCurrent)
-        try container.encode(metadata, forKey: .metadata)
-        try container.encode(path, forKey: .path)
-        try container.encode(references, forKey: .references)
-        try container.encode(tags, forKey: .tags)
-        try container.encodeIfPresent(title, forKey: .title)
-        try container.encode(version, forKey: .version)
-        try container.encode(versionCreatedAt, forKey: .versionCreatedAt)
-    }
-}
-
-private struct VersionsOutput: Encodable {
-    let createdAt: Date
-    let documentID: String
-    let isPinned: Bool
-    let path: String
-    let sequence: UInt64
-
-    init(_ version: DocumentVersion) {
-        createdAt = version.createdAt
-        documentID = version.documentID.rawValue
-        isPinned = version.isPinned
-        path = version.snapshot.path.rawValue
-        sequence = version.sequence
+    do {
+        let version = try client.version()
+        return ServerVersionOutput(
+            currentTag: version.currentTag,
+            endpoint: endpoint,
+            error: nil,
+            reachable: true
+        )
+    } catch {
+        return ServerVersionOutput(
+            currentTag: nil,
+            endpoint: endpoint,
+            error: String(describing: error),
+            reachable: false
+        )
     }
 }
 
@@ -1387,10 +1168,7 @@ private func parseMetadata(_ pairs: [String]) throws -> [String: String] {
 }
 
 private func makeJSONEncoder() -> JSONEncoder {
-    let encoder = JSONEncoder()
-    encoder.dateEncodingStrategy = .iso8601
-    encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-    return encoder
+    MetaBrainJSON.encoder()
 }
 
 private func printJSON<T: Encodable>(_ value: T) throws {
@@ -1410,13 +1188,87 @@ private func printJSONLines<T: Encodable>(_ entries: [T]) throws {
     }
 }
 
-private func printDocument(_ document: StoredDocument) {
-    print("id: \(document.id.rawValue)")
-    print("path: \(document.path.rawValue)")
+private func printInitializeOutput(_ result: InitializeOutput, format: CLIOutputFormat) throws {
+    switch format {
+    case .text:
+        print("Initialized metaBrain store at \(result.storePath)")
+    case .json:
+        try printJSON(result)
+    case .jsonl:
+        try printJSONLine(result)
+    }
+}
+
+private func printPutOutput(_ result: PutOutput, format: CLIOutputFormat) throws {
+    switch format {
+    case .text:
+        print("id: \(result.documentID)")
+        print("path: \(result.path)")
+        print("version: \(result.version)")
+    case .json:
+        try printJSON(result)
+    case .jsonl:
+        try printJSONLine(result)
+    }
+}
+
+private func printPatchCheckOutput(_ result: PatchCheckOutput, format: CLIOutputFormat) throws {
+    switch format {
+    case .text:
+        print("patch applies")
+    case .json:
+        try printJSON(result)
+    case .jsonl:
+        try printJSONLine(result)
+    }
+}
+
+private func printPatchOutput(_ result: PatchOutput, format: CLIOutputFormat) throws {
+    switch format {
+    case .text:
+        print("id: \(result.documentID)")
+        print("path: \(result.path)")
+        print("version: \(result.version)")
+    case .json:
+        try printJSON(result)
+    case .jsonl:
+        try printJSONLine(result)
+    }
+}
+
+private func printMoveOutput(_ result: MoveOutput, format: CLIOutputFormat) throws {
+    switch format {
+    case .text:
+        print("id: \(result.documentID)")
+        print("from: \(result.from)")
+        print("path: \(result.path)")
+        print("version: \(result.version)")
+        print("status: \(result.status)")
+    case .json:
+        try printJSON(result)
+    case .jsonl:
+        try printJSONLine(result)
+    }
+}
+
+private func printGetOutput(_ result: GetOutput, format: CLIOutputFormat) throws {
+    switch format {
+    case .text:
+        printDocumentOutput(result)
+    case .json:
+        try printJSON(result)
+    case .jsonl:
+        try printJSONLine(result)
+    }
+}
+
+private func printDocumentOutput(_ document: GetOutput) {
+    print("id: \(document.documentID)")
+    print("path: \(document.path)")
     if let title = document.title {
         print("title: \(title)")
     }
-    print("version: \(document.currentVersion)")
+    print("version: \(document.version)")
     if !document.tags.isEmpty {
         print("tags: \(document.tags.joined(separator: ", "))")
     }
@@ -1428,20 +1280,76 @@ private func printDocument(_ document: StoredDocument) {
         print("metadata: \(metadata)")
     }
     if !document.references.isEmpty {
-        print("references: \(document.references.map(formatReference).joined(separator: ", "))")
+        print("references: \(document.references.map(formatDumpReference).joined(separator: ", "))")
     }
     print("")
     print(document.body)
 }
 
-private func printSearchResults(_ results: [SearchResult]) {
+private func printListOutputs(
+    _ entries: [ListOutput],
+    root: DocumentPath,
+    recursive: Bool,
+    includeDates: Bool,
+    format: CLIOutputFormat
+) throws {
+    switch format {
+    case .text:
+        guard !entries.isEmpty else {
+            print("No documents.")
+            return
+        }
+
+        for entry in entries {
+            print(formatListEntry(entry, relativeTo: root, recursive: recursive, includeDates: includeDates))
+        }
+    case .json:
+        try printJSON(entries)
+    case .jsonl:
+        try printJSONLines(entries)
+    }
+}
+
+private func printTreeOutputs(
+    _ entries: [TreeOutput],
+    root: DocumentPath,
+    maxDepth: Int?,
+    format: CLIOutputFormat
+) throws {
+    switch format {
+    case .text:
+        if entries.isEmpty, maxDepth != 0 {
+            print("No documents.")
+            return
+        }
+
+        printTree(root: root, entries: entries.filter { $0.kind == "entry" })
+    case .json:
+        try printJSON(entries)
+    case .jsonl:
+        try printJSONLines(entries)
+    }
+}
+
+private func printSearchOutputs(_ results: [SearchOutput], format: CLIOutputFormat) throws {
+    switch format {
+    case .text:
+        printSearchText(results)
+    case .json:
+        try printJSON(results)
+    case .jsonl:
+        try printJSONLines(results)
+    }
+}
+
+private func printSearchText(_ results: [SearchOutput]) {
     if results.isEmpty {
         print("No results.")
         return
     }
 
     for result in results {
-        print("\(result.path.rawValue) [\(result.documentID.rawValue)] score=\(formatScore(result.score)) chunk=\(result.chunkOrdinal)")
+        print("\(result.path) [\(result.documentID)] score=\(formatScore(result.score)) chunk=\(result.chunkOrdinal)")
         if let title = result.title {
             print("title: \(title)")
         }
@@ -1451,22 +1359,80 @@ private func printSearchResults(_ results: [SearchResult]) {
             print("context: \(ordinals)")
         }
         if !result.linkedDocuments.isEmpty {
-            print("linked: \(result.linkedDocuments.map(formatReference).joined(separator: ", "))")
+            print("linked: \(result.linkedDocuments.map(formatDumpReference).joined(separator: ", "))")
         }
         if !result.backlinks.isEmpty {
-            print("backlinks: \(result.backlinks.map(formatReference).joined(separator: ", "))")
+            print("backlinks: \(result.backlinks.map(formatDumpReference).joined(separator: ", "))")
         }
         print("")
     }
 }
 
+private func printDumpOutputs(_ entries: [DumpOutput], format: CLIOutputFormat) throws {
+    switch format {
+    case .text, .jsonl:
+        try printJSONLines(entries)
+    case .json:
+        try printJSON(entries)
+    }
+}
+
+private func printVersionsOutputs(_ versions: [VersionsOutput], format: CLIOutputFormat) throws {
+    switch format {
+    case .text:
+        if versions.isEmpty {
+            print("No versions.")
+            return
+        }
+
+        for version in versions {
+            print("\(version.sequence) \(version.createdAt.ISO8601Format()) path=\(version.path) pinned=\(version.isPinned)")
+        }
+    case .json:
+        try printJSON(versions)
+    case .jsonl:
+        try printJSONLines(versions)
+    }
+}
+
+private func printPruneOutput(_ result: PruneOutput, format: CLIOutputFormat) throws {
+    switch format {
+    case .text:
+        print("pruned: \(result.prunedVersionCount)")
+        print("retained: \(result.retainedVersionCount)")
+    case .json, .jsonl:
+        try printJSONLine(result)
+    }
+}
+
+private func printDeleteOutput(_ result: DeleteOutput, format: CLIOutputFormat) throws {
+    switch format {
+    case .text:
+        print("deleted: \(result.deleted)")
+        print("reference: \(result.reference)")
+    case .json, .jsonl:
+        try printJSONLine(result)
+    }
+}
+
+private func printRemoveVersionOutput(_ result: RemoveVersionOutput, format: CLIOutputFormat) throws {
+    switch format {
+    case .text:
+        print("removed: \(result.removed)")
+        print("sequence: \(result.sequence)")
+        print("reference: \(result.reference)")
+    case .json, .jsonl:
+        try printJSONLine(result)
+    }
+}
+
 private func formatListEntry(
-    _ entry: DocumentTreeEntry,
+    _ entry: ListOutput,
     relativeTo root: DocumentPath,
     recursive: Bool,
     includeDates: Bool
 ) -> String {
-    var output = recursive ? relativePath(entry.path, from: root) : entry.name
+    var output = recursive ? relativePath(entry.path, from: root.rawValue) : entry.name
     if entry.hasChildren {
         output += "/"
     }
@@ -1481,13 +1447,13 @@ private func formatListEntry(
     return output
 }
 
-private func relativePath(_ path: DocumentPath, from root: DocumentPath) -> String {
-    if root.rawValue == "/" {
-        return String(path.rawValue.dropFirst())
+private func relativePath(_ path: String, from root: String) -> String {
+    if root == "/" {
+        return String(path.dropFirst())
     }
 
-    let prefix = root.rawValue + "/"
-    return String(path.rawValue.dropFirst(prefix.count))
+    let prefix = root + "/"
+    return String(path.dropFirst(prefix.count))
 }
 
 private func treeOutputs(
@@ -1502,26 +1468,26 @@ private func treeOutputs(
     return [TreeOutput(root: root, hasChildren: !entries.isEmpty)] + entries.map(TreeOutput.init)
 }
 
-private func printTree(root: DocumentPath, entries: [DocumentTreeEntry]) {
+private func printTree(root: DocumentPath, entries: [TreeOutput]) {
     print(root.rawValue == "/" ? "/" : root.name + "/")
 
     let grouped = Dictionary(grouping: entries) { entry in
-        entry.path.parent!.rawValue
+        parentPath(of: entry.path)
     }
     printTreeChildren(
-        of: root,
+        of: root.rawValue,
         groupedByParent: grouped,
         prefix: ""
     )
 }
 
 private func printTreeChildren(
-    of parent: DocumentPath,
-    groupedByParent: [String: [DocumentTreeEntry]],
+    of parent: String,
+    groupedByParent: [String: [TreeOutput]],
     prefix: String
 ) {
-    let children = (groupedByParent[parent.rawValue] ?? [])
-        .sorted { $0.path.rawValue < $1.path.rawValue }
+    let children = (groupedByParent[parent] ?? [])
+        .sorted { $0.path < $1.path }
 
     for (index, child) in children.enumerated() {
         let isLast = index == children.index(before: children.endIndex)
@@ -1538,12 +1504,12 @@ private func printTreeChildren(
     }
 }
 
-private func formatTreeEntry(_ entry: DocumentTreeEntry) -> String {
+private func formatTreeEntry(_ entry: TreeOutput) -> String {
     entry.name + (entry.hasChildren ? "/" : "")
 }
 
-private func treeRootName(_ root: DocumentPath) -> String {
-    root.rawValue == "/" ? "/" : root.name
+private func parentPath(of path: String) -> String {
+    URL(fileURLWithPath: path).deletingLastPathComponent().path
 }
 
 private func parseReferences(
@@ -1560,6 +1526,28 @@ private func parseReferences(
 
             return .externalURL(url)
         }
+}
+
+private func writeDumpOutputs(_ outputs: [DumpOutput], to outputDirectory: String) throws -> [DumpOutput] {
+    let entries = try outputs.map(documentDumpEntry)
+    return try DocumentDumpFileWriter()
+        .write(entries, to: URL.expandingShellPath(outputDirectory, isDirectory: true))
+        .map(DumpOutput.init)
+}
+
+private func documentDumpEntry(_ output: DumpOutput) throws -> DocumentDumpEntry {
+    try DocumentDumpEntry(
+        documentID: DocumentID(rawValue: output.documentID),
+        path: DocumentPath(output.path),
+        title: output.title,
+        body: output.body,
+        version: output.version,
+        versionCreatedAt: output.versionCreatedAt,
+        isCurrent: output.isCurrent,
+        tags: output.tags,
+        metadata: output.metadata,
+        references: output.references
+    )
 }
 
 private func trimmedSingleLine(_ text: String) -> String {
@@ -1579,14 +1567,11 @@ private func formatScore(_ score: Double) -> String {
 }
 
 private func formatReference(_ reference: DocumentReference) -> String {
-    switch reference {
-    case .documentID(let id):
-        return id.rawValue
-    case .path(let path):
-        return path.rawValue
-    case .externalURL(let url):
-        return url.absoluteString
-    }
+    DocumentDumpReference(reference).value
+}
+
+private func formatDumpReference(_ reference: DocumentDumpReference) -> String {
+    reference.value
 }
 
 private func commandHelpMessage(for command: String?) -> String {
@@ -1613,104 +1598,50 @@ private func commandHelpMessage(for command: String?) -> String {
 }
 
 private func currentSoftwareTag() -> String {
-    if let override = ProcessInfo.processInfo.environment["METABRAIN_VERSION"],
-       !override.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-        return override
-    }
-
-    return "1.1.2"
+    MetaBrainVersion.currentSoftwareTag()
 }
 
-private func checkLatestRelease(
-    currentTag: String,
-    releaseAPIURL: String,
-    timeout: TimeInterval
-) async -> ReleaseCheckOutput {
-    guard let url = URL(string: releaseAPIURL) else {
-        return ReleaseCheckOutput(
-            htmlURL: nil,
-            latestTag: nil,
-            message: "Invalid GitHub releases URL.",
-            status: "failed",
-            updateAvailable: nil
-        )
+private let daemonBackedCommands: Set<String> = [
+    "init",
+    "put",
+    "patch",
+    "move",
+    "get",
+    "list",
+    "tree",
+    "search",
+    "dump",
+    "versions",
+    "prune",
+    "delete",
+    "remove-version",
+    "version",
+]
+
+private func cliArgumentsWithGlobalServer(_ arguments: [String]) -> [String] {
+    var result = arguments
+    var movedOptions: [String] = []
+
+    if let optionIndex = result.firstIndex(of: "--no-server") {
+        result.remove(at: optionIndex)
+        movedOptions.append("--no-server")
     }
 
-    var request = URLRequest(url: url, timeoutInterval: timeout)
-    request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-    request.setValue("metaBrain-cli", forHTTPHeaderField: "User-Agent")
-
-    do {
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            return ReleaseCheckOutput(
-                htmlURL: nil,
-                latestTag: nil,
-                message: "GitHub releases response was not HTTP.",
-                status: "failed",
-                updateAvailable: nil
-            )
-        }
-
-        guard (200..<300).contains(httpResponse.statusCode) else {
-            return ReleaseCheckOutput(
-                htmlURL: nil,
-                latestTag: nil,
-                message: "GitHub releases request returned HTTP \(httpResponse.statusCode).",
-                status: "failed",
-                updateAvailable: nil
-            )
-        }
-
-        let release = try JSONDecoder().decode(GitHubReleaseResponse.self, from: data)
-        let updateAvailable = isReleaseTag(release.tagName, newerThan: currentTag)
-        return ReleaseCheckOutput(
-            htmlURL: release.htmlURL,
-            latestTag: release.tagName,
-            message: nil,
-            status: "checked",
-            updateAvailable: updateAvailable
-        )
-    } catch {
-        return ReleaseCheckOutput(
-            htmlURL: nil,
-            latestTag: nil,
-            message: error.localizedDescription,
-            status: "failed",
-            updateAvailable: nil
-        )
-    }
-}
-
-private func isReleaseTag(_ candidate: String, newerThan current: String) -> Bool {
-    let candidateParts = semanticVersionParts(candidate)
-    let currentParts = semanticVersionParts(current)
-
-    if candidateParts.count == 3, currentParts.count == 3 {
-        return candidateParts.lexicographicallyPrecedes(currentParts) == false && candidateParts != currentParts
+    if let optionIndex = result.firstIndex(of: "--server"), optionIndex + 1 < result.endIndex {
+        let server = result.remove(at: optionIndex + 1)
+        result.remove(at: optionIndex)
+        movedOptions.append(contentsOf: ["--server", server])
     }
 
-    return candidate != current
-}
-
-private func semanticVersionParts(_ tag: String) -> [Int] {
-    let normalized = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
-    let core = normalized.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false)[0]
-    let parts = core.split(separator: ".", omittingEmptySubsequences: false)
-
-    guard parts.count == 3 else {
-        return []
+    guard !movedOptions.isEmpty else {
+        return result
+    }
+    guard let commandIndex = result.firstIndex(where: { daemonBackedCommands.contains($0) }) else {
+        return result
     }
 
-    var numbers: [Int] = []
-    for part in parts {
-        guard let number = Int(part) else {
-            return []
-        }
-        numbers.append(number)
-    }
-
-    return numbers
+    result.insert(contentsOf: movedOptions, at: commandIndex + 1)
+    return result
 }
 
 extension URL {
