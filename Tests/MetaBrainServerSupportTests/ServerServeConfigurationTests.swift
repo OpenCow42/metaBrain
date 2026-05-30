@@ -41,8 +41,8 @@ import Testing
     let defaultHost = try ServerServeConfiguration(port: 9001)
     let ephemeralPort = try ServerServeConfiguration(port: 0)
 
-    #expect(defaultPort.listenMode == .loopback(host: "127.0.0.1", port: 7421))
-    #expect(defaultPort.description == "loopback http 127.0.0.1:7421")
+    #expect(defaultPort.listenMode == .loopback(host: "127.0.0.1", port: 6374))
+    #expect(defaultPort.description == "loopback http 127.0.0.1:6374")
     #expect(explicitPort.listenMode == .loopback(host: "::1", port: 9000))
     #expect(defaultHost.listenMode == .loopback(host: "127.0.0.1", port: 9001))
     #expect(ephemeralPort.listenMode == .loopback(host: "127.0.0.1", port: 0))

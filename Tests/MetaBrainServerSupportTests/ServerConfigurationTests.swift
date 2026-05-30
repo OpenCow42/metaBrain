@@ -9,7 +9,7 @@ import Testing
           "storePath": ".metabrain/store.leveldb",
           "socketPath": "/tmp/mbd.sock",
           "loopbackHost": "127.0.0.1",
-          "loopbackPort": 7421,
+          "loopbackPort": 6374,
           "requestTimeoutSeconds": 2.5,
           "maximumConcurrentRequests": 4,
           "maximumQueuedRequests": 16,
@@ -26,7 +26,7 @@ import Testing
     #expect(configuration.storePath == ".metabrain/store.leveldb")
     #expect(configuration.socketPath == "/tmp/mbd.sock")
     #expect(configuration.loopbackHost == "127.0.0.1")
-    #expect(configuration.loopbackPort == 7421)
+    #expect(configuration.loopbackPort == 6374)
     #expect(configuration.requestTimeoutSeconds == 2.5)
     #expect(configuration.maximumConcurrentRequests == 4)
     #expect(configuration.maximumQueuedRequests == 16)

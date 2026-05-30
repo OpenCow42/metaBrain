@@ -18,7 +18,7 @@ struct MetaBrainDaemonCommand: ParsableCommand {
             Start the foreground daemon:
               mbd serve --store .metabrain/store.leveldb --socket ~/.metabrain/mbd.sock
 
-            Pass --host 127.0.0.1 --port 7421 to use loopback HTTP instead.
+            Pass --host 127.0.0.1 --port 6374 to use loopback HTTP instead.
             """,
         subcommands: [
             Serve.self,

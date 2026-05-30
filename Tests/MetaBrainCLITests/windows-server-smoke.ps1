@@ -74,9 +74,10 @@ $Store = Join-Path $TmpDir "store.leveldb"
 $Stdout = Join-Path $TmpDir "mbd.out"
 $Stderr = Join-Path $TmpDir "mbd.err"
 $Daemon = $null
+$ExpectedPort = "6374"
 
 try {
-    $Daemon = Start-Process -FilePath $Mbd -ArgumentList @("serve", "--store", $Store, "--host", "127.0.0.1", "--port", "0", "--log-level", "error") -RedirectStandardOutput $Stdout -RedirectStandardError $Stderr -NoNewWindow -PassThru
+    $Daemon = Start-Process -FilePath $Mbd -ArgumentList @("serve", "--store", $Store, "--host", "127.0.0.1", "--log-level", "error") -RedirectStandardOutput $Stdout -RedirectStandardError $Stderr -NoNewWindow -PassThru
 
     $Port = $null
     for ($Index = 0; $Index -lt 200; $Index++) {
@@ -98,6 +99,9 @@ try {
         $StdoutText = if (Test-Path $Stdout) { Get-Content $Stdout -Raw } else { "" }
         $StderrText = if (Test-Path $Stderr) { Get-Content $Stderr -Raw } else { "" }
         throw "mbd serve did not report a loopback port. stdout=$StdoutText stderr=$StderrText"
+    }
+    if ($Port -ne $ExpectedPort) {
+        throw "Expected default loopback port $ExpectedPort, got $Port"
     }
 
     $Server = "http://127.0.0.1:$Port"

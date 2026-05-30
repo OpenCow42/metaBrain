@@ -166,12 +166,15 @@ tree, search, dump, versions, prune, delete, and remove-version.
 
 ```bash
 mbd serve --store .metabrain/store.leveldb --socket ~/.metabrain/mbd.sock
+mbd serve --store .metabrain/store.leveldb --host 127.0.0.1
 mbd service print --user
 mbd version
 ```
 
 Unix sockets are the default local transport on macOS and Linux. Loopback HTTP
-is available for debugging with `--host 127.0.0.1 --port 7421`.
+is available with `--host 127.0.0.1 --port 6374`. Port `6374` is the default
+loopback port because it reads as `META` in leetspeak and avoids commonly used
+mainstream service ports.
 
 Package managers install the daemon binary passively; they do not create a
 workspace store, install a user service, or start `mbd`. Use
@@ -184,6 +187,7 @@ directly:
 ```bash
 mb --server ~/.metabrain/mbd.sock put /notes/today "daemon-backed note"
 mb --server ~/.metabrain/mbd.sock search "daemon-backed"
+mb --server http://127.0.0.1:6374 search "daemon-backed"
 ```
 
 `--body-file`, `--patch-file`, and `--output-dir` remain client-side CLI

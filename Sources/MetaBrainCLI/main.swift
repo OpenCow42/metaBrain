@@ -81,7 +81,7 @@ struct StoreOptions: ParsableArguments {
     @Option(help: "Path to the LevelDB-backed metaBrain store.")
     var store: String = ".metabrain/store.leveldb"
 
-    @Option(help: "Unix socket path, or loopback HTTP URL on Windows, for explicit daemon mode.")
+    @Option(help: "Unix socket path, or loopback HTTP URL such as http://127.0.0.1:6374, for explicit daemon mode.")
     var server: String?
 
     func serverClient() -> MetaBrainServerClient? {

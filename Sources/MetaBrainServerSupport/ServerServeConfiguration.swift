@@ -9,7 +9,7 @@ public struct ServerServeConfiguration: Equatable, Sendable {
     public static let defaultStorePath = ".metabrain/store.leveldb"
     public static let defaultSocketPath = "~/.metabrain/mbd.sock"
     public static let defaultLoopbackHost = "127.0.0.1"
-    public static let defaultLoopbackPort = 7421
+    public static let defaultLoopbackPort = 6374
     public static let defaultRequestTimeoutSeconds = 30.0
     public static let defaultMaximumConcurrentRequests = 16
     public static let defaultMaximumQueuedRequests = 1024
