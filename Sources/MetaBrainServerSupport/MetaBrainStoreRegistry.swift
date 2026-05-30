@@ -98,7 +98,7 @@ public actor MetaBrainStoreRegistry {
             return
         }
 
-        Task { [idleTimeoutNanoseconds] in
+        Task { @concurrent [idleTimeoutNanoseconds] in
             try? await Task.sleep(nanoseconds: idleTimeoutNanoseconds)
             await self.closeStoreIfIdle(at: key, generation: generation)
         }

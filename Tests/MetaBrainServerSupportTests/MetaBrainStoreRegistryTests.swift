@@ -21,6 +21,9 @@ import Testing
     try await Task.sleep(nanoseconds: 150_000_000)
 
     #expect(await registry.openStoreCount == 0)
+
+    let reopened = try MetaBrainStoreServer(storePath: storePath)
+    await reopened.close()
 }
 
 @Test func storeRegistryKeepsDistinctStoreActorsByCanonicalPath() async throws {

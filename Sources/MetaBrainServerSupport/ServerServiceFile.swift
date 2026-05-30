@@ -309,7 +309,8 @@ public enum ServerUserServiceController {
             return ServerUserServiceCommandPlan(
                 commands: [
                     ["systemctl", "--user", "daemon-reload"],
-                    ["systemctl", "--user", "enable", "--now", ServerServiceFilePaths.systemdUserUnitName],
+                    ["systemctl", "--user", "enable", ServerServiceFilePaths.systemdUserUnitName],
+                    ["systemctl", "--user", "start", "--no-block", ServerServiceFilePaths.systemdUserUnitName],
                 ],
                 message: "started \(ServerServiceFilePaths.systemdUserUnitName)"
             )
@@ -323,7 +324,7 @@ public enum ServerUserServiceController {
         case .status:
             return ServerUserServiceCommandPlan(
                 commands: [
-                    ["systemctl", "--user", "status", ServerServiceFilePaths.systemdUserUnitName],
+                    ["systemctl", "--user", "--no-pager", "status", ServerServiceFilePaths.systemdUserUnitName],
                 ]
             )
         }

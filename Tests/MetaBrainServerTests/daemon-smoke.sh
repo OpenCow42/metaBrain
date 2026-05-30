@@ -25,9 +25,17 @@ daemon_bin="${METABRAIN_DAEMON_BIN:-}"
 if [[ -z "${daemon_bin}" ]]; then
     daemon_bin="$(find .build -path '*/debug/mbd' ! -path '.build/coverage-*' -type f -perm -111 | head -n 1)"
 fi
+client_bin="${METABRAIN_CLIENT_BIN:-}"
+if [[ -z "${client_bin}" ]]; then
+    client_bin="$(find .build -path '*/debug/mb' ! -path '.build/coverage-*' -type f -perm -111 | head -n 1)"
+fi
 
 if [[ -z "${daemon_bin}" || ! -x "${daemon_bin}" ]]; then
     echo "Unable to locate mbd binary. Set METABRAIN_DAEMON_BIN or run swift build first." >&2
+    exit 1
+fi
+if [[ -z "${client_bin}" || ! -x "${client_bin}" ]]; then
+    echo "Unable to locate mb binary. Set METABRAIN_CLIENT_BIN or run swift build first." >&2
     exit 1
 fi
 
@@ -99,7 +107,7 @@ fi
 rg -F -q 'requestTimeoutSeconds must be greater than 0' "$TMP_DIR/serve-invalid.err"
 
 socket_path="$TMP_DIR/serve.sock"
-"${daemon_bin}" serve --store "$TMP_DIR/store.leveldb" --socket "$socket_path" --log-level error >"$TMP_DIR/serve.out" 2>"$TMP_DIR/serve.err" &
+"${daemon_bin}" serve --store "$TMP_DIR/store.leveldb" --socket "$socket_path" --store-idle-timeout-seconds 0.05 --log-level error >"$TMP_DIR/serve.out" 2>"$TMP_DIR/serve.err" &
 serve_pid="$!"
 
 for _ in $(seq 1 200); do
@@ -228,6 +236,10 @@ printf '%s\n' "$API_RESPONSE" | rg -F -q '"status":"moved"'
 printf '%s\n' "$API_RESPONSE" | rg -F -q '"removed":true'
 printf '%s\n' "$API_RESPONSE" | rg -F -q '"operation":"prune"'
 printf '%s\n' "$API_RESPONSE" | rg -F -q '"deleted":true'
+
+sleep 0.2
+"${client_bin}" list --store "$TMP_DIR/store.leveldb" --no-server --format json >"$TMP_DIR/direct-after-idle.json"
+rg -F -q '"name":"notes"' "$TMP_DIR/direct-after-idle.json"
 
 kill "$serve_pid" 2>/dev/null || true
 wait "$serve_pid" 2>/dev/null || true

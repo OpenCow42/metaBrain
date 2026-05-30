@@ -342,13 +342,27 @@ extension MetaBrainDaemonCommand {
             process.standardError = FileHandle.standardError
 
             try process.run()
-            process.waitUntilExit()
+            guard waitForServiceCommand(process, timeoutSeconds: 15) else {
+                process.terminate()
+                throw ValidationError(
+                    "\(command.joined(separator: " ")) timed out after 15 seconds"
+                )
+            }
 
             guard process.terminationStatus == 0 else {
                 throw ValidationError(
                     "\(command.joined(separator: " ")) failed with exit code \(process.terminationStatus)"
                 )
             }
+        }
+
+        private static func waitForServiceCommand(_ process: Process, timeoutSeconds: Double) -> Bool {
+            let semaphore = DispatchSemaphore(value: 0)
+            DispatchQueue.global(qos: .utility).async {
+                process.waitUntilExit()
+                semaphore.signal()
+            }
+            return semaphore.wait(timeout: .now() + timeoutSeconds) == .success
         }
     }
 
