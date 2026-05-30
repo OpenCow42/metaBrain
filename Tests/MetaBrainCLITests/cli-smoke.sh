@@ -2,7 +2,14 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-TMP_PARENT="${METABRAIN_TMPDIR:-/private/tmp}"
+TMP_PARENT="${METABRAIN_TMPDIR:-}"
+if [[ -z "$TMP_PARENT" ]]; then
+    if [[ -d /private/tmp ]]; then
+        TMP_PARENT=/private/tmp
+    else
+        TMP_PARENT=/tmp
+    fi
+fi
 TMP_DIR="$(mktemp -d "$TMP_PARENT/metabrain-cli.XXXXXX")"
 STORE="$TMP_DIR/store.leveldb"
 release_server_pid=""
