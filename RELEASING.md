@@ -263,7 +263,8 @@ The repository currently uses `trusted=yes` until a signing key and signed
 ## Windows Release
 
 Windows releases are distributed as a portable zip containing the `mb.exe`
-binary at the archive root. This layout works for manual installs and maps
+binary and Swift runtime DLLs at the archive root. This layout works for manual
+installs, supports systems without the Swift toolchain installed, and maps
 cleanly to WinGet's portable zip manifest format.
 
 Build and package on a Windows machine with Swift for Windows and Visual Studio
@@ -278,6 +279,8 @@ This writes:
 ~~~text
 dist\metabrain-<version>-windows-x86_64\
 dist\metabrain-<version>-windows-x86_64\mb.exe
+dist\metabrain-<version>-windows-x86_64\swiftCore.dll
+dist\metabrain-<version>-windows-x86_64\*.dll
 dist\metabrain-<version>-windows-x86_64\README.md
 dist\metabrain-<version>-windows-x86_64\LICENSE
 dist\metabrain-<version>-windows-x86_64.zip
@@ -285,9 +288,11 @@ dist\metabrain-<version>-windows-x86_64.zip.sha256
 ~~~
 
 The helper loads the Visual Studio developer environment, resolves packages,
-builds `mb` in release mode, stages the portable layout, creates the zip, and
-writes a SHA-256 checksum file. If Visual Studio is installed somewhere unusual,
-pass the developer command prompt path explicitly:
+builds `mb` in release mode, stages the portable layout, copies Swift runtime
+DLLs from the active Swift toolchain, creates the zip, and writes a SHA-256
+checksum file. Packaging fails if `swiftCore.dll` cannot be staged. If Visual
+Studio is installed somewhere unusual, pass the developer command prompt path
+explicitly:
 
 ~~~powershell
 Scripts\windows\package.ps1 `
@@ -310,6 +315,10 @@ Scripts\windows\package.ps1 `
   -BinaryPath .build\x86_64-unknown-windows-msvc\release\mb.exe
 ~~~
 
+When packaging from a shell where `swiftc -print-target-info` cannot discover
+the runtime locations, pass `-SwiftRuntimeLibraryPaths` with the Swift runtime
+directories that contain `swiftCore.dll` and the other runtime DLLs.
+
 Manual install users can unzip the archive anywhere and add that directory to
 `PATH`.
 
@@ -317,6 +326,7 @@ Verify the generated Windows artifact before upload:
 
 ~~~powershell
 Expand-Archive dist\metabrain-1.1.1-windows-x86_64.zip -DestinationPath $env:TEMP\metabrain-check -Force
+if (-not (Test-Path $env:TEMP\metabrain-check\swiftCore.dll)) { throw "swiftCore.dll missing" }
 & $env:TEMP\metabrain-check\mb.exe --help
 Get-FileHash -Algorithm SHA256 dist\metabrain-1.1.1-windows-x86_64.zip
 Get-Content dist\metabrain-1.1.1-windows-x86_64.zip.sha256

@@ -5,12 +5,120 @@ param(
     [string]$Product = "mb",
     [string]$PackageName = "metabrain",
     [string]$Platform = "windows-x86_64",
+    [string[]]$SwiftRuntimeLibraryPaths = @(),
     [switch]$SkipBuild,
     [string]$BinaryPath,
     [string]$VisualStudioDevCmd
 )
 
 $ErrorActionPreference = "Stop"
+
+function Add-ExistingDirectory {
+    param(
+        [System.Collections.Generic.List[string]]$Directories,
+        [string]$Path
+    )
+
+    if (-not $Path) {
+        return
+    }
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+        return
+    }
+
+    $resolved = (Resolve-Path -LiteralPath $Path).Path
+    if (-not $Directories.Contains($resolved)) {
+        $Directories.Add($resolved)
+    }
+}
+
+function Get-SwiftRuntimeLibraryPaths {
+    param(
+        [string[]]$ExplicitPaths
+    )
+
+    $directories = [System.Collections.Generic.List[string]]::new()
+
+    foreach ($path in $ExplicitPaths) {
+        if (-not (Test-Path -LiteralPath $path -PathType Container)) {
+            throw "Swift runtime library path not found: $path"
+        }
+        Add-ExistingDirectory -Directories $directories -Path $path
+    }
+
+    if ($directories.Count -gt 0) {
+        return $directories.ToArray()
+    }
+
+    if (-not (Get-Command swiftc -ErrorAction SilentlyContinue)) {
+        throw "swiftc was not found on PATH. Install the Swift toolchain for Windows first."
+    }
+
+    $targetInfoJson = (& swiftc -print-target-info) -join [Environment]::NewLine
+    if ($LASTEXITCODE -ne 0 -or -not $targetInfoJson) {
+        throw "Could not read Swift target information with swiftc -print-target-info."
+    }
+
+    $targetInfo = $targetInfoJson | ConvertFrom-Json
+
+    foreach ($path in @($targetInfo.paths.runtimeLibraryPaths)) {
+        Add-ExistingDirectory -Directories $directories -Path $path
+    }
+    foreach ($path in @($targetInfo.paths.runtimeLibraryImportPaths)) {
+        Add-ExistingDirectory -Directories $directories -Path $path
+    }
+
+    $runtimeResourcePath = $targetInfo.paths.runtimeResourcePath
+    if ($runtimeResourcePath) {
+        $windowsRuntimePath = Join-Path $runtimeResourcePath "windows"
+        Add-ExistingDirectory -Directories $directories -Path $windowsRuntimePath
+
+        $architecture = $targetInfo.target.arch
+        if ($architecture) {
+            Add-ExistingDirectory -Directories $directories -Path (Join-Path $windowsRuntimePath $architecture)
+        }
+    }
+
+    if ($directories.Count -eq 0) {
+        throw "Could not find Swift runtime library directories from swiftc -print-target-info."
+    }
+
+    return $directories.ToArray()
+}
+
+function Copy-SwiftRuntimeLibraries {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$RuntimeLibraryPaths,
+        [Parameter(Mandatory = $true)][string]$Destination
+    )
+
+    $copied = [System.Collections.Generic.List[string]]::new()
+
+    foreach ($path in $RuntimeLibraryPaths) {
+        $libraries = Get-ChildItem -LiteralPath $path -Filter "*.dll" -File -ErrorAction SilentlyContinue
+        foreach ($library in $libraries) {
+            $destinationPath = Join-Path $Destination $library.Name
+            if (-not (Test-Path -LiteralPath $destinationPath)) {
+                Copy-Item -Force $library.FullName $destinationPath
+            }
+            if (-not $copied.Contains($library.Name)) {
+                $copied.Add($library.Name)
+            }
+        }
+    }
+
+    if ($copied.Count -eq 0) {
+        throw "No Swift runtime DLLs were found in: $($RuntimeLibraryPaths -join ', ')"
+    }
+
+    $swiftCorePath = Join-Path $Destination "swiftCore.dll"
+    if (-not (Test-Path -LiteralPath $swiftCorePath)) {
+        throw "swiftCore.dll was not staged from Swift runtime paths: $($RuntimeLibraryPaths -join ', ')"
+    }
+
+    return $copied.ToArray()
+}
 
 if (-not $Version) {
     $Version = (git -C $PackageRoot describe --tags --always --dirty 2>$null)
@@ -59,6 +167,9 @@ Copy-Item -Force $BinaryPath (Join-Path $stageDir "$Product.exe")
 Copy-Item -Force (Join-Path $PackageRoot "README.md") (Join-Path $stageDir "README.md")
 Copy-Item -Force (Join-Path $PackageRoot "LICENSE") (Join-Path $stageDir "LICENSE")
 
+$swiftRuntimePaths = Get-SwiftRuntimeLibraryPaths -ExplicitPaths $SwiftRuntimeLibraryPaths
+$swiftRuntimeLibraries = Copy-SwiftRuntimeLibraries -RuntimeLibraryPaths $swiftRuntimePaths -Destination $stageDir
+
 Compress-Archive -Path (Join-Path $stageDir "*") -DestinationPath $zipPath -Force
 
 $hash = (Get-FileHash -Algorithm SHA256 $zipPath).Hash.ToLowerInvariant()
@@ -75,4 +186,5 @@ $checksumLine = "$hash  $(Split-Path -Leaf $zipPath)" + [char]10
     Archive = $zipPath
     Sha256File = $checksumPath
     Sha256 = $hash
+    SwiftRuntimeLibraries = $swiftRuntimeLibraries
 }

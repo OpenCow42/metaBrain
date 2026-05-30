@@ -40,23 +40,41 @@ if (-not (Get-Command swift -ErrorAction SilentlyContinue)) {
 
 Set-Location $PackageRoot
 
+$binPathFile = [System.IO.Path]::GetTempFileName()
+$buildScript = Join-Path ([System.IO.Path]::GetTempPath()) ("metabrain-build-" + [guid]::NewGuid().ToString("N") + ".cmd")
+
 $buildCommand = @"
+@echo off
 call "$VisualStudioDevCmd" -arch=$Architecture -host_arch=$HostArchitecture >NUL
 if errorlevel 1 exit /b %errorlevel%
 swift package resolve
 if errorlevel 1 exit /b %errorlevel%
 swift build -c $Configuration --product $Product
 if errorlevel 1 exit /b %errorlevel%
+swift build -c $Configuration --product $Product --show-bin-path > "$binPathFile"
+if errorlevel 1 exit /b %errorlevel%
 "@
 
-$commandOutput = & cmd.exe /d /s /c $buildCommand
-if ($LASTEXITCODE -ne 0) {
-    throw "swift build failed with exit code $LASTEXITCODE."
-}
+try {
+    [System.IO.File]::WriteAllText(
+        $buildScript,
+        $buildCommand,
+        [System.Text.UTF8Encoding]::new($false)
+    )
 
-$binPath = (& swift build -c $Configuration --product $Product --show-bin-path | Select-Object -Last 1).Trim()
-if ($LASTEXITCODE -ne 0 -or -not $binPath) {
-    throw "Could not determine SwiftPM release binary path."
+    $commandOutput = & cmd.exe /d /s /c "`"$buildScript`""
+    if ($LASTEXITCODE -ne 0) {
+        throw "swift build failed with exit code $LASTEXITCODE."
+    }
+
+    $binPathLine = Get-Content -Path $binPathFile | Select-Object -Last 1
+    $binPath = if ($binPathLine) { $binPathLine.Trim() } else { "" }
+    if (-not $binPath) {
+        throw "Could not determine SwiftPM release binary path."
+    }
+} finally {
+    Remove-Item -Force $binPathFile -ErrorAction SilentlyContinue
+    Remove-Item -Force $buildScript -ErrorAction SilentlyContinue
 }
 $exePath = Join-Path $binPath "$Product.exe"
 
