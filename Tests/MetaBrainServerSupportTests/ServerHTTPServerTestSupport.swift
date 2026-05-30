@@ -9,6 +9,13 @@ import Darwin
 import Glibc
 #endif
 
+func temporaryServerDirectory(prefix: String) throws -> URL {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("\(prefix)-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    return root
+}
+
 #if canImport(Darwin) || canImport(Glibc)
 
 struct RunningServer {
@@ -293,13 +300,6 @@ func readAll(from descriptor: Int32) throws -> Data {
 
 func closeTestSocket(_ descriptor: Int32) {
     _ = close(descriptor)
-}
-
-func temporaryServerDirectory(prefix: String) throws -> URL {
-    let root = URL(fileURLWithPath: NSTemporaryDirectory())
-        .appendingPathComponent("\(prefix)-\(UUID().uuidString)")
-    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    return root
 }
 
 func temporaryShortUnixSocketDirectory(prefix: String) throws -> URL {

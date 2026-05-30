@@ -73,6 +73,8 @@ import Testing
     }
 }
 
+#if canImport(Darwin) || canImport(Glibc)
+
 @Test func serverClientRoundTripsOverUnixSocket() throws {
     let root = try temporaryShortUnixSocketDirectory(prefix: "mbd-client")
     defer { try? FileManager.default.removeItem(at: root) }
@@ -110,6 +112,8 @@ import Testing
         let _: InitializeOutput = try client.post("/v1/init", response: InitializeOutput.self)
     }
 }
+
+#endif
 
 @Test func serverClientRejectsOverlongUnixSocketPaths() {
     let path = "/tmp/" + String(repeating: "x", count: 200)
