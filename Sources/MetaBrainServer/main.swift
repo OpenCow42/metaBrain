@@ -98,6 +98,7 @@ extension MetaBrainDaemonCommand {
                     logLevel: logLevel,
                     fileConfiguration: fileConfiguration
                 )
+                #if canImport(Darwin) || canImport(Glibc)
                 let logger = ServerStructuredLogger(
                     minimumLevel: try ServerLogLevel(validating: configuration.logLevel)
                 ) { line in
@@ -120,6 +121,10 @@ extension MetaBrainDaemonCommand {
                     }
                     FileHandle.standardOutput.write(Data((line + "\n").utf8))
                 }
+                #else
+                _ = configuration
+                throw ValidationError("mbd serve is unavailable on this platform")
+                #endif
             } catch {
                 throw ValidationError(String(describing: error))
             }
@@ -243,6 +248,7 @@ extension MetaBrainDaemonCommand {
     }
 }
 
+#if canImport(Darwin) || canImport(Glibc)
 private final class ServerShutdownSignalHandler: @unchecked Sendable {
     private let lock = NSLock()
     private var sources: [DispatchSourceSignal] = []
@@ -275,3 +281,4 @@ private func ignoreSignal(_ signalNumber: Int32) {
     _ = Glibc.signal(signalNumber, SIG_IGN)
     #endif
 }
+#endif
