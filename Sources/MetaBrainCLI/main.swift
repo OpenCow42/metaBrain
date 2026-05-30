@@ -82,6 +82,7 @@ struct MetaBrainCommand: AsyncParsableCommand {
 struct StoreOptions: ParsableArguments {
     static let defaultLoopbackServer = "http://127.0.0.1:\(ServerServeConfiguration.defaultLoopbackPort)"
     static let autoProbeTimeoutMilliseconds = 50
+    static let daemonRequestTimeoutMilliseconds = 30_000
 
     @Option(help: "Path to the LevelDB-backed metaBrain store.")
     var store: String = ".metabrain/store.leveldb"
@@ -97,7 +98,10 @@ struct StoreOptions: ParsableArguments {
             return nil
         }
         if let server, server != "auto" {
-            return MetaBrainServerClient(socketPath: server)
+            return MetaBrainServerClient(
+                socketPath: server,
+                requestTimeoutMilliseconds: Self.daemonRequestTimeoutMilliseconds
+            )
         }
         guard server == "auto" || store == ".metabrain/store.leveldb" else {
             return nil
@@ -110,7 +114,10 @@ struct StoreOptions: ParsableArguments {
         guard let health = try? probe.health(), health.service == "mbd", health.status == "ok" else {
             return nil
         }
-        return MetaBrainServerClient(socketPath: Self.defaultLoopbackServer)
+        return MetaBrainServerClient(
+            socketPath: Self.defaultLoopbackServer,
+            requestTimeoutMilliseconds: Self.daemonRequestTimeoutMilliseconds
+        )
     }
 
     func openStore() throws -> MetaBrainStore {
@@ -1074,9 +1081,12 @@ private func resolveServerVersion(server: String?, noServer: Bool) -> ServerVers
         endpoint = StoreOptions.defaultLoopbackServer
     }
 
+    let timeout = server == nil || server == "auto"
+        ? StoreOptions.autoProbeTimeoutMilliseconds
+        : StoreOptions.daemonRequestTimeoutMilliseconds
     let client = MetaBrainServerClient(
         socketPath: endpoint,
-        requestTimeoutMilliseconds: StoreOptions.autoProbeTimeoutMilliseconds
+        requestTimeoutMilliseconds: timeout
     )
 
     do {

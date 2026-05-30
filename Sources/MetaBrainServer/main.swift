@@ -69,9 +69,6 @@ extension MetaBrainDaemonCommand {
         @Option(name: .long, help: "Maximum HTTP request body bytes.")
         var maxRequestBodyBytes: Int?
 
-        @Option(name: .long, help: "File containing the loopback bearer token.")
-        var authorizationTokenPath: String?
-
         @Option(name: .long, help: "Minimum structured log level.")
         var logLevel: String?
 
@@ -94,7 +91,6 @@ extension MetaBrainDaemonCommand {
                     maximumQueuedRequests: maximumQueuedRequests,
                     maxHeaderBytes: maxHeaderBytes,
                     maxRequestBodyBytes: maxRequestBodyBytes,
-                    authorizationTokenPath: authorizationTokenPath,
                     logLevel: logLevel,
                     fileConfiguration: fileConfiguration
                 )

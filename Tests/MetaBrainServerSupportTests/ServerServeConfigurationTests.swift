@@ -12,7 +12,6 @@ import Testing
     #expect(configuration.maximumQueuedRequests == ServerServeConfiguration.defaultMaximumQueuedRequests)
     #expect(configuration.maxHeaderBytes == ServerServeConfiguration.defaultMaxHeaderBytes)
     #expect(configuration.maxRequestBodyBytes == ServerServeConfiguration.defaultMaxRequestBodyBytes)
-    #expect(configuration.authorizationTokenPath == nil)
     #expect(configuration.logLevel == "info")
 }
 
@@ -59,7 +58,6 @@ import Testing
         maximumQueuedRequests: 32,
         maxHeaderBytes: 32_768,
         maxRequestBodyBytes: 1_048_576,
-        authorizationTokenPath: "/tokens/mbd",
         logLevel: "debug"
     )
 
@@ -72,7 +70,6 @@ import Testing
     #expect(configuration.maximumQueuedRequests == 32)
     #expect(configuration.maxHeaderBytes == 32_768)
     #expect(configuration.maxRequestBodyBytes == 1_048_576)
-    #expect(configuration.authorizationTokenPath == "/tokens/mbd")
     #expect(configuration.logLevel == "debug")
 }
 
@@ -82,7 +79,6 @@ import Testing
             requestTimeoutSeconds: 0.25,
             maximumConcurrentRequests: 1,
             maximumQueuedRequests: 0,
-            authorizationTokenPath: " /tokens/mbd ",
             logLevel: " WARN "
         )
     )
@@ -90,7 +86,6 @@ import Testing
     #expect(configuration.requestTimeoutSeconds == 0.25)
     #expect(configuration.maximumConcurrentRequests == 1)
     #expect(configuration.maximumQueuedRequests == 0)
-    #expect(configuration.authorizationTokenPath == "/tokens/mbd")
     #expect(configuration.logLevel == "warn")
 }
 
@@ -105,7 +100,6 @@ import Testing
         maximumQueuedRequests: 8,
         maxHeaderBytes: 100,
         maxRequestBodyBytes: 200,
-        authorizationTokenPath: "/tokens/config",
         logLevel: "info"
     )
     let socketOverride = try ServerServeConfiguration(
@@ -116,7 +110,6 @@ import Testing
         maximumQueuedRequests: 0,
         maxHeaderBytes: 64,
         maxRequestBodyBytes: 128,
-        authorizationTokenPath: " /tokens/flag ",
         logLevel: "error",
         fileConfiguration: loopbackConfig
     )
@@ -137,7 +130,6 @@ import Testing
     #expect(socketOverride.maximumQueuedRequests == 0)
     #expect(socketOverride.maxHeaderBytes == 64)
     #expect(socketOverride.maxRequestBodyBytes == 128)
-    #expect(socketOverride.authorizationTokenPath == "/tokens/flag")
     #expect(socketOverride.logLevel == "error")
     #expect(loopbackOverride.listenMode == .loopback(host: "127.0.0.1", port: 0))
     #expect(configSocket.listenMode == .unixSocket(path: "/tmp/config-only.sock"))
@@ -175,9 +167,6 @@ import Testing
     #expect(throws: ServerServeConfigurationError.invalidMaxRequestBodyBytes(-1)) {
         _ = try ServerServeConfiguration(fileConfiguration: ServerFileConfiguration(maxRequestBodyBytes: -1))
     }
-    #expect(throws: ServerServeConfigurationError.emptyAuthorizationTokenPath) {
-        _ = try ServerServeConfiguration(fileConfiguration: ServerFileConfiguration(authorizationTokenPath: " "))
-    }
     #expect(throws: ServerServeConfigurationError.invalidLogLevel("verbose")) {
         _ = try ServerServeConfiguration(fileConfiguration: ServerFileConfiguration(logLevel: "verbose"))
     }
@@ -211,7 +200,6 @@ import Testing
         ServerServeConfigurationError.invalidMaxRequestBodyBytes(-1).description
             == "maxRequestBodyBytes must be greater than 0, got -1"
     )
-    #expect(ServerServeConfigurationError.emptyAuthorizationTokenPath.description == "authorizationTokenPath cannot be empty")
     #expect(
         ServerServeConfigurationError.invalidLogLevel("verbose").description
             == "logLevel must be one of debug, info, warn, error, got verbose"

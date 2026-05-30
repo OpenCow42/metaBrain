@@ -10,7 +10,6 @@ public struct ServerFileConfiguration: Codable, Equatable, Sendable {
     public var maximumQueuedRequests: Int?
     public var maxHeaderBytes: Int?
     public var maxRequestBodyBytes: Int?
-    public var authorizationTokenPath: String?
     public var logLevel: String?
 
     public init(
@@ -23,7 +22,6 @@ public struct ServerFileConfiguration: Codable, Equatable, Sendable {
         maximumQueuedRequests: Int? = nil,
         maxHeaderBytes: Int? = nil,
         maxRequestBodyBytes: Int? = nil,
-        authorizationTokenPath: String? = nil,
         logLevel: String? = nil
     ) {
         self.storePath = storePath
@@ -35,7 +33,6 @@ public struct ServerFileConfiguration: Codable, Equatable, Sendable {
         self.maximumQueuedRequests = maximumQueuedRequests
         self.maxHeaderBytes = maxHeaderBytes
         self.maxRequestBodyBytes = maxRequestBodyBytes
-        self.authorizationTokenPath = authorizationTokenPath
         self.logLevel = logLevel
     }
 }

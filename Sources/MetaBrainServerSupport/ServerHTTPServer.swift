@@ -15,8 +15,6 @@ public enum ServerHTTPServerError: Error, Equatable, CustomStringConvertible, Se
     case socketPathAlreadyExists(String)
     case socketOperationFailed(String)
     case requestReadTimedOut
-    case authorizationTokenReadFailed(String)
-    case emptyAuthorizationToken(String)
     case requestHeadersTooLarge(maxBytes: Int)
     case requestBodyTooLarge(maxBytes: Int)
 
@@ -32,10 +30,6 @@ public enum ServerHTTPServerError: Error, Equatable, CustomStringConvertible, Se
             return "socket operation failed: \(operation)"
         case .requestReadTimedOut:
             return "request read timed out"
-        case .authorizationTokenReadFailed(let path):
-            return "authorization token file could not be read: \(path)"
-        case .emptyAuthorizationToken(let path):
-            return "authorization token file is empty: \(path)"
         case .requestHeadersTooLarge(let maxBytes):
             return "HTTP request headers exceed maxHeaderBytes: \(maxBytes)"
         case .requestBodyTooLarge(let maxBytes):
@@ -107,7 +101,6 @@ public final class ServerHTTPServer: @unchecked Sendable {
     }
 
     public func run(maxRequests: Int? = nil, onReady: @Sendable (ServerListenMode) -> Void = { _ in }) throws {
-        let authorizationToken = try loadAuthorizationToken()
         let listener = try openListeningSocket()
         lock.withLock {
             listeningSocket = listener.fileDescriptor
@@ -132,7 +125,7 @@ public final class ServerHTTPServer: @unchecked Sendable {
             handlers.enter()
             DispatchQueue.global(qos: .userInitiated).async { [self] in
                 defer { handlers.leave() }
-                handle(clientSocket: client, authorizationToken: authorizationToken)
+                handle(clientSocket: client)
             }
             handledRequests += 1
         }
@@ -293,26 +286,7 @@ public final class ServerHTTPServer: @unchecked Sendable {
         return Int(UInt16(bigEndian: address.sin_port))
     }
 
-    private func loadAuthorizationToken() throws -> String? {
-        guard let path = configuration.authorizationTokenPath else {
-            return nil
-        }
-
-        let contents: String
-        do {
-            contents = try String(contentsOfFile: path, encoding: .utf8)
-        } catch {
-            throw ServerHTTPServerError.authorizationTokenReadFailed(path)
-        }
-
-        let token = contents.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !token.isEmpty else {
-            throw ServerHTTPServerError.emptyAuthorizationToken(path)
-        }
-        return token
-    }
-
-    private func handle(clientSocket: Int32, authorizationToken: String?) {
+    private func handle(clientSocket: Int32) {
         defer { closeSocket(clientSocket) }
         var parsedRequest: ServerHTTPRequest?
 
@@ -322,7 +296,7 @@ public final class ServerHTTPServer: @unchecked Sendable {
             let request = try codec.parseRequest(requestData)
             parsedRequest = request
             logger.requestStarted(request)
-            let response = route(request, authorizationToken: authorizationToken)
+            let response = route(request)
             logger.requestCompleted(request, response: response)
             try write(codec.serializeResponse(response), to: clientSocket)
         } catch ServerHTTPServerError.requestReadTimedOut {
@@ -363,15 +337,7 @@ public final class ServerHTTPServer: @unchecked Sendable {
         }
     }
 
-    private func route(_ request: ServerHTTPRequest, authorizationToken: String?) -> ServerHTTPResponse {
-        guard isAuthorized(request, token: authorizationToken) else {
-            return errorResponse(
-                statusCode: 401,
-                error: "unauthorized",
-                message: "Authorization bearer token is missing or invalid."
-            )
-        }
-
+    private func route(_ request: ServerHTTPRequest) -> ServerHTTPResponse {
         guard requestLimiter.tryAcquire() else {
             return errorResponse(
                 statusCode: 429,
@@ -382,21 +348,6 @@ public final class ServerHTTPServer: @unchecked Sendable {
 
         defer { requestLimiter.release() }
         return routeHandler(request)
-    }
-
-    private func isAuthorized(_ request: ServerHTTPRequest, token expectedToken: String?) -> Bool {
-        guard let expectedToken else {
-            return true
-        }
-        guard let header = request.headers.first(where: { $0.key.lowercased() == "authorization" })?.value else {
-            return false
-        }
-
-        let parts = header.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
-        guard parts.count == 2, String(parts[0]).caseInsensitiveCompare("Bearer") == .orderedSame else {
-            return false
-        }
-        return String(parts[1]).trimmingCharacters(in: .whitespacesAndNewlines) == expectedToken
     }
 
     private func configureRequestTimeout(for clientSocket: Int32) throws {
@@ -681,7 +632,6 @@ public final class ServerHTTPServer: @unchecked Sendable {
 
     public func run(maxRequests: Int? = nil, onReady: @Sendable (ServerListenMode) -> Void = { _ in }) throws {
         try withWinsock {
-            let authorizationToken = try loadAuthorizationToken()
             let listener = try openListeningSocket()
             lock.withLock {
                 listeningSocket = listener.fileDescriptor
@@ -708,7 +658,7 @@ public final class ServerHTTPServer: @unchecked Sendable {
                 handlers.enter()
                 DispatchQueue.global(qos: .userInitiated).async { [self] in
                     defer { handlers.leave() }
-                    handle(clientSocket: client, authorizationToken: authorizationToken)
+                    handle(clientSocket: client)
                 }
                 handledRequests += 1
             }
@@ -799,26 +749,7 @@ public final class ServerHTTPServer: @unchecked Sendable {
         return Int(UInt16(bigEndian: address.sin_port))
     }
 
-    private func loadAuthorizationToken() throws -> String? {
-        guard let path = configuration.authorizationTokenPath else {
-            return nil
-        }
-
-        let contents: String
-        do {
-            contents = try String(contentsOfFile: path, encoding: .utf8)
-        } catch {
-            throw ServerHTTPServerError.authorizationTokenReadFailed(path)
-        }
-
-        let token = contents.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !token.isEmpty else {
-            throw ServerHTTPServerError.emptyAuthorizationToken(path)
-        }
-        return token
-    }
-
-    private func handle(clientSocket: SOCKET, authorizationToken: String?) {
+    private func handle(clientSocket: SOCKET) {
         defer { closeSocket(clientSocket) }
         var parsedRequest: ServerHTTPRequest?
 
@@ -828,7 +759,7 @@ public final class ServerHTTPServer: @unchecked Sendable {
             let request = try codec.parseRequest(requestData)
             parsedRequest = request
             logger.requestStarted(request)
-            let response = route(request, authorizationToken: authorizationToken)
+            let response = route(request)
             logger.requestCompleted(request, response: response)
             try write(codec.serializeResponse(response), to: clientSocket)
         } catch ServerHTTPServerError.requestReadTimedOut {
@@ -869,15 +800,7 @@ public final class ServerHTTPServer: @unchecked Sendable {
         }
     }
 
-    private func route(_ request: ServerHTTPRequest, authorizationToken: String?) -> ServerHTTPResponse {
-        guard isAuthorized(request, token: authorizationToken) else {
-            return errorResponse(
-                statusCode: 401,
-                error: "unauthorized",
-                message: "Authorization bearer token is missing or invalid."
-            )
-        }
-
+    private func route(_ request: ServerHTTPRequest) -> ServerHTTPResponse {
         guard requestLimiter.tryAcquire() else {
             return errorResponse(
                 statusCode: 429,
@@ -888,21 +811,6 @@ public final class ServerHTTPServer: @unchecked Sendable {
 
         defer { requestLimiter.release() }
         return routeHandler(request)
-    }
-
-    private func isAuthorized(_ request: ServerHTTPRequest, token expectedToken: String?) -> Bool {
-        guard let expectedToken else {
-            return true
-        }
-        guard let header = request.headers.first(where: { $0.key.lowercased() == "authorization" })?.value else {
-            return false
-        }
-
-        let parts = header.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
-        guard parts.count == 2, String(parts[0]).caseInsensitiveCompare("Bearer") == .orderedSame else {
-            return false
-        }
-        return String(parts[1]).trimmingCharacters(in: .whitespacesAndNewlines) == expectedToken
     }
 
     private func configureRequestTimeout(for clientSocket: SOCKET) throws {

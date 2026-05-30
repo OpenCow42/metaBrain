@@ -23,7 +23,6 @@ public struct ServerServeConfiguration: Equatable, Sendable {
     public var maximumQueuedRequests: Int
     public var maxHeaderBytes: Int
     public var maxRequestBodyBytes: Int
-    public var authorizationTokenPath: String?
     public var logLevel: String
 
     public init(
@@ -36,7 +35,6 @@ public struct ServerServeConfiguration: Equatable, Sendable {
         maximumQueuedRequests: Int? = nil,
         maxHeaderBytes: Int? = nil,
         maxRequestBodyBytes: Int? = nil,
-        authorizationTokenPath: String? = nil,
         logLevel: String? = nil,
         fileConfiguration: ServerFileConfiguration? = nil
     ) throws {
@@ -73,10 +71,6 @@ public struct ServerServeConfiguration: Equatable, Sendable {
         )
         self.maxRequestBodyBytes = try Self.validatedMaxRequestBodyBytes(
             maxRequestBodyBytes ?? fileConfiguration?.maxRequestBodyBytes ?? Self.defaultMaxRequestBodyBytes
-        )
-        self.authorizationTokenPath = try Self.validatedOptionalPath(
-            authorizationTokenPath ?? fileConfiguration?.authorizationTokenPath,
-            emptyError: .emptyAuthorizationTokenPath
         )
         self.logLevel = try Self.validatedLogLevel(
             logLevel ?? fileConfiguration?.logLevel ?? ServerLogLevel.info.rawValue
@@ -158,20 +152,6 @@ public struct ServerServeConfiguration: Equatable, Sendable {
         return maximum
     }
 
-    private static func validatedOptionalPath(
-        _ path: String?,
-        emptyError: ServerServeConfigurationError
-    ) throws -> String? {
-        guard let path else {
-            return nil
-        }
-        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            throw emptyError
-        }
-        return trimmed
-    }
-
     private static func validatedLogLevel(_ logLevel: String) throws -> String {
         try ServerLogLevel(validating: logLevel).rawValue
     }
@@ -187,7 +167,6 @@ public enum ServerServeConfigurationError: Error, Equatable, CustomStringConvert
     case invalidMaximumQueuedRequests(Int)
     case invalidMaxHeaderBytes(Int)
     case invalidMaxRequestBodyBytes(Int)
-    case emptyAuthorizationTokenPath
     case invalidLogLevel(String)
 
     public var description: String {
@@ -210,8 +189,6 @@ public enum ServerServeConfigurationError: Error, Equatable, CustomStringConvert
             return "maxHeaderBytes must be greater than 0, got \(maximum)"
         case .invalidMaxRequestBodyBytes(let maximum):
             return "maxRequestBodyBytes must be greater than 0, got \(maximum)"
-        case .emptyAuthorizationTokenPath:
-            return "authorizationTokenPath cannot be empty"
         case .invalidLogLevel(let logLevel):
             return "logLevel must be one of debug, info, warn, error, got \(logLevel)"
         }

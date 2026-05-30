@@ -15,7 +15,6 @@ import Testing
           "maximumQueuedRequests": 16,
           "maxHeaderBytes": 32768,
           "maxRequestBodyBytes": 1048576,
-          "authorizationTokenPath": "/run/metabrain/token",
           "logLevel": "debug"
         }
         """.utf8
@@ -32,7 +31,6 @@ import Testing
     #expect(configuration.maximumQueuedRequests == 16)
     #expect(configuration.maxHeaderBytes == 32_768)
     #expect(configuration.maxRequestBodyBytes == 1_048_576)
-    #expect(configuration.authorizationTokenPath == "/run/metabrain/token")
     #expect(configuration.logLevel == "debug")
 }
 
