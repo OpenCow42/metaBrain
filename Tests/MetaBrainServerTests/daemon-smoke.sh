@@ -41,6 +41,10 @@ fi
 
 "${daemon_bin}" serve --help | rg -q -- '--maximum-concurrent-requests'
 "${daemon_bin}" service print --help | rg -q -- '--user'
+"${daemon_bin}" service install --help | rg -q -- '--now'
+"${daemon_bin}" service start --help | rg -q -- '--user'
+"${daemon_bin}" service stop --help | rg -q -- '--user'
+"${daemon_bin}" service status --help | rg -q -- '--user'
 
 config_path="$TMP_DIR/mbd.json"
 cat >"$config_path" <<JSON
@@ -63,6 +67,12 @@ if "${daemon_bin}" service uninstall 2>"$TMP_DIR/service-uninstall-missing-user.
     exit 1
 fi
 rg -F -q 'only user service files are supported; pass --user' "$TMP_DIR/service-uninstall-missing-user.err"
+
+if "${daemon_bin}" service start 2>"$TMP_DIR/service-start-missing-user.err"; then
+    echo "Expected service start without --user to fail" >&2
+    exit 1
+fi
+rg -F -q 'only user service files are supported; pass --user' "$TMP_DIR/service-start-missing-user.err"
 
 if env -u HOME "${daemon_bin}" service install --user --config "$config_path" 2>"$TMP_DIR/service-install-missing-home.err"; then
     echo "Expected service install without HOME to fail" >&2

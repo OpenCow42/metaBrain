@@ -229,6 +229,107 @@ public enum ServerUserServiceUninstallResult: Equatable, Sendable {
     }
 }
 
+public enum ServerUserServiceAction: Equatable, Sendable {
+    case start
+    case stop
+    case status
+}
+
+public struct ServerUserServiceCommandPlan: Equatable, Sendable {
+    public var commands: [[String]]
+    public var message: String?
+
+    public init(commands: [[String]], message: String? = nil) {
+        self.commands = commands
+        self.message = message
+    }
+}
+
+public enum ServerUserServiceController {
+    public static func commandPlan(
+        action: ServerUserServiceAction,
+        homeDirectory: String,
+        platform: ServerConfigurationPlatform = .current,
+        userID: Int = 0
+    ) throws -> ServerUserServiceCommandPlan {
+        let trimmedHome = homeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedHome.isEmpty else {
+            throw ServerServiceFileError.emptyHomeDirectory
+        }
+
+        switch platform {
+        case .macOS:
+            return launchdPlan(action: action, homeDirectory: trimmedHome, userID: userID)
+        case .linux:
+            return systemdPlan(action: action)
+        }
+    }
+
+    private static func launchdPlan(
+        action: ServerUserServiceAction,
+        homeDirectory: String,
+        userID: Int
+    ) -> ServerUserServiceCommandPlan {
+        let servicePath = ServerServiceFilePaths.userServicePath(
+            homeDirectory: homeDirectory,
+            platform: .macOS
+        )
+        let domain = "gui/\(userID)"
+        let serviceIdentifier = "\(domain)/\(ServerServiceFilePaths.launchdUserLabel)"
+
+        switch action {
+        case .start:
+            return ServerUserServiceCommandPlan(
+                commands: [
+                    ["launchctl", "bootstrap", domain, servicePath],
+                    ["launchctl", "enable", serviceIdentifier],
+                    ["launchctl", "kickstart", "-k", serviceIdentifier],
+                ],
+                message: "started \(serviceIdentifier)"
+            )
+        case .stop:
+            return ServerUserServiceCommandPlan(
+                commands: [
+                    ["launchctl", "bootout", serviceIdentifier],
+                ],
+                message: "stopped \(serviceIdentifier)"
+            )
+        case .status:
+            return ServerUserServiceCommandPlan(
+                commands: [
+                    ["launchctl", "print", serviceIdentifier],
+                ]
+            )
+        }
+    }
+
+    private static func systemdPlan(action: ServerUserServiceAction) -> ServerUserServiceCommandPlan {
+        switch action {
+        case .start:
+            return ServerUserServiceCommandPlan(
+                commands: [
+                    ["systemctl", "--user", "daemon-reload"],
+                    ["systemctl", "--user", "enable", "--now", ServerServiceFilePaths.systemdUserUnitName],
+                ],
+                message: "started \(ServerServiceFilePaths.systemdUserUnitName)"
+            )
+        case .stop:
+            return ServerUserServiceCommandPlan(
+                commands: [
+                    ["systemctl", "--user", "disable", "--now", ServerServiceFilePaths.systemdUserUnitName],
+                ],
+                message: "stopped \(ServerServiceFilePaths.systemdUserUnitName)"
+            )
+        case .status:
+            return ServerUserServiceCommandPlan(
+                commands: [
+                    ["systemctl", "--user", "status", ServerServiceFilePaths.systemdUserUnitName],
+                ]
+            )
+        }
+    }
+}
+
 public enum ServerUserServiceFileManager {
     public static func install(
         _ configuration: ServerUserServiceFileConfiguration,

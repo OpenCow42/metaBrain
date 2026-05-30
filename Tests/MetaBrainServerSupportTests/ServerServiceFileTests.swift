@@ -126,6 +126,103 @@ import Testing
     )
 }
 
+@Test func launchdStartPlanBootstrapsEnablesAndKicksUserAgent() throws {
+    let plan = try ServerUserServiceController.commandPlan(
+        action: .start,
+        homeDirectory: "/Users/alice",
+        platform: .macOS,
+        userID: 501
+    )
+
+    #expect(
+        plan
+            == ServerUserServiceCommandPlan(
+                commands: [
+                    [
+                        "launchctl",
+                        "bootstrap",
+                        "gui/501",
+                        "/Users/alice/Library/LaunchAgents/org.metabrain.mbd.plist",
+                    ],
+                    ["launchctl", "enable", "gui/501/org.metabrain.mbd"],
+                    ["launchctl", "kickstart", "-k", "gui/501/org.metabrain.mbd"],
+                ],
+                message: "started gui/501/org.metabrain.mbd"
+            )
+    )
+}
+
+@Test func launchdStopAndStatusPlansTargetUserAgent() throws {
+    let stopPlan = try ServerUserServiceController.commandPlan(
+        action: .stop,
+        homeDirectory: "/Users/alice",
+        platform: .macOS,
+        userID: 501
+    )
+    let statusPlan = try ServerUserServiceController.commandPlan(
+        action: .status,
+        homeDirectory: "/Users/alice",
+        platform: .macOS,
+        userID: 501
+    )
+
+    #expect(
+        stopPlan == ServerUserServiceCommandPlan(
+            commands: [["launchctl", "bootout", "gui/501/org.metabrain.mbd"]],
+            message: "stopped gui/501/org.metabrain.mbd"
+        )
+    )
+    #expect(
+        statusPlan == ServerUserServiceCommandPlan(
+            commands: [["launchctl", "print", "gui/501/org.metabrain.mbd"]]
+        )
+    )
+}
+
+@Test func systemdStartPlanReloadsThenEnablesUserUnit() throws {
+    let plan = try ServerUserServiceController.commandPlan(
+        action: .start,
+        homeDirectory: "/home/alice",
+        platform: .linux
+    )
+
+    #expect(
+        plan
+            == ServerUserServiceCommandPlan(
+                commands: [
+                    ["systemctl", "--user", "daemon-reload"],
+                    ["systemctl", "--user", "enable", "--now", "mbd.service"],
+                ],
+                message: "started mbd.service"
+            )
+    )
+}
+
+@Test func systemdStopAndStatusPlansTargetUserUnit() throws {
+    let stopPlan = try ServerUserServiceController.commandPlan(
+        action: .stop,
+        homeDirectory: "/home/alice",
+        platform: .linux
+    )
+    let statusPlan = try ServerUserServiceController.commandPlan(
+        action: .status,
+        homeDirectory: "/home/alice",
+        platform: .linux
+    )
+
+    #expect(
+        stopPlan == ServerUserServiceCommandPlan(
+            commands: [["systemctl", "--user", "disable", "--now", "mbd.service"]],
+            message: "stopped mbd.service"
+        )
+    )
+    #expect(
+        statusPlan == ServerUserServiceCommandPlan(
+            commands: [["systemctl", "--user", "status", "mbd.service"]]
+        )
+    )
+}
+
 @Test func userServiceConfigurationComputesPathsAndContents() throws {
     let configuration = try ServerUserServiceFileConfiguration(
         homeDirectory: " /home/alice/ ",
@@ -232,6 +329,13 @@ import Testing
         _ = try ServerUserServiceFileManager.uninstall(
             homeDirectory: "\t",
             platform: .macOS
+        )
+    }
+    #expect(throws: ServerServiceFileError.emptyHomeDirectory) {
+        _ = try ServerUserServiceController.commandPlan(
+            action: .start,
+            homeDirectory: "\t",
+            platform: .linux
         )
     }
 }

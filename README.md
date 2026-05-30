@@ -169,6 +169,8 @@ versions, prune, delete, and remove-version.
 mbd serve --store .metabrain/store.leveldb --socket ~/.metabrain/mbd.sock
 mbd serve --store .metabrain/store.leveldb --host 127.0.0.1
 mbd service print --user
+mbd service install --user --config ~/.config/metabrain/mbd.json --now
+mbd service status --user
 mbd version
 ```
 
@@ -195,8 +197,13 @@ mainstream service ports.
 
 Package managers install the daemon binary passively; they do not create a
 workspace store, install a user service, or start `mbd`. Use
-`mbd service print --user` or `mbd service install --user --config <path>` when
-you want an inspectable user LaunchAgent or systemd unit.
+`mbd service print --user` to inspect the generated LaunchAgent or systemd unit,
+`mbd service install --user --config <path>` to install it, and `mbd service
+install --user --config <path> --now` to install, enable, and start it. After
+installation, `mbd service start --user`, `mbd service stop --user`, and `mbd
+service status --user` wrap the platform user service manager. On Linux, the
+service runs under `systemctl --user`; enable lingering with `loginctl
+enable-linger "$USER"` if the daemon should survive after logout.
 
 For the default store, store-backed `mb` commands automatically make a short
 health probe to `http://127.0.0.1:6374`. If a healthy daemon is already

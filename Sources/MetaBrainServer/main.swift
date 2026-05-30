@@ -139,11 +139,14 @@ extension MetaBrainDaemonCommand {
     struct Service: ParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "service",
-            abstract: "Generate service manager files.",
+            abstract: "Manage user service manager files.",
             subcommands: [
                 Print.self,
                 Install.self,
                 Uninstall.self,
+                Start.self,
+                Stop.self,
+                Status.self,
             ]
         )
 
@@ -186,6 +189,9 @@ extension MetaBrainDaemonCommand {
             @Option(name: .long, help: "JSON config file to pass to mbd serve.")
             var config: String?
 
+            @Flag(name: .long, help: "Start and enable the user service after installing it.")
+            var now = false
+
             func validate() throws {
                 guard user else {
                     throw ValidationError("only user service files are supported; pass --user")
@@ -200,6 +206,9 @@ extension MetaBrainDaemonCommand {
                 )
                 let path = try ServerUserServiceFileManager.install(configuration)
                 print(path)
+                if now {
+                    try Service.runUserServiceAction(.start)
+                }
             }
         }
 
@@ -226,6 +235,66 @@ extension MetaBrainDaemonCommand {
             }
         }
 
+        struct Start: ParsableCommand {
+            static let configuration = CommandConfiguration(
+                commandName: "start",
+                abstract: "Enable and start the installed user service."
+            )
+
+            @Flag(name: .long, help: "Start a user service.")
+            var user = false
+
+            func validate() throws {
+                guard user else {
+                    throw ValidationError("only user service files are supported; pass --user")
+                }
+            }
+
+            func run() throws {
+                try Service.runUserServiceAction(.start)
+            }
+        }
+
+        struct Stop: ParsableCommand {
+            static let configuration = CommandConfiguration(
+                commandName: "stop",
+                abstract: "Disable and stop the installed user service."
+            )
+
+            @Flag(name: .long, help: "Stop a user service.")
+            var user = false
+
+            func validate() throws {
+                guard user else {
+                    throw ValidationError("only user service files are supported; pass --user")
+                }
+            }
+
+            func run() throws {
+                try Service.runUserServiceAction(.stop)
+            }
+        }
+
+        struct Status: ParsableCommand {
+            static let configuration = CommandConfiguration(
+                commandName: "status",
+                abstract: "Print the installed user service status."
+            )
+
+            @Flag(name: .long, help: "Inspect a user service.")
+            var user = false
+
+            func validate() throws {
+                guard user else {
+                    throw ValidationError("only user service files are supported; pass --user")
+                }
+            }
+
+            func run() throws {
+                try Service.runUserServiceAction(.status)
+            }
+        }
+
         private static func executablePath() -> String {
             Bundle.main.executableURL!.path
         }
@@ -233,6 +302,53 @@ extension MetaBrainDaemonCommand {
         private static func homeDirectory() -> String {
             ProcessInfo.processInfo.environment["HOME", default: ""]
                 .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        private static func runUserServiceAction(_ action: ServerUserServiceAction) throws {
+            let plan = try ServerUserServiceController.commandPlan(
+                action: action,
+                homeDirectory: homeDirectory(),
+                userID: try currentUserID()
+            )
+            try runServiceCommands(plan.commands)
+            if let message = plan.message {
+                print(message)
+            }
+        }
+
+        private static func currentUserID() throws -> Int {
+            #if canImport(Darwin) || canImport(Glibc)
+            return Int(getuid())
+            #else
+            throw ValidationError("user service control is unavailable on this platform")
+            #endif
+        }
+
+        private static func runServiceCommands(_ commands: [[String]]) throws {
+            for command in commands {
+                try runServiceCommand(command)
+            }
+        }
+
+        private static func runServiceCommand(_ command: [String]) throws {
+            guard !command.isEmpty else {
+                return
+            }
+
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = command
+            process.standardOutput = FileHandle.standardOutput
+            process.standardError = FileHandle.standardError
+
+            try process.run()
+            process.waitUntilExit()
+
+            guard process.terminationStatus == 0 else {
+                throw ValidationError(
+                    "\(command.joined(separator: " ")) failed with exit code \(process.terminationStatus)"
+                )
+            }
         }
     }
 

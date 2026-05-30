@@ -95,8 +95,9 @@ After uploading the macOS zip, update
 1. Set the formula `version` to the release version.
 2. Set `sha256` to the notarized zip checksum.
 3. Confirm the formula installs both `bin/mb` and `bin/mbd`.
-4. Do not auto-start `mbd` in `post_install`; print passive next steps or rely
-   on `mbd service print --user` and `mbd service install --user`.
+4. Do not auto-start `mbd` in `post_install`; print passive next steps that
+   point users to `mbd service install --user --config <path> --now` when they
+   want an opt-in LaunchAgent.
 5. If the formula uses GitHub's release asset API URL, update the asset id.
 6. Commit and push the tap.
 
@@ -179,7 +180,9 @@ dpkg-deb -c dist/metabrain_1.1.2_amd64.deb | grep -E '/usr/bin/(mb|mbd)$'
 The `.deb` installs `/usr/bin/mb` and `/usr/bin/mbd` plus documentation. It
 must not auto-enable, auto-start, or install a user service for `mbd`; user
 services require per-user config and should be created explicitly with
-`mbd service install --user --config <path>`.
+`mbd service install --user --config <path> --now`. On Linux, users may also
+need `loginctl enable-linger "$USER"` when the user service should keep
+running after logout.
 
 ## Ubuntu APT Repository
 
