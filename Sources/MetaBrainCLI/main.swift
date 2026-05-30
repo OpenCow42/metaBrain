@@ -100,12 +100,9 @@ struct StoreOptions: ParsableArguments {
         if let server, server != "auto" {
             return MetaBrainServerClient(
                 socketPath: server,
-                storePath: explicitStorePath,
+                storePath: effectiveStorePath,
                 requestTimeoutMilliseconds: Self.daemonRequestTimeoutMilliseconds
             )
-        }
-        guard server == "auto" || store == nil else {
-            return nil
         }
 
         let probe = MetaBrainServerClient(
@@ -117,7 +114,7 @@ struct StoreOptions: ParsableArguments {
         }
         return MetaBrainServerClient(
             socketPath: Self.defaultLoopbackServer,
-            storePath: explicitStorePath,
+            storePath: effectiveStorePath,
             requestTimeoutMilliseconds: Self.daemonRequestTimeoutMilliseconds
         )
     }
@@ -126,8 +123,8 @@ struct StoreOptions: ParsableArguments {
         store ?? ".metabrain/store.leveldb"
     }
 
-    private var explicitStorePath: String? {
-        store.map { URL.expandingShellPath($0, isDirectory: true).standardizedFileURL.path }
+    private var effectiveStorePath: String {
+        URL.expandingShellPath(effectiveStore, isDirectory: true).standardizedFileURL.path
     }
 
     func openStore() throws -> MetaBrainStore {

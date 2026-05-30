@@ -175,10 +175,11 @@ mbd version
 ```
 
 One daemon process can serve multiple stores through the same socket or
-loopback port. The CLI sends the selected `--store` path with each daemon-backed
-request, and the daemon keeps one actor per active store path. Operations for
-different stores can proceed independently, while operations inside one store
-remain serialized at that store actor. Idle stores are closed after
+loopback port. The CLI sends the selected store path with each daemon-backed
+request, using either `--store <path>` or the default `.metabrain/store.leveldb`,
+and the daemon keeps one actor per active store path. Operations for different
+stores can proceed independently, while operations inside one store remain
+serialized at that store actor. Idle stores are closed after
 `--store-idle-timeout-seconds` seconds, defaulting to 30 seconds, which releases
 the underlying LevelDB lock while the daemon keeps listening.
 
@@ -205,14 +206,15 @@ service status --user` wrap the platform user service manager. On Linux, the
 service runs under `systemctl --user`; enable lingering with `loginctl
 enable-linger "$USER"` if the daemon should survive after logout.
 
-For the default store, store-backed `mb` commands automatically make a short
+For the selected store, store-backed `mb` commands automatically make a short
 health probe to `http://127.0.0.1:6374`. If a healthy daemon is already
-listening there, the command uses it; if the probe is refused or times out, the
-command opens LevelDB directly as before. Commands with an explicit `--store`
-stay direct unless daemon mode is requested.
+listening there, the command sends the selected store path to the daemon; if the
+probe is refused or times out, the command opens the same LevelDB store directly
+as before. Use `--no-server` to skip probing and force direct LevelDB access.
 
 ```bash
 mb put /notes/today "uses a healthy default daemon when one is running"
+mb --store ~/work/project/.metabrain/store.leveldb put /notes/today "routes this store through the daemon"
 mb --server auto search "probe the default daemon endpoint explicitly"
 mb --server ~/.metabrain/mbd.sock put /notes/today "daemon-backed note"
 mb --server ~/.metabrain/mbd.sock search "daemon-backed"

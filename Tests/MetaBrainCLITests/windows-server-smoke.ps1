@@ -113,27 +113,29 @@ try {
         throw "Expected health payload to include server version: $($Health | ConvertTo-Json -Compress)"
     }
 
-    $Init = & $Mb --server $Server init
+    $Init = & $Mb --server $Server init --store $Store
     Assert-Contains -Text $Init -Needle '"status":"initialized"' -Label "init"
 
-    $AutoInit = & $Mb --server auto init
+    $AutoInit = & $Mb --server auto init --store $Store
     Assert-Contains -Text $AutoInit -Needle '"status":"initialized"' -Label "auto init"
+    $ExpectedStoreNeedle = '"storePath":"' + $Store.Replace("\", "\\") + '"'
+    Assert-Contains -Text $AutoInit -Needle $ExpectedStoreNeedle -Label "auto init"
 
     $Version = & $Mb version --no-release-check
     Assert-Contains -Text $Version -Needle '"endpoint":"http://127.0.0.1:6374"' -Label "version"
     Assert-Contains -Text $Version -Needle '"reachable":true' -Label "version"
 
-    $Put = & $Mb put /windows/smoke "windows daemon memory" --title Windows --tag smoke --format json
+    $Put = & $Mb put --store $Store /windows/smoke "windows daemon memory" --title Windows --tag smoke --format json
     Assert-Contains -Text $Put -Needle '"status":"created"' -Label "put"
 
-    $Get = & $Mb get /windows/smoke --format json
+    $Get = & $Mb get --store $Store /windows/smoke --format json
     Assert-Contains -Text $Get -Needle '"body":"windows daemon memory"' -Label "get"
     Assert-Contains -Text $Get -Needle '"tags":["smoke"]' -Label "get"
 
-    $Search = & $Mb search windows --format jsonl
+    $Search = & $Mb search --store $Store windows --format jsonl
     Assert-Contains -Text $Search -Needle '"path":"/windows/smoke"' -Label "search"
 
-    $Delete = & $Mb delete /windows/smoke --format json
+    $Delete = & $Mb delete --store $Store /windows/smoke --format json
     Assert-Contains -Text $Delete -Needle '"deleted":true' -Label "delete"
 
     $NoServerStore = Join-Path $TmpDir "no-server-store.leveldb"

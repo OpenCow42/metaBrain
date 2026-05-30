@@ -1047,8 +1047,13 @@ if [[ ! -S "$SERVER_SOCKET" ]]; then
     exit 1
 fi
 
-SERVER_MB=("${METABRAIN[@]}" --server "$SERVER_SOCKET")
-SERVER_INIT_JSON="$("${SERVER_MB[@]}" init)"
+server_mb() {
+    local command="$1"
+    shift
+    "${METABRAIN[@]}" "$command" --server "$SERVER_SOCKET" --store "$SERVER_STORE" "$@"
+}
+
+SERVER_INIT_JSON="$(server_mb init)"
 SERVER_EXPECTED_INIT_JSON="{\"operation\":\"init\",\"status\":\"initialized\",\"storePath\":\"$SERVER_STORE\"}"
 if [[ "$SERVER_INIT_JSON" != "$SERVER_EXPECTED_INIT_JSON" ]]; then
     echo "Expected daemon init JSON output, got: $SERVER_INIT_JSON" >&2
@@ -1088,9 +1093,9 @@ if ! printf '%s\n' "$SERVER_VERSION_JSON" | rg -F -q '"server":{"currentTag":"';
     exit 1
 fi
 
-SERVER_PUT_TODAY_JSON="$("${SERVER_MB[@]}" put /daemon/today 'daemon alpha memory' --title Daemon --tag daemon --meta kind=server --keep-all)"
+SERVER_PUT_TODAY_JSON="$(server_mb put /daemon/today 'daemon alpha memory' --title Daemon --tag daemon --meta kind=server --keep-all)"
 assert_put_json "$SERVER_PUT_TODAY_JSON" /daemon/today created 1
-SERVER_GET_TODAY_JSON="$("${SERVER_MB[@]}" get /daemon/today)"
+SERVER_GET_TODAY_JSON="$(server_mb get /daemon/today)"
 assert_get_json "$SERVER_GET_TODAY_JSON" /daemon/today 'daemon alpha memory' 1
 printf '%s\n' "$SERVER_GET_TODAY_JSON" | rg -F -q '"title":"Daemon"'
 printf '%s\n' "$SERVER_GET_TODAY_JSON" | rg -F -q '"tags":["daemon"]'
@@ -1099,10 +1104,10 @@ SERVER_TODAY_ID="$(printf '%s\n' "$SERVER_GET_TODAY_JSON" | sed -E 's/.*"documen
 
 SERVER_BODY_FILE="$TMP_DIR/server-body.txt"
 printf 'daemon body file memory\n' >"$SERVER_BODY_FILE"
-SERVER_PUT_FILE_JSON="$("${SERVER_MB[@]}" put /daemon/file --body-file "$SERVER_BODY_FILE" --ref-path /daemon/today --ref-url https://example.com/server-ref)"
+SERVER_PUT_FILE_JSON="$(server_mb put /daemon/file --body-file "$SERVER_BODY_FILE" --ref-path /daemon/today --ref-url https://example.com/server-ref)"
 assert_put_json "$SERVER_PUT_FILE_JSON" /daemon/file created 1
 
-SERVER_PATCHABLE_JSON="$("${SERVER_MB[@]}" put /daemon/patchable 'old daemon patch memory' --tag patch --keep-all)"
+SERVER_PATCHABLE_JSON="$(server_mb put /daemon/patchable 'old daemon patch memory' --tag patch --keep-all)"
 assert_put_json "$SERVER_PATCHABLE_JSON" /daemon/patchable created 1
 SERVER_PATCH_FILE="$TMP_DIR/server.patch"
 cat >"$SERVER_PATCH_FILE" <<'PATCH'
@@ -1112,25 +1117,25 @@ cat >"$SERVER_PATCH_FILE" <<'PATCH'
 +fresh daemon patch memory
 \ No newline at end of file
 PATCH
-SERVER_PATCH_CHECK_JSON="$("${SERVER_MB[@]}" patch /daemon/patchable --patch-file "$SERVER_PATCH_FILE" --check)"
+SERVER_PATCH_CHECK_JSON="$(server_mb patch /daemon/patchable --patch-file "$SERVER_PATCH_FILE" --check)"
 assert_patch_check_json "$SERVER_PATCH_CHECK_JSON"
-SERVER_PATCH_WRITE_JSON="$("${SERVER_MB[@]}" patch /daemon/patchable --patch-file "$SERVER_PATCH_FILE" --keep-last 2)"
+SERVER_PATCH_WRITE_JSON="$(server_mb patch /daemon/patchable --patch-file "$SERVER_PATCH_FILE" --keep-last 2)"
 assert_patch_write_json "$SERVER_PATCH_WRITE_JSON" /daemon/patchable 2
 
-SERVER_LIST_JSONL="$("${SERVER_MB[@]}" list /daemon)"
+SERVER_LIST_JSONL="$(server_mb list /daemon)"
 printf '%s\n' "$SERVER_LIST_JSONL" | rg -F -q '"path":"/daemon/today"'
-SERVER_TREE_JSONL="$("${SERVER_MB[@]}" tree /daemon --max-depth 1)"
+SERVER_TREE_JSONL="$(server_mb tree /daemon --max-depth 1)"
 printf '%s\n' "$SERVER_TREE_JSONL" | rg -F -q '"kind":"root","name":"daemon","path":"/daemon"'
 printf '%s\n' "$SERVER_TREE_JSONL" | rg -F -q '"path":"/daemon/patchable"'
-SERVER_SEARCH_JSONL="$("${SERVER_MB[@]}" search fresh --tag patch)"
+SERVER_SEARCH_JSONL="$(server_mb search fresh --tag patch)"
 assert_search_jsonl_result "$SERVER_SEARCH_JSONL" /daemon/patchable fresh
 
-SERVER_TODAY_UPDATE_JSON="$("${SERVER_MB[@]}" put /daemon/today 'daemon alpha updated memory' --keep-all)"
+SERVER_TODAY_UPDATE_JSON="$(server_mb put /daemon/today 'daemon alpha updated memory' --keep-all)"
 assert_put_json "$SERVER_TODAY_UPDATE_JSON" /daemon/today updated 2
-SERVER_VERSIONS_JSONL="$("${SERVER_MB[@]}" versions --id "$SERVER_TODAY_ID")"
+SERVER_VERSIONS_JSONL="$(server_mb versions --id "$SERVER_TODAY_ID")"
 assert_versions_jsonl "$SERVER_VERSIONS_JSONL" /daemon/today 2
 SERVER_DUMP_DIR="$TMP_DIR/server-dump-files"
-"${SERVER_MB[@]}" dump /daemon/today --versions --output-dir "$SERVER_DUMP_DIR" >"$TMP_DIR/server-dump.jsonl"
+server_mb dump /daemon/today --versions --output-dir "$SERVER_DUMP_DIR" >"$TMP_DIR/server-dump.jsonl"
 rg -F -q '"fileSystemPath":"' "$TMP_DIR/server-dump.jsonl"
 SERVER_DUMP_FILE="$(find "$SERVER_DUMP_DIR" -type f -name 'today__*__v2__*.md' | head -n 1)"
 if [[ -z "$SERVER_DUMP_FILE" || ! -f "$SERVER_DUMP_FILE" ]]; then
@@ -1139,21 +1144,21 @@ if [[ -z "$SERVER_DUMP_FILE" || ! -f "$SERVER_DUMP_FILE" ]]; then
 fi
 rg -F -q 'daemon alpha updated memory' "$SERVER_DUMP_FILE"
 
-SERVER_MOVE_JSON="$("${SERVER_MB[@]}" move /daemon/file /daemon/archive/file)"
+SERVER_MOVE_JSON="$(server_mb move /daemon/file /daemon/archive/file)"
 assert_move_json "$SERVER_MOVE_JSON" /daemon/file /daemon/archive/file moved 2
-SERVER_PRUNE_JSON="$("${SERVER_MB[@]}" prune /daemon/today --keep-last 1)"
+SERVER_PRUNE_JSON="$(server_mb prune /daemon/today --keep-last 1)"
 assert_prune_json "$SERVER_PRUNE_JSON" 1 1
-SERVER_DELETE_JSON="$("${SERVER_MB[@]}" delete /daemon/archive/file --format json)"
+SERVER_DELETE_JSON="$(server_mb delete /daemon/archive/file --format json)"
 assert_delete_json "$SERVER_DELETE_JSON" /daemon/archive/file true
-if "${SERVER_MB[@]}" get /daemon/archive/file 2>"$TMP_DIR/server-get-deleted.err"; then
+if server_mb get /daemon/archive/file 2>"$TMP_DIR/server-get-deleted.err"; then
     echo "Expected daemon deleted document get to fail" >&2
     exit 1
 fi
 rg -F -q 'server returned HTTP 404 document_not_found' "$TMP_DIR/server-get-deleted.err"
 
-"${SERVER_MB[@]}" put /daemon/remove-version 'remove daemon v1' --keep-all --format text | rg -q '^version: 1$'
-"${SERVER_MB[@]}" put /daemon/remove-version 'remove daemon v2' --keep-all --format text | rg -q '^version: 2$'
-SERVER_REMOVE_VERSION_JSON="$("${SERVER_MB[@]}" remove-version /daemon/remove-version --sequence 1 --format json)"
+server_mb put /daemon/remove-version 'remove daemon v1' --keep-all --format text | rg -q '^version: 1$'
+server_mb put /daemon/remove-version 'remove daemon v2' --keep-all --format text | rg -q '^version: 2$'
+SERVER_REMOVE_VERSION_JSON="$(server_mb remove-version /daemon/remove-version --sequence 1 --format json)"
 assert_remove_version_json "$SERVER_REMOVE_VERSION_JSON" /daemon/remove-version true 1
 
 kill "$daemon_server_pid" 2>/dev/null || true
@@ -1185,8 +1190,9 @@ if [[ "$AUTO_SERVER_PORT" != "6374" ]]; then
     exit 1
 fi
 
-AUTO_INIT_JSON="$("${METABRAIN[@]}" --server auto init)"
-AUTO_EXPECTED_INIT_JSON="{\"operation\":\"init\",\"status\":\"initialized\",\"storePath\":\"$AUTO_SERVER_STORE\"}"
+AUTO_SELECTED_STORE="$TMP_DIR/auto-selected-store.leveldb"
+AUTO_INIT_JSON="$("${METABRAIN[@]}" --server auto init --store "$AUTO_SELECTED_STORE")"
+AUTO_EXPECTED_INIT_JSON="{\"operation\":\"init\",\"status\":\"initialized\",\"storePath\":\"$AUTO_SELECTED_STORE\"}"
 if [[ "$AUTO_INIT_JSON" != "$AUTO_EXPECTED_INIT_JSON" ]]; then
     echo "Expected auto daemon init JSON output, got: $AUTO_INIT_JSON" >&2
     exit 1
@@ -1194,11 +1200,15 @@ fi
 AUTO_VERSION_JSON="$(METABRAIN_VERSION=4.5.6 "${METABRAIN[@]}" version --no-release-check)"
 printf '%s\n' "$AUTO_VERSION_JSON" | rg -F -q '"currentTag":"4.5.6"'
 printf '%s\n' "$AUTO_VERSION_JSON" | rg -F -q '"server":{"currentTag":"6.7.8","endpoint":"http://127.0.0.1:6374","reachable":true}'
-AUTO_PUT_JSON="$("${METABRAIN[@]}" put /auto/today 'auto daemon memory' --tag auto)"
+AUTO_PUT_JSON="$("${METABRAIN[@]}" put --store "$AUTO_SELECTED_STORE" /auto/today 'auto daemon memory' --tag auto)"
 assert_put_json "$AUTO_PUT_JSON" /auto/today created 1
-AUTO_GET_JSON="$("${METABRAIN[@]}" get /auto/today)"
+AUTO_GET_JSON="$("${METABRAIN[@]}" get --store "$AUTO_SELECTED_STORE" /auto/today)"
 assert_get_json "$AUTO_GET_JSON" /auto/today 'auto daemon memory' 1
 printf '%s\n' "$AUTO_GET_JSON" | rg -F -q '"tags":["auto"]'
+if [[ -e "$AUTO_SERVER_STORE" ]]; then
+    echo "Expected daemon-backed CLI commands to use the selected store, not daemon default: $AUTO_SERVER_STORE" >&2
+    exit 1
+fi
 
 NO_SERVER_STORE="$TMP_DIR/no-server-store.leveldb"
 NO_SERVER_INIT_JSON="$("${METABRAIN[@]}" --no-server init --store "$NO_SERVER_STORE")"
