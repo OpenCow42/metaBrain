@@ -9,6 +9,8 @@ import Darwin
 import Glibc
 #endif
 
+#if canImport(Darwin) || canImport(Glibc)
+
 @Test func httpServerServesHealthOverLoopbackPortZero() throws {
     let configuration = try ServerServeConfiguration(host: "127.0.0.1", port: 0)
     let running = try startServer(configuration: configuration, maxRequests: 1)
@@ -594,3 +596,5 @@ import Glibc
             == "HTTP request body exceeds maxRequestBodyBytes: 8"
     )
 }
+
+#endif

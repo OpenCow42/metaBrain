@@ -9,6 +9,8 @@ import Darwin
 import Glibc
 #endif
 
+#if canImport(Darwin) || canImport(Glibc)
+
 struct RunningServer {
     var server: ServerHTTPServer
     var mode: ServerListenMode
@@ -381,3 +383,5 @@ func systemLstat(_ path: String, _ status: UnsafeMutablePointer<stat>) -> Int32 
     Glibc.lstat(path, status)
     #endif
 }
+
+#endif
