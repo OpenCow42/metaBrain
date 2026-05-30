@@ -81,7 +81,7 @@ run_cli_workload() {
             common_args=(--store "$store" --no-server)
             ;;
         server)
-            common_args=(--server "$server_endpoint")
+            common_args=(--server "$server_endpoint" --store "$store")
             ;;
         *)
             echo "unknown workload mode: $mode" >&2
