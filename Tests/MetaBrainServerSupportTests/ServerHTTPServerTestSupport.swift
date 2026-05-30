@@ -203,7 +203,7 @@ func sendHTTPRequest(to mode: ServerListenMode, request: String) throws -> Strin
 
     try connectSocket(descriptor, to: mode)
     try write(Data(request.utf8), to: descriptor)
-    shutdown(descriptor, SHUT_WR)
+    shutdown(descriptor, Int32(SHUT_WR))
     return String(decoding: try readAll(from: descriptor), as: UTF8.self)
 }
 
