@@ -118,7 +118,7 @@ try {
 
     $AutoInit = & $Mb --server auto init --store $Store
     Assert-Contains -Text $AutoInit -Needle '"status":"initialized"' -Label "auto init"
-    $ExpectedStoreNeedle = '"storePath":"' + $Store.Replace("\", "\\") + '"'
+    $ExpectedStoreNeedle = '"storePath":"' + $Store.Replace("\", "/") + '"'
     Assert-Contains -Text $AutoInit -Needle $ExpectedStoreNeedle -Label "auto init"
 
     $Version = & $Mb version --no-release-check
