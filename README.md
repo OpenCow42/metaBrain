@@ -160,10 +160,10 @@ mb help dump
 
 ## Daemon
 
-`mbd` runs the local daemon surface. The daemon opens one configured
-`MetaBrainCore` store for its lifetime, serves `/health` with daemon version
-metadata, and exposes store-backed JSON endpoints for version, init, put, patch, move, get, list,
-tree, search, dump, versions, prune, delete, and remove-version.
+`mbd` runs the local daemon surface. The daemon listens on one local endpoint,
+serves `/health` with daemon version metadata, and exposes store-backed JSON
+endpoints for version, init, put, patch, move, get, list, tree, search, dump,
+versions, prune, delete, and remove-version.
 
 ```bash
 mbd serve --store .metabrain/store.leveldb --socket ~/.metabrain/mbd.sock
@@ -171,6 +171,14 @@ mbd serve --store .metabrain/store.leveldb --host 127.0.0.1
 mbd service print --user
 mbd version
 ```
+
+One daemon process can serve multiple stores through the same socket or
+loopback port. The CLI sends the selected `--store` path with each daemon-backed
+request, and the daemon keeps one actor per active store path. Operations for
+different stores can proceed independently, while operations inside one store
+remain serialized at that store actor. Idle stores are closed after
+`--store-idle-timeout-seconds` seconds, defaulting to 30 seconds, which releases
+the underlying LevelDB lock while the daemon keeps listening.
 
 `mb version` reports the CLI version and also probes the default local daemon at
 `http://127.0.0.1:6374`. If the daemon is reachable, the output includes the

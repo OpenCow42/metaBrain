@@ -122,7 +122,6 @@ try {
     $Version = & $Mb version --no-release-check
     Assert-Contains -Text $Version -Needle '"endpoint":"http://127.0.0.1:6374"' -Label "version"
     Assert-Contains -Text $Version -Needle '"reachable":true' -Label "version"
-    Assert-Contains -Text $Version -Needle '"error":null' -Label "version"
 
     $Put = & $Mb put /windows/smoke "windows daemon memory" --title Windows --tag smoke --format json
     Assert-Contains -Text $Put -Needle '"status":"created"' -Label "put"

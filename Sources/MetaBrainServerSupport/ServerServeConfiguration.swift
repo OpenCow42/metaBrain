@@ -11,6 +11,7 @@ public struct ServerServeConfiguration: Equatable, Sendable {
     public static let defaultLoopbackHost = "127.0.0.1"
     public static let defaultLoopbackPort = 6374
     public static let defaultRequestTimeoutSeconds = 30.0
+    public static let defaultStoreIdleTimeoutSeconds = MetaBrainStoreRegistry.defaultIdleTimeoutSeconds
     public static let defaultMaximumConcurrentRequests = 16
     public static let defaultMaximumQueuedRequests = 1024
     public static let defaultMaxHeaderBytes = 64 * 1024
@@ -19,6 +20,7 @@ public struct ServerServeConfiguration: Equatable, Sendable {
     public var storePath: String
     public var listenMode: ServerListenMode
     public var requestTimeoutSeconds: Double
+    public var storeIdleTimeoutSeconds: Double
     public var maximumConcurrentRequests: Int
     public var maximumQueuedRequests: Int
     public var maxHeaderBytes: Int
@@ -31,6 +33,7 @@ public struct ServerServeConfiguration: Equatable, Sendable {
         host: String? = nil,
         port: Int? = nil,
         requestTimeoutSeconds: Double? = nil,
+        storeIdleTimeoutSeconds: Double? = nil,
         maximumConcurrentRequests: Int? = nil,
         maximumQueuedRequests: Int? = nil,
         maxHeaderBytes: Int? = nil,
@@ -59,6 +62,9 @@ public struct ServerServeConfiguration: Equatable, Sendable {
 
         self.requestTimeoutSeconds = try Self.validatedRequestTimeout(
             requestTimeoutSeconds ?? fileConfiguration?.requestTimeoutSeconds ?? Self.defaultRequestTimeoutSeconds
+        )
+        self.storeIdleTimeoutSeconds = try Self.validatedStoreIdleTimeout(
+            storeIdleTimeoutSeconds ?? fileConfiguration?.storeIdleTimeoutSeconds ?? Self.defaultStoreIdleTimeoutSeconds
         )
         self.maximumConcurrentRequests = try Self.validatedMaximumConcurrentRequests(
             maximumConcurrentRequests ?? fileConfiguration?.maximumConcurrentRequests ?? Self.defaultMaximumConcurrentRequests
@@ -124,6 +130,13 @@ public struct ServerServeConfiguration: Equatable, Sendable {
         return timeout
     }
 
+    private static func validatedStoreIdleTimeout(_ timeout: Double) throws -> Double {
+        guard timeout > 0, timeout.isFinite else {
+            throw ServerServeConfigurationError.invalidStoreIdleTimeout(timeout)
+        }
+        return timeout
+    }
+
     private static func validatedMaximumConcurrentRequests(_ maximum: Int) throws -> Int {
         guard maximum > 0 else {
             throw ServerServeConfigurationError.invalidMaximumConcurrentRequests(maximum)
@@ -163,6 +176,7 @@ public enum ServerServeConfigurationError: Error, Equatable, CustomStringConvert
     case emptyHost
     case invalidPort(Int)
     case invalidRequestTimeout(Double)
+    case invalidStoreIdleTimeout(Double)
     case invalidMaximumConcurrentRequests(Int)
     case invalidMaximumQueuedRequests(Int)
     case invalidMaxHeaderBytes(Int)
@@ -181,6 +195,8 @@ public enum ServerServeConfigurationError: Error, Equatable, CustomStringConvert
             return "port must be between 0 and 65535, got \(port)"
         case .invalidRequestTimeout(let timeout):
             return "requestTimeoutSeconds must be greater than 0, got \(timeout)"
+        case .invalidStoreIdleTimeout(let timeout):
+            return "storeIdleTimeoutSeconds must be greater than 0, got \(timeout)"
         case .invalidMaximumConcurrentRequests(let maximum):
             return "maximumConcurrentRequests must be greater than 0, got \(maximum)"
         case .invalidMaximumQueuedRequests(let maximum):

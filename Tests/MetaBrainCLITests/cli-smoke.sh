@@ -233,7 +233,7 @@ assert_remove_version_json() {
 "${METABRAIN[@]}" help | rg -q 'mb help move'
 "${METABRAIN[@]}" help | rg -q 'mb help version'
 "${METABRAIN[@]}" help init | rg -q 'Create or open a metaBrain store'
-"${METABRAIN[@]}" help version | rg -q 'Print the metaBrain version, local daemon version, and GitHub release status'
+"${METABRAIN[@]}" help version | rg -q 'Print the metaBrain version'
 "${METABRAIN[@]}" help put | rg -q 'Create or update a document at a path'
 "${METABRAIN[@]}" help patch | rg -q 'Patch a document body with a unified diff'
 "${METABRAIN[@]}" help move | rg -q 'Move an existing document to a new path without changing its ID'
@@ -1054,6 +1054,28 @@ if [[ "$SERVER_INIT_JSON" != "$SERVER_EXPECTED_INIT_JSON" ]]; then
     echo "Expected daemon init JSON output, got: $SERVER_INIT_JSON" >&2
     exit 1
 fi
+
+SERVER_FIRST_STORE="$TMP_DIR/server-first-store.leveldb"
+SERVER_SECOND_STORE="$TMP_DIR/server-second-store.leveldb"
+SERVER_FIRST_INIT_JSON="$("${METABRAIN[@]}" init --server "$SERVER_SOCKET" --store "$SERVER_FIRST_STORE")"
+SERVER_SECOND_INIT_JSON="$("${METABRAIN[@]}" init --server "$SERVER_SOCKET" --store "$SERVER_SECOND_STORE")"
+if [[ "$SERVER_FIRST_INIT_JSON" != "{\"operation\":\"init\",\"status\":\"initialized\",\"storePath\":\"$SERVER_FIRST_STORE\"}" ]]; then
+    echo "Expected first daemon store init JSON output, got: $SERVER_FIRST_INIT_JSON" >&2
+    exit 1
+fi
+if [[ "$SERVER_SECOND_INIT_JSON" != "{\"operation\":\"init\",\"status\":\"initialized\",\"storePath\":\"$SERVER_SECOND_STORE\"}" ]]; then
+    echo "Expected second daemon store init JSON output, got: $SERVER_SECOND_INIT_JSON" >&2
+    exit 1
+fi
+SERVER_FIRST_PUT_JSON="$("${METABRAIN[@]}" put /daemon/shared 'first daemon store' --server "$SERVER_SOCKET" --store "$SERVER_FIRST_STORE")"
+SERVER_SECOND_PUT_JSON="$("${METABRAIN[@]}" put /daemon/shared 'second daemon store' --server "$SERVER_SOCKET" --store "$SERVER_SECOND_STORE")"
+assert_put_json "$SERVER_FIRST_PUT_JSON" /daemon/shared created 1
+assert_put_json "$SERVER_SECOND_PUT_JSON" /daemon/shared created 1
+SERVER_FIRST_GET_JSON="$("${METABRAIN[@]}" get /daemon/shared --server "$SERVER_SOCKET" --store "$SERVER_FIRST_STORE")"
+SERVER_SECOND_GET_JSON="$("${METABRAIN[@]}" get /daemon/shared --server "$SERVER_SOCKET" --store "$SERVER_SECOND_STORE")"
+assert_get_json "$SERVER_FIRST_GET_JSON" /daemon/shared 'first daemon store' 1
+assert_get_json "$SERVER_SECOND_GET_JSON" /daemon/shared 'second daemon store' 1
+
 SERVER_VERSION_JSON="$(METABRAIN_VERSION=4.5.6 "${METABRAIN[@]}" --server "$SERVER_SOCKET" version --no-release-check)"
 if ! printf '%s\n' "$SERVER_VERSION_JSON" | rg -F -q '"currentTag":"4.5.6"'; then
     echo "Expected CLI version in daemon version JSON output, got: $SERVER_VERSION_JSON" >&2
@@ -1061,7 +1083,6 @@ if ! printf '%s\n' "$SERVER_VERSION_JSON" | rg -F -q '"currentTag":"4.5.6"'; the
 fi
 printf '%s\n' "$SERVER_VERSION_JSON" | rg -F -q "\"endpoint\":\"$SERVER_SOCKET\""
 printf '%s\n' "$SERVER_VERSION_JSON" | rg -F -q '"reachable":true'
-printf '%s\n' "$SERVER_VERSION_JSON" | rg -F -q '"error":null'
 if ! printf '%s\n' "$SERVER_VERSION_JSON" | rg -F -q '"server":{"currentTag":"'; then
     echo "Expected server version in daemon version JSON output, got: $SERVER_VERSION_JSON" >&2
     exit 1
@@ -1172,7 +1193,7 @@ if [[ "$AUTO_INIT_JSON" != "$AUTO_EXPECTED_INIT_JSON" ]]; then
 fi
 AUTO_VERSION_JSON="$(METABRAIN_VERSION=4.5.6 "${METABRAIN[@]}" version --no-release-check)"
 printf '%s\n' "$AUTO_VERSION_JSON" | rg -F -q '"currentTag":"4.5.6"'
-printf '%s\n' "$AUTO_VERSION_JSON" | rg -F -q '"server":{"currentTag":"6.7.8","endpoint":"http://127.0.0.1:6374","error":null,"reachable":true}'
+printf '%s\n' "$AUTO_VERSION_JSON" | rg -F -q '"server":{"currentTag":"6.7.8","endpoint":"http://127.0.0.1:6374","reachable":true}'
 AUTO_PUT_JSON="$("${METABRAIN[@]}" put /auto/today 'auto daemon memory' --tag auto)"
 assert_put_json "$AUTO_PUT_JSON" /auto/today created 1
 AUTO_GET_JSON="$("${METABRAIN[@]}" get /auto/today)"

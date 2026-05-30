@@ -1,15 +1,44 @@
 import Foundation
 import MetaBrainCore
 
+private enum ServerStorePathHeaderError: Error, CustomStringConvertible {
+    case invalidStorePathHeader
+
+    var description: String {
+        switch self {
+        case .invalidStorePathHeader:
+            return "\(MetaBrainStoreRegistry.storePathHeader) must be a base64-encoded UTF-8 store path"
+        }
+    }
+}
+
 public struct ServerRouter: Sendable {
     private let storeServer: MetaBrainStoreServer?
+    private let storeRegistry: MetaBrainStoreRegistry?
+    private let defaultStorePath: String
 
     public init(storeServer: MetaBrainStoreServer? = nil) {
         self.storeServer = storeServer
+        self.storeRegistry = nil
+        self.defaultStorePath = ServerServeConfiguration.defaultStorePath
+    }
+
+    public init(
+        storeRegistry: MetaBrainStoreRegistry,
+        defaultStorePath: String = ServerServeConfiguration.defaultStorePath
+    ) {
+        self.storeServer = nil
+        self.storeRegistry = storeRegistry
+        self.defaultStorePath = defaultStorePath
     }
 
     public init(configuration: ServerServeConfiguration) {
-        self.init()
+        self.init(
+            storeRegistry: MetaBrainStoreRegistry(
+                idleTimeoutSeconds: configuration.storeIdleTimeoutSeconds
+            ),
+            defaultStorePath: configuration.storePath
+        )
     }
 
     public func route(_ request: ServerHTTPRequest) async -> ServerHTTPResponse {
@@ -23,90 +52,90 @@ public struct ServerRouter: Sendable {
         case (_, "/v1/version"):
             return methodNotAllowed(request, allowedMethod: "GET")
         case (.post, "/v1/init"):
-            return await routeStoreOperation { storeServer in
+            return await routeStoreOperation(request) { storeServer in
                 await storeServer.initialize()
             }
         case (_, "/v1/init"):
             return methodNotAllowed(request, allowedMethod: "POST")
         case (.post, "/v1/put"):
-            return await routeStoreOperation { storeServer in
+            return await routeStoreOperation(request) { storeServer in
                 let decoded = try decode(ServerPutRequest.self, from: request)
                 return try await storeServer.put(decoded)
             }
         case (_, "/v1/put"):
             return methodNotAllowed(request, allowedMethod: "POST")
         case (.post, "/v1/patch"):
-            return await routeStoreOperation { storeServer in
+            return await routeStoreOperation(request) { storeServer in
                 let decoded = try decode(ServerPatchRequest.self, from: request)
                 return try await storeServer.patch(decoded)
             }
         case (_, "/v1/patch"):
             return methodNotAllowed(request, allowedMethod: "POST")
         case (.post, "/v1/move"):
-            return await routeStoreOperation { storeServer in
+            return await routeStoreOperation(request) { storeServer in
                 let decoded = try decode(ServerMoveRequest.self, from: request)
                 return try await storeServer.move(decoded)
             }
         case (_, "/v1/move"):
             return methodNotAllowed(request, allowedMethod: "POST")
         case (.post, "/v1/get"):
-            return await routeStoreOperation { storeServer in
+            return await routeStoreOperation(request) { storeServer in
                 let decoded = try decode(ServerGetRequest.self, from: request)
                 return try await storeServer.get(decoded)
             }
         case (_, "/v1/get"):
             return methodNotAllowed(request, allowedMethod: "POST")
         case (.post, "/v1/list"):
-            return await routeStoreOperation { storeServer in
+            return await routeStoreOperation(request) { storeServer in
                 let decoded = try decode(ServerListRequest.self, from: request)
                 return try await storeServer.list(decoded)
             }
         case (_, "/v1/list"):
             return methodNotAllowed(request, allowedMethod: "POST")
         case (.post, "/v1/tree"):
-            return await routeStoreOperation { storeServer in
+            return await routeStoreOperation(request) { storeServer in
                 let decoded = try decode(ServerTreeRequest.self, from: request)
                 return try await storeServer.tree(decoded)
             }
         case (_, "/v1/tree"):
             return methodNotAllowed(request, allowedMethod: "POST")
         case (.post, "/v1/search"):
-            return await routeStoreOperation { storeServer in
+            return await routeStoreOperation(request) { storeServer in
                 let decoded = try decode(ServerSearchRequest.self, from: request)
                 return try await storeServer.search(decoded)
             }
         case (_, "/v1/search"):
             return methodNotAllowed(request, allowedMethod: "POST")
         case (.post, "/v1/dump"):
-            return await routeStoreOperation { storeServer in
+            return await routeStoreOperation(request) { storeServer in
                 let decoded = try decode(ServerDumpRequest.self, from: request)
                 return try await storeServer.dump(decoded)
             }
         case (_, "/v1/dump"):
             return methodNotAllowed(request, allowedMethod: "POST")
         case (.post, "/v1/versions"):
-            return await routeStoreOperation { storeServer in
+            return await routeStoreOperation(request) { storeServer in
                 let decoded = try decode(ServerVersionsRequest.self, from: request)
                 return try await storeServer.versions(decoded)
             }
         case (_, "/v1/versions"):
             return methodNotAllowed(request, allowedMethod: "POST")
         case (.post, "/v1/prune"):
-            return await routeStoreOperation { storeServer in
+            return await routeStoreOperation(request) { storeServer in
                 let decoded = try decode(ServerPruneRequest.self, from: request)
                 return try await storeServer.prune(decoded)
             }
         case (_, "/v1/prune"):
             return methodNotAllowed(request, allowedMethod: "POST")
         case (.post, "/v1/delete"):
-            return await routeStoreOperation { storeServer in
+            return await routeStoreOperation(request) { storeServer in
                 let decoded = try decode(ServerDeleteRequest.self, from: request)
                 return try await storeServer.delete(decoded)
             }
         case (_, "/v1/delete"):
             return methodNotAllowed(request, allowedMethod: "POST")
         case (.post, "/v1/remove-version"):
-            return await routeStoreOperation { storeServer in
+            return await routeStoreOperation(request) { storeServer in
                 let decoded = try decode(ServerRemoveVersionRequest.self, from: request)
                 return try await storeServer.removeVersion(decoded)
             }
@@ -147,9 +176,19 @@ public struct ServerRouter: Sendable {
     }
 
     private func routeStoreOperation<T: Encodable & Sendable>(
+        _ request: ServerHTTPRequest,
         _ operation: @escaping @Sendable (MetaBrainStoreServer) async throws -> T
     ) async -> ServerHTTPResponse {
-        guard let storeServer else {
+        if let storeServer {
+            do {
+                let payload = try await operation(storeServer)
+                return jsonResponse(statusCode: 200, payload: payload)
+            } catch {
+                return errorResponse(for: error)
+            }
+        }
+
+        guard let storeRegistry else {
             return jsonResponse(
                 statusCode: 500,
                 payload: ServerErrorPayload(
@@ -160,11 +199,27 @@ public struct ServerRouter: Sendable {
         }
 
         do {
-            let payload = try await operation(storeServer)
+            let payload = try await storeRegistry.withStore(
+                at: try storePath(for: request),
+                operation: operation
+            )
             return jsonResponse(statusCode: 200, payload: payload)
         } catch {
             return errorResponse(for: error)
         }
+    }
+
+    private func storePath(for request: ServerHTTPRequest) throws -> String {
+        guard let value = request.headers.first(where: {
+            $0.key.lowercased() == MetaBrainStoreRegistry.storePathHeader.lowercased()
+        })?.value else {
+            return defaultStorePath
+        }
+
+        guard let storePath = MetaBrainStoreRegistry.storePath(fromHeaderValue: value) else {
+            throw ServerStorePathHeaderError.invalidStorePathHeader
+        }
+        return storePath
     }
 
     private func methodNotAllowed(_ request: ServerHTTPRequest, allowedMethod: String) -> ServerHTTPResponse {

@@ -46,6 +46,28 @@ import Testing
     #expect(initOutput == initializeResponse)
 }
 
+@Test func serverClientSendsCanonicalStorePathHeaderWhenConfigured() throws {
+    let codec = ServerHTTPCodec()
+    let root = try temporaryServerDirectory(prefix: "mbd-client-store-header")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let storePath = root.appendingPathComponent("store.leveldb").path
+    let expectedHeader = MetaBrainStoreRegistry.storePathHeaderValue(for: storePath)
+    let initializeResponse = InitializeOutput(storePath: storePath)
+    let client = MetaBrainServerClient(storePath: storePath) { requestData in
+        let request = try codec.parseRequest(requestData)
+        #expect(request.headers[MetaBrainStoreRegistry.storePathHeader] == expectedHeader)
+        return codec.serializeResponse(ServerHTTPResponse(
+            statusCode: 200,
+            headers: ["Content-Type": "application/json; charset=utf-8"],
+            body: try MetaBrainJSON.encoder().encode(initializeResponse)
+        ))
+    }
+
+    let output: InitializeOutput = try client.post("/v1/init", response: InitializeOutput.self)
+
+    #expect(output == initializeResponse)
+}
+
 @Test func serverClientMapsStructuredServerErrors() throws {
     let codec = ServerHTTPCodec()
     let payload = ServerErrorPayload(error: "not_found", message: "Document not found.")

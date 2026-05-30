@@ -42,7 +42,7 @@ extension MetaBrainDaemonCommand {
         @Option(name: .long, help: "JSON config file to load before applying command-line overrides.")
         var config: String?
 
-        @Option(name: .long, help: "MetaBrain store path for this daemon process.")
+        @Option(name: .long, help: "Default MetaBrain store path when a client does not send one.")
         var store: String?
 
         @Option(name: .long, help: "Unix domain socket path for local daemon traffic.")
@@ -56,6 +56,9 @@ extension MetaBrainDaemonCommand {
 
         @Option(name: .long, help: "Request read timeout in seconds.")
         var requestTimeoutSeconds: Double?
+
+        @Option(name: .long, help: "Seconds to keep an idle store open before releasing its database lock.")
+        var storeIdleTimeoutSeconds: Double?
 
         @Option(name: .long, help: "Maximum concurrent requests.")
         var maximumConcurrentRequests: Int?
@@ -87,6 +90,7 @@ extension MetaBrainDaemonCommand {
                     host: host,
                     port: port,
                     requestTimeoutSeconds: requestTimeoutSeconds,
+                    storeIdleTimeoutSeconds: storeIdleTimeoutSeconds,
                     maximumConcurrentRequests: maximumConcurrentRequests,
                     maximumQueuedRequests: maximumQueuedRequests,
                     maxHeaderBytes: maxHeaderBytes,
@@ -100,9 +104,14 @@ extension MetaBrainDaemonCommand {
                 ) { line in
                     FileHandle.standardError.write(Data((line + "\n").utf8))
                 }
-                let storeServer = try MetaBrainStoreServer(storePath: configuration.storePath)
-                defer { storeServer.closeBlocking() }
-                let router = ServerRouter(storeServer: storeServer)
+                let storeRegistry = MetaBrainStoreRegistry(
+                    idleTimeoutSeconds: configuration.storeIdleTimeoutSeconds
+                )
+                defer { storeRegistry.closeAllBlocking() }
+                let router = ServerRouter(
+                    storeRegistry: storeRegistry,
+                    defaultStorePath: configuration.storePath
+                )
                 let server = ServerHTTPServer(configuration: configuration, router: router, logger: logger)
                 let shutdownSignals = ServerShutdownSignalHandler(server: server)
                 defer { shutdownSignals.cancel() }

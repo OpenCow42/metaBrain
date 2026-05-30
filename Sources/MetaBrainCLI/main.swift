@@ -85,7 +85,7 @@ struct StoreOptions: ParsableArguments {
     static let daemonRequestTimeoutMilliseconds = 30_000
 
     @Option(help: "Path to the LevelDB-backed metaBrain store.")
-    var store: String = ".metabrain/store.leveldb"
+    var store: String?
 
     @Option(help: "Unix socket path, loopback HTTP URL such as http://127.0.0.1:6374, or auto for daemon mode.")
     var server: String?
@@ -100,10 +100,11 @@ struct StoreOptions: ParsableArguments {
         if let server, server != "auto" {
             return MetaBrainServerClient(
                 socketPath: server,
+                storePath: explicitStorePath,
                 requestTimeoutMilliseconds: Self.daemonRequestTimeoutMilliseconds
             )
         }
-        guard server == "auto" || store == ".metabrain/store.leveldb" else {
+        guard server == "auto" || store == nil else {
             return nil
         }
 
@@ -116,12 +117,21 @@ struct StoreOptions: ParsableArguments {
         }
         return MetaBrainServerClient(
             socketPath: Self.defaultLoopbackServer,
+            storePath: explicitStorePath,
             requestTimeoutMilliseconds: Self.daemonRequestTimeoutMilliseconds
         )
     }
 
+    var effectiveStore: String {
+        store ?? ".metabrain/store.leveldb"
+    }
+
+    private var explicitStorePath: String? {
+        store.map { URL.expandingShellPath($0, isDirectory: true).standardizedFileURL.path }
+    }
+
     func openStore() throws -> MetaBrainStore {
-        let url = URL.expandingShellPath(store, isDirectory: true)
+        let url = URL.expandingShellPath(effectiveStore, isDirectory: true)
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(),
             withIntermediateDirectories: true

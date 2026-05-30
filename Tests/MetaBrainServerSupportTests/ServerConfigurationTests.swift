@@ -11,6 +11,7 @@ import Testing
           "loopbackHost": "127.0.0.1",
           "loopbackPort": 6374,
           "requestTimeoutSeconds": 2.5,
+          "storeIdleTimeoutSeconds": 4.5,
           "maximumConcurrentRequests": 4,
           "maximumQueuedRequests": 16,
           "maxHeaderBytes": 32768,
@@ -27,6 +28,7 @@ import Testing
     #expect(configuration.loopbackHost == "127.0.0.1")
     #expect(configuration.loopbackPort == 6374)
     #expect(configuration.requestTimeoutSeconds == 2.5)
+    #expect(configuration.storeIdleTimeoutSeconds == 4.5)
     #expect(configuration.maximumConcurrentRequests == 4)
     #expect(configuration.maximumQueuedRequests == 16)
     #expect(configuration.maxHeaderBytes == 32_768)

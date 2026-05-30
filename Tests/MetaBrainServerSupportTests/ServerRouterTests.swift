@@ -120,6 +120,72 @@ import Testing
     #expect(try MetaBrainJSON.decoder().decode(GetOutput.self, from: get.body).title == "Today")
 }
 
+@Test func routerRoutesStoreRequestsByStorePathHeader() async throws {
+    let root = try temporaryServerDirectory(prefix: "mbd-router-registry")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let registry = MetaBrainStoreRegistry(idleTimeoutSeconds: 10)
+    defer { registry.closeAllBlocking() }
+    let firstStore = root.appendingPathComponent("first.leveldb").path
+    let secondStore = root.appendingPathComponent("second.leveldb").path
+    let router = ServerRouter(storeRegistry: registry, defaultStorePath: firstStore)
+
+    let firstHeader = [MetaBrainStoreRegistry.storePathHeader: MetaBrainStoreRegistry.storePathHeaderValue(for: firstStore)]
+    let secondHeader = [MetaBrainStoreRegistry.storePathHeader: MetaBrainStoreRegistry.storePathHeaderValue(for: secondStore)]
+    let firstPut = await router.route(ServerHTTPRequest(
+        method: .post,
+        path: "/v1/put",
+        headers: firstHeader,
+        body: Data(#"{"path":"/notes/shared","body":"first body"}"#.utf8)
+    ))
+    let secondPut = await router.route(ServerHTTPRequest(
+        method: .post,
+        path: "/v1/put",
+        headers: secondHeader,
+        body: Data(#"{"path":"/notes/shared","body":"second body"}"#.utf8)
+    ))
+    let firstGet = await router.route(ServerHTTPRequest(
+        method: .post,
+        path: "/v1/get",
+        headers: firstHeader,
+        body: Data(#"{"reference":{"kind":"path","value":"/notes/shared"},"trackingRead":false}"#.utf8)
+    ))
+    let secondGet = await router.route(ServerHTTPRequest(
+        method: .post,
+        path: "/v1/get",
+        headers: secondHeader,
+        body: Data(#"{"reference":{"kind":"path","value":"/notes/shared"},"trackingRead":false}"#.utf8)
+    ))
+
+    #expect(firstPut.statusCode == 200)
+    #expect(secondPut.statusCode == 200)
+    #expect(firstGet.statusCode == 200)
+    #expect(secondGet.statusCode == 200)
+    #expect(try MetaBrainJSON.decoder().decode(GetOutput.self, from: firstGet.body).body == "first body")
+    #expect(try MetaBrainJSON.decoder().decode(GetOutput.self, from: secondGet.body).body == "second body")
+    #expect(await registry.openStoreCount == 2)
+}
+
+@Test func routerRejectsInvalidStorePathHeader() async throws {
+    let root = try temporaryServerDirectory(prefix: "mbd-router-bad-store-header")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let registry = MetaBrainStoreRegistry(idleTimeoutSeconds: 10)
+    defer { registry.closeAllBlocking() }
+    let router = ServerRouter(
+        storeRegistry: registry,
+        defaultStorePath: root.appendingPathComponent("store.leveldb").path
+    )
+
+    let response = await router.route(ServerHTTPRequest(
+        method: .post,
+        path: "/v1/init",
+        headers: [MetaBrainStoreRegistry.storePathHeader: "not base64"]
+    ))
+
+    #expect(response.statusCode == 400)
+    #expect(try MetaBrainJSON.decoder().decode(ServerErrorPayload.self, from: response.body).error == "invalid_request")
+    #expect(await registry.openStoreCount == 0)
+}
+
 @Test func routerHandlesReadSideStoreRoutes() async throws {
     let root = try temporaryServerDirectory(prefix: "mbd-router-reads")
     defer { try? FileManager.default.removeItem(at: root) }

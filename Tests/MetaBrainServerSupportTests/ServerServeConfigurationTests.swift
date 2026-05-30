@@ -8,6 +8,7 @@ import Testing
     #expect(configuration.listenMode == .unixSocket(path: "~/.metabrain/mbd.sock"))
     #expect(configuration.description == "unix socket ~/.metabrain/mbd.sock")
     #expect(configuration.requestTimeoutSeconds == ServerServeConfiguration.defaultRequestTimeoutSeconds)
+    #expect(configuration.storeIdleTimeoutSeconds == ServerServeConfiguration.defaultStoreIdleTimeoutSeconds)
     #expect(configuration.maximumConcurrentRequests == ServerServeConfiguration.defaultMaximumConcurrentRequests)
     #expect(configuration.maximumQueuedRequests == ServerServeConfiguration.defaultMaximumQueuedRequests)
     #expect(configuration.maxHeaderBytes == ServerServeConfiguration.defaultMaxHeaderBytes)
@@ -54,6 +55,7 @@ import Testing
         loopbackHost: "localhost",
         loopbackPort: 8123,
         requestTimeoutSeconds: 3.5,
+        storeIdleTimeoutSeconds: 4.5,
         maximumConcurrentRequests: 2,
         maximumQueuedRequests: 32,
         maxHeaderBytes: 32_768,
@@ -66,6 +68,7 @@ import Testing
     #expect(configuration.storePath == "/tmp/store.leveldb")
     #expect(configuration.listenMode == .loopback(host: "localhost", port: 8123))
     #expect(configuration.requestTimeoutSeconds == 3.5)
+    #expect(configuration.storeIdleTimeoutSeconds == 4.5)
     #expect(configuration.maximumConcurrentRequests == 2)
     #expect(configuration.maximumQueuedRequests == 32)
     #expect(configuration.maxHeaderBytes == 32_768)
@@ -77,6 +80,7 @@ import Testing
     let configuration = try ServerServeConfiguration(
         fileConfiguration: ServerFileConfiguration(
             requestTimeoutSeconds: 0.25,
+            storeIdleTimeoutSeconds: 0.5,
             maximumConcurrentRequests: 1,
             maximumQueuedRequests: 0,
             logLevel: " WARN "
@@ -84,6 +88,7 @@ import Testing
     )
 
     #expect(configuration.requestTimeoutSeconds == 0.25)
+    #expect(configuration.storeIdleTimeoutSeconds == 0.5)
     #expect(configuration.maximumConcurrentRequests == 1)
     #expect(configuration.maximumQueuedRequests == 0)
     #expect(configuration.logLevel == "warn")
@@ -96,6 +101,7 @@ import Testing
         loopbackHost: "localhost",
         loopbackPort: 8123,
         requestTimeoutSeconds: 10,
+        storeIdleTimeoutSeconds: 20,
         maximumConcurrentRequests: 4,
         maximumQueuedRequests: 8,
         maxHeaderBytes: 100,
@@ -106,6 +112,7 @@ import Testing
         storePath: " /tmp/flag-store.leveldb ",
         socketPath: " /tmp/flag.sock ",
         requestTimeoutSeconds: 2,
+        storeIdleTimeoutSeconds: 3,
         maximumConcurrentRequests: 1,
         maximumQueuedRequests: 0,
         maxHeaderBytes: 64,
@@ -126,6 +133,7 @@ import Testing
     #expect(socketOverride.storePath == "/tmp/flag-store.leveldb")
     #expect(socketOverride.listenMode == .unixSocket(path: "/tmp/flag.sock"))
     #expect(socketOverride.requestTimeoutSeconds == 2)
+    #expect(socketOverride.storeIdleTimeoutSeconds == 3)
     #expect(socketOverride.maximumConcurrentRequests == 1)
     #expect(socketOverride.maximumQueuedRequests == 0)
     #expect(socketOverride.maxHeaderBytes == 64)
@@ -155,6 +163,12 @@ import Testing
     #expect(throws: ServerServeConfigurationError.invalidRequestTimeout(.infinity)) {
         _ = try ServerServeConfiguration(fileConfiguration: ServerFileConfiguration(requestTimeoutSeconds: .infinity))
     }
+    #expect(throws: ServerServeConfigurationError.invalidStoreIdleTimeout(0)) {
+        _ = try ServerServeConfiguration(fileConfiguration: ServerFileConfiguration(storeIdleTimeoutSeconds: 0))
+    }
+    #expect(throws: ServerServeConfigurationError.invalidStoreIdleTimeout(.infinity)) {
+        _ = try ServerServeConfiguration(fileConfiguration: ServerFileConfiguration(storeIdleTimeoutSeconds: .infinity))
+    }
     #expect(throws: ServerServeConfigurationError.invalidMaximumConcurrentRequests(0)) {
         _ = try ServerServeConfiguration(fileConfiguration: ServerFileConfiguration(maximumConcurrentRequests: 0))
     }
@@ -183,6 +197,10 @@ import Testing
     #expect(
         ServerServeConfigurationError.invalidRequestTimeout(0).description
             == "requestTimeoutSeconds must be greater than 0, got 0.0"
+    )
+    #expect(
+        ServerServeConfigurationError.invalidStoreIdleTimeout(0).description
+            == "storeIdleTimeoutSeconds must be greater than 0, got 0.0"
     )
     #expect(
         ServerServeConfigurationError.invalidMaximumConcurrentRequests(0).description

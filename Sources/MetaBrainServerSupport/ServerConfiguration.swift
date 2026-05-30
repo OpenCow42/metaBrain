@@ -6,6 +6,7 @@ public struct ServerFileConfiguration: Codable, Equatable, Sendable {
     public var loopbackHost: String?
     public var loopbackPort: Int?
     public var requestTimeoutSeconds: Double?
+    public var storeIdleTimeoutSeconds: Double?
     public var maximumConcurrentRequests: Int?
     public var maximumQueuedRequests: Int?
     public var maxHeaderBytes: Int?
@@ -18,6 +19,7 @@ public struct ServerFileConfiguration: Codable, Equatable, Sendable {
         loopbackHost: String? = nil,
         loopbackPort: Int? = nil,
         requestTimeoutSeconds: Double? = nil,
+        storeIdleTimeoutSeconds: Double? = nil,
         maximumConcurrentRequests: Int? = nil,
         maximumQueuedRequests: Int? = nil,
         maxHeaderBytes: Int? = nil,
@@ -29,6 +31,7 @@ public struct ServerFileConfiguration: Codable, Equatable, Sendable {
         self.loopbackHost = loopbackHost
         self.loopbackPort = loopbackPort
         self.requestTimeoutSeconds = requestTimeoutSeconds
+        self.storeIdleTimeoutSeconds = storeIdleTimeoutSeconds
         self.maximumConcurrentRequests = maximumConcurrentRequests
         self.maximumQueuedRequests = maximumQueuedRequests
         self.maxHeaderBytes = maxHeaderBytes

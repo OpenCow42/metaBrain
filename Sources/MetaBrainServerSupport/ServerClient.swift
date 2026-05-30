@@ -30,14 +30,17 @@ public enum ServerClientError: Error, Equatable, Sendable, CustomStringConvertib
 
 public struct MetaBrainServerClient: Sendable {
     private let codec: ServerHTTPCodec
+    private let storePath: String?
     private let transport: @Sendable (Data) throws -> Data
 
     public init(
         socketPath: String,
+        storePath: String? = nil,
         codec: ServerHTTPCodec = ServerHTTPCodec(),
         requestTimeoutMilliseconds: Int? = nil
     ) {
         self.codec = codec
+        self.storePath = storePath.map(Self.canonicalStorePath)
         if let endpoint = Self.loopbackHTTPEndpoint(from: socketPath) {
             self.transport = { requestData in
                 try Self.loopbackHTTPRoundTrip(
@@ -56,9 +59,11 @@ public struct MetaBrainServerClient: Sendable {
 
     init(
         codec: ServerHTTPCodec = ServerHTTPCodec(),
+        storePath: String? = nil,
         transport: @escaping @Sendable (Data) throws -> Data
     ) {
         self.codec = codec
+        self.storePath = storePath.map(Self.canonicalStorePath)
         self.transport = transport
     }
 
@@ -116,6 +121,9 @@ public struct MetaBrainServerClient: Sendable {
         text += "Host: localhost\r\n"
         text += "Accept: application/json\r\n"
         text += "Content-Type: application/json\r\n"
+        if let storePath {
+            text += "\(MetaBrainStoreRegistry.storePathHeader): \(MetaBrainStoreRegistry.storePathHeaderValue(for: storePath))\r\n"
+        }
         text += "Content-Length: \(body.count)\r\n"
         text += "\r\n"
 
@@ -132,6 +140,12 @@ public struct MetaBrainServerClient: Sendable {
             return nil
         }
         return ServerLoopbackHTTPEndpoint(host: host, port: port)
+    }
+
+    private static func canonicalStorePath(_ storePath: String) -> String {
+        URL(fileURLWithPath: NSString(string: storePath).expandingTildeInPath, isDirectory: true)
+            .standardizedFileURL
+            .path
     }
 }
 
