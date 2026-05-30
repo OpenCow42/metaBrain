@@ -205,6 +205,14 @@ mb --server http://127.0.0.1:6374 search "daemon-backed"
 mb --no-server search "force direct LevelDB access"
 ```
 
+For a local serial CLI comparison between direct LevelDB command execution and
+daemon-backed command execution, build release binaries and run:
+
+```bash
+swift build -c release --product mb --product mbd
+Tests/MetaBrainCLITests/cli-server-performance.sh
+```
+
 `--body-file`, `--patch-file`, and `--output-dir` remain client-side CLI
 features. The daemon receives JSON request bodies and never reads or writes
 those paths on behalf of a client.
