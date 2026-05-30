@@ -2,12 +2,14 @@ param(
     [string]$Version = $env:METABRAIN_RELEASE_VERSION,
     [string]$DistDir = $env:METABRAIN_DIST_DIR,
     [string]$PackageRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\\..")).Path,
-    [string]$Product = "mb",
+    [string]$Product,
+    [string[]]$Products = @(),
     [string]$PackageName = "metabrain",
     [string]$Platform = "windows-x86_64",
     [string[]]$SwiftRuntimeLibraryPaths = @(),
     [switch]$SkipBuild,
     [string]$BinaryPath,
+    [string[]]$BinaryPaths = @(),
     [string]$VisualStudioDevCmd
 )
 
@@ -131,26 +133,54 @@ if (-not $DistDir) {
     $DistDir = Join-Path $PackageRoot "dist"
 }
 
+if ($Product -and $Products.Count -eq 0) {
+    $Products = @($Product)
+}
+
+if ($Products.Count -eq 0) {
+    $Products = @("mb", "mbd")
+}
+
+$resolvedBinaryPaths = [System.Collections.Generic.List[string]]::new()
+
 if (-not $SkipBuild) {
-    $buildArgs = @{
-        PackageRoot = $PackageRoot
-        Product = $Product
+    foreach ($productName in $Products) {
+        $buildArgs = @{
+            PackageRoot = $PackageRoot
+            Product = $productName
+        }
+
+        if ($VisualStudioDevCmd) {
+            $buildArgs.VisualStudioDevCmd = $VisualStudioDevCmd
+        }
+
+        $builtBinaryPath = & (Join-Path $PSScriptRoot "build.ps1") @buildArgs | Select-Object -Last 1
+        $resolvedBinaryPaths.Add($builtBinaryPath)
+    }
+} else {
+    if ($BinaryPath -and $BinaryPaths.Count -eq 0) {
+        $BinaryPaths = @($BinaryPath)
     }
 
-    if ($VisualStudioDevCmd) {
-        $buildArgs.VisualStudioDevCmd = $VisualStudioDevCmd
+    if ($BinaryPaths.Count -ne $Products.Count) {
+        throw "BinaryPaths must contain one path per product when -SkipBuild is used."
     }
 
-    $BinaryPath = & (Join-Path $PSScriptRoot "build.ps1") @buildArgs | Select-Object -Last 1
+    foreach ($existingBinaryPath in $BinaryPaths) {
+        $resolvedBinaryPaths.Add($existingBinaryPath)
+    }
 }
 
-if (-not $BinaryPath) {
-    throw "BinaryPath is required when -SkipBuild is used."
+if ($resolvedBinaryPaths.Count -ne $Products.Count) {
+    throw "Expected one binary path per product."
 }
 
-$BinaryPath = (Resolve-Path $BinaryPath).Path
-if (-not (Test-Path $BinaryPath)) {
-    throw "Binary not found: $BinaryPath"
+for ($index = 0; $index -lt $resolvedBinaryPaths.Count; $index++) {
+    $resolvedBinaryPath = (Resolve-Path $resolvedBinaryPaths[$index]).Path
+    if (-not (Test-Path $resolvedBinaryPath)) {
+        throw "Binary not found: $resolvedBinaryPath"
+    }
+    $resolvedBinaryPaths[$index] = $resolvedBinaryPath
 }
 
 Set-Location $PackageRoot
@@ -163,7 +193,9 @@ $checksumPath = "$zipPath.sha256"
 Remove-Item -Recurse -Force $stageDir, $zipPath, $checksumPath -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
 
-Copy-Item -Force $BinaryPath (Join-Path $stageDir "$Product.exe")
+for ($index = 0; $index -lt $Products.Count; $index++) {
+    Copy-Item -Force $resolvedBinaryPaths[$index] (Join-Path $stageDir "$($Products[$index]).exe")
+}
 Copy-Item -Force (Join-Path $PackageRoot "README.md") (Join-Path $stageDir "README.md")
 Copy-Item -Force (Join-Path $PackageRoot "LICENSE") (Join-Path $stageDir "LICENSE")
 
@@ -181,7 +213,7 @@ $checksumLine = "$hash  $(Split-Path -Leaf $zipPath)" + [char]10
 )
 
 [pscustomobject]@{
-    Binary = $BinaryPath
+    Binaries = $resolvedBinaryPaths.ToArray()
     StagingDirectory = $stageDir
     Archive = $zipPath
     Sha256File = $checksumPath
