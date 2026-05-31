@@ -131,8 +131,12 @@ mbd service print --user --config ~/.config/metabrain/mbd.json
 ## Windows
 
 Windows can run `mbd` over the same loopback endpoint. Native `mbd service`
-management currently covers macOS launchd and Linux systemd only, so use Windows
-Task Scheduler for autostart.
+management currently covers macOS launchd and Linux systemd only, so use a
+per-user Windows Task Scheduler task for autostart.
+
+The task points at the absolute `mbd.exe` path returned by `Get-Command`.
+If you installed from a portable archive, keep that extracted directory in
+place; moving or deleting it will break the scheduled task.
 
 Create a config file in PowerShell:
 
@@ -158,11 +162,20 @@ Start it manually:
 mbd serve --config "$env:LOCALAPPDATA\metaBrain\mbd.json"
 ```
 
-Register a per-user logon task:
+Register a per-user logon task. The task starts `mbd` when the current user
+logs in, keeps it running without a time limit, and asks Task Scheduler to
+restart it if it exits unexpectedly:
 
 ```powershell
 $Mbd = (Get-Command mbd.exe).Source
 $Config = Join-Path $env:LOCALAPPDATA "metaBrain\mbd.json"
+
+$Settings = New-ScheduledTaskSettingsSet `
+  -AllowStartIfOnBatteries `
+  -DontStopIfGoingOnBatteries `
+  -RestartCount 3 `
+  -RestartInterval (New-TimeSpan -Minutes 1) `
+  -ExecutionTimeLimit (New-TimeSpan -Seconds 0)
 
 $Action = New-ScheduledTaskAction `
   -Execute $Mbd `
@@ -174,6 +187,7 @@ Register-ScheduledTask `
   -TaskName "metaBrain mbd" `
   -Action $Action `
   -Trigger $Trigger `
+  -Settings $Settings `
   -Description "Start the metaBrain daemon at user logon." `
   -Force
 
@@ -184,8 +198,14 @@ Check status and CLI connectivity:
 
 ```powershell
 Get-ScheduledTask -TaskName "metaBrain mbd"
+Get-ScheduledTaskInfo -TaskName "metaBrain mbd"
+Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort 6374 -State Listen
 mb version
 ```
+
+`Get-ScheduledTask` should report `Running` after `Start-ScheduledTask`.
+`mb version` should include a reachable `server` object for
+`http://127.0.0.1:6374`.
 
 Stop or remove the task:
 
