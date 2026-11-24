@@ -103,12 +103,13 @@ public final class MetaBrainStore: Sendable {
     private let writes = MetaBrainWriteCoordinator()
     private let treeIndex = MetaBrainIndexPreparation()
     private let searchFieldIndex = MetaBrainIndexPreparation()
+    private let citationIndex = MetaBrainIndexPreparation()
     private static let chunkTargetCharacterCount = 4_000
     private static let chunkOverlapCharacterCount = 400
     private static let emptyIndexValue = Data()
     private static let bulkReadOptions = Database.ReadOptions(fillCache: false)
     private static let caseSensitiveTreeLayout = Data([1])
-    private static let currentSearchFieldLayout = Data([1])
+    private static let currentSearchFieldLayout = Data([2])
 
     public convenience init(path: String, options: MetaBrainStoreOptions = .default) throws {
         try self.init(url: URL(fileURLWithPath: path, isDirectory: true), options: options)
@@ -345,7 +346,8 @@ public final class MetaBrainStore: Sendable {
                 references: snapshot.references,
                 currentVersion: revision.sequence,
                 createdAt: current.document.createdAt,
-                updatedAt: revision.createdAt
+                updatedAt: revision.createdAt,
+                markdown: snapshot.markdown
             )
         }
     }
@@ -786,6 +788,13 @@ public final class MetaBrainStore: Sendable {
     }
 
     func outboundReferences(from sourceID: DocumentID) async throws -> [DocumentID] {
+        try await ensureCitationIndex()
+        let native = try await nativeOutboundReferences(from: sourceID)
+        let citations = try await outgoingCitationRecords(from: sourceID)
+        return Set(native + citations.compactMap { $0.status == .resolved ? $0.targetID : nil }).sorted()
+    }
+
+    private func nativeOutboundReferences(from sourceID: DocumentID) async throws -> [DocumentID] {
         let prefix = MetaBrainKeyspace.outboundReferencePrefix(sourceID: sourceID)
         return try await scanKeys(withPrefix: prefix)
             .compactMap { key in
@@ -795,12 +804,16 @@ public final class MetaBrainStore: Sendable {
     }
 
     func inboundReferences(to targetID: DocumentID) async throws -> [DocumentID] {
+        try await ensureCitationIndex()
         let prefix = MetaBrainKeyspace.inboundReferencePrefix(targetID: targetID)
-        return try await scanKeys(withPrefix: prefix)
-            .compactMap { key in
-                try DocumentID(rawValue: String(key.dropFirst(prefix.count)))
-            }
-            .sorted()
+        let native = try await scanKeys(withPrefix: prefix).map { key in
+            try DocumentID(rawValue: String(key.dropFirst(prefix.count)))
+        }
+        let citationPrefix = MetaBrainKeyspace.citationInPrefix(targetID)
+        let citationSources = try await scanKeys(withPrefix: citationPrefix).map { key in
+            try Self.citationOccurrenceKey(key, prefix: citationPrefix).source
+        }
+        return Set(native + citationSources).sorted()
     }
 
     private func dumpDocuments(under path: DocumentPath) async throws -> [StoredDocument] {
@@ -836,7 +849,8 @@ public final class MetaBrainStore: Sendable {
             isCurrent: true,
             tags: document.tags,
             metadata: document.metadata,
-            references: document.references.map(DocumentDumpReference.init)
+            references: document.references.map(DocumentDumpReference.init),
+            markdown: document.markdown
         )
     }
 
@@ -855,7 +869,8 @@ public final class MetaBrainStore: Sendable {
             isCurrent: version.sequence == currentVersion,
             tags: version.snapshot.tags,
             metadata: version.snapshot.metadata,
-            references: version.snapshot.references.map(DocumentDumpReference.init)
+            references: version.snapshot.references.map(DocumentDumpReference.init),
+            markdown: version.snapshot.markdown
         )
     }
 
@@ -876,7 +891,8 @@ public final class MetaBrainStore: Sendable {
             references: input.references,
             currentVersion: 1,
             createdAt: now,
-            updatedAt: now
+            updatedAt: now,
+            markdown: input.markdown
         )
         let record = MetaBrainDocumentRecord(
             document: document,
@@ -942,6 +958,11 @@ public final class MetaBrainStore: Sendable {
             throw MetaBrainStoreError.documentVersionExhausted(existing.path)
         }
 
+        var input = input
+        input.markdown = input.markdown ?? existing.markdown
+        if existing.path.hasMarkdownExtension, !input.path.hasMarkdownExtension, input.markdown == nil {
+            input.markdown = true
+        }
         let now = Date()
         let document = StoredDocument(
             id: id,
@@ -953,7 +974,8 @@ public final class MetaBrainStore: Sendable {
             references: input.references,
             currentVersion: nextVersion,
             createdAt: existing.createdAt,
-            updatedAt: now
+            updatedAt: now,
+            markdown: input.markdown
         )
         let record = MetaBrainDocumentRecord(
             document: document,
@@ -1044,6 +1066,7 @@ public final class MetaBrainStore: Sendable {
             staleChunks: staleChunkRecords.map(\.payload)
         )
         let staleReferenceKeys = try await staleReferenceKeys(sourceID: document.id)
+        let citationEdit = try await citationEdit(replacing: previousRecord?.document, with: document)
         let treeUpdate = try await incrementalTreeUpdate(
             replacing: document,
             removedPath: removedPath
@@ -1073,6 +1096,8 @@ public final class MetaBrainStore: Sendable {
                 for key in staleChunkKeys + staleIndexKeys + staleReferenceKeys {
                     try batch.deleteValue(forKey: key)
                 }
+                for key in citationEdit.removals { try batch.deleteValue(forKey: key) }
+                for (key, value) in citationEdit.puts { try batch.put(value, forKey: key) }
 
                 try batch.put(encodedRecord, forKey: documentKey)
                 try batch.put(
@@ -1132,6 +1157,7 @@ public final class MetaBrainStore: Sendable {
         )
         let staleReferenceKeys = try await staleReferenceKeys(sourceID: document.id)
         let staleBacklinkKeys = try await staleBacklinkKeys(targetID: document.id)
+        let citationEdit = try await citationEdit(replacing: document, with: nil)
         let versionRecords = try await versionRecordEntries(for: document.id)
         try versionRecords.requireCurrentSchemaVersions(operation: "delete document versions")
         let versionKeys = versionRecords.map(\.key)
@@ -1152,6 +1178,8 @@ public final class MetaBrainStore: Sendable {
                     + versionKeys {
                     try batch.deleteValue(forKey: key)
                 }
+                for key in citationEdit.removals { try batch.deleteValue(forKey: key) }
+                for (key, value) in citationEdit.puts { try batch.put(value, forKey: key) }
 
                 try batch.deleteValue(forKey: MetaBrainKeyspace.document(id: document.id))
                 try batch.deleteValue(forKey: MetaBrainKeyspace.documentMetadata(id: document.id))
@@ -1424,19 +1452,20 @@ public final class MetaBrainStore: Sendable {
     private func backfillSearchFieldIndexIfNeeded() async throws {
         try await Self.mapLevelDBErrors(path: url.path) {
             let records = try await currentRecords()
-            if let layout = try await records.value(forKey: MetaBrainKeyspace.searchFieldLayout) {
-                guard layout == Self.currentSearchFieldLayout else {
-                    throw MetaBrainStoreError.operationFailed(
-                        message: "Unrecognized search field index layout. Upgrade metaBrain to use this store's search index."
-                    )
-                }
-                return
+            let layout = try await records.value(forKey: MetaBrainKeyspace.searchFieldLayout)
+            if layout == Self.currentSearchFieldLayout { return }
+            if let layout, layout != Data([1]) {
+                throw MetaBrainStoreError.operationFailed(
+                    message: "Unrecognized search field index layout. Upgrade metaBrain to use this store's search index."
+                )
             }
 
-            let fieldPrefix = Data(MetaBrainKeyspace.prefix(.searchFieldTerm).utf8)
-            guard try await records.value(forKey: MetaBrainKeyspace.searchDocumentCount) == nil,
-                  try await records.scanEncodedPrefixKeys(fieldPrefix, readOptions: Self.bulkReadOptions).isEmpty else {
-                throw MetaBrainStoreError.operationFailed(message: "Search field index exists without its layout marker.")
+            if layout == nil {
+                let fieldPrefix = Data(MetaBrainKeyspace.prefix(.searchFieldTerm).utf8)
+                guard try await records.value(forKey: MetaBrainKeyspace.searchDocumentCount) == nil,
+                      try await records.scanEncodedPrefixKeys(fieldPrefix, readOptions: Self.bulkReadOptions).isEmpty else {
+                    throw MetaBrainStoreError.operationFailed(message: "Search field index exists without its layout marker.")
+                }
             }
 
             let documentPrefix = Data(MetaBrainKeyspace.prefix(.documentID).utf8)
@@ -1448,7 +1477,10 @@ public final class MetaBrainStore: Sendable {
                     continue
                 }
                 let document = try decodeCompressedRecord(data, as: MetaBrainDocumentRecord.self).payload.document
-                fieldKeys.append(contentsOf: Self.searchFieldKeys(for: document))
+                if layout == nil {
+                    fieldKeys.append(contentsOf: Self.searchFieldKeys(for: document))
+                }
+                fieldKeys.append(contentsOf: MarkdownProperties.filterKeys(for: document))
                 documentCount += 1
             }
 
@@ -1556,7 +1588,7 @@ public final class MetaBrainStore: Sendable {
     private func childTreeEntries(of path: DocumentPath) async throws -> [DocumentTreeEntry] {
         try await childTreeRecordEntries(of: path)
             .map { $0.payload.entry }
-            .sorted { $0.path.rawValue < $1.path.rawValue }
+            .sorted { $0.path < $1.path }
     }
 
     private func childTreeRecordEntries(of path: DocumentPath) async throws -> [MetaBrainKeyedStoredRecord<MetaBrainTreeRecord>] {
@@ -1790,12 +1822,7 @@ public final class MetaBrainStore: Sendable {
                 keys.insert(MetaBrainKeyspace.term(term, id: document.id, ordinal: chunk.ordinal))
             }
         }
-        for tag in document.tags {
-            keys.insert(MetaBrainKeyspace.tag(tag, id: document.id))
-        }
-        for (key, value) in document.metadata {
-            keys.insert(MetaBrainKeyspace.metadata(key: key, value: value, id: document.id))
-        }
+        keys.formUnion(MarkdownProperties.filterKeys(for: document))
 
         return keys.sorted()
     }
@@ -1823,7 +1850,7 @@ public final class MetaBrainStore: Sendable {
 
         let sourceID = document.id
         let resolvedIDs = try await resolvedReferenceIDs(from: document.references)
-        let indexedIDs = try await Set(outboundReferences(from: sourceID))
+        let indexedIDs = try await Set(nativeOutboundReferences(from: sourceID))
         guard resolvedIDs != indexedIDs else {
             return
         }
@@ -1870,12 +1897,7 @@ public final class MetaBrainStore: Sendable {
                 keys.insert(MetaBrainKeyspace.term(term, id: document.id, ordinal: chunk.ordinal))
             }
         }
-        for tag in document.tags {
-            keys.insert(MetaBrainKeyspace.tag(tag, id: document.id))
-        }
-        for (key, value) in document.metadata {
-            keys.insert(MetaBrainKeyspace.metadata(key: key, value: value, id: document.id))
-        }
+        keys.formUnion(MarkdownProperties.filterKeys(for: document))
         for targetID in try await resolvedReferenceIDs(from: document.references) {
             keys.insert(MetaBrainKeyspace.outboundReference(sourceID: document.id, targetID: targetID))
             keys.insert(MetaBrainKeyspace.inboundReference(targetID: targetID, sourceID: document.id))
@@ -1921,6 +1943,9 @@ public final class MetaBrainStore: Sendable {
     }
 
     private func filteredDocumentIDs(for query: SearchQuery) async throws -> Set<DocumentID>? {
+        if !query.tags.isEmpty || !query.metadata.isEmpty {
+            try await ensureSearchFieldIndex()
+        }
         var filteredIDs: Set<DocumentID>?
 
         for tag in query.tags {
@@ -2069,11 +2094,11 @@ public final class MetaBrainStore: Sendable {
             return true
         }
 
-        return path.rawValue.hasPrefix(prefix.rawValue + "/")
+        return path.rawValue.utf8.starts(with: (prefix.rawValue + "/").utf8)
     }
 
     private static func path(_ path: DocumentPath, isDescendantOf ancestor: DocumentPath) -> Bool {
-        ancestor.rawValue != "/" && path.rawValue.hasPrefix(ancestor.rawValue + "/")
+        ancestor.rawValue != "/" && path.rawValue.utf8.starts(with: (ancestor.rawValue + "/").utf8)
     }
 
     private static func treeAffectedPaths(
@@ -2485,6 +2510,7 @@ private struct MetaBrainDocumentRecord: Codable, Equatable, Sendable {
         document.path == input.path && document.title == input.title && document.tags == input.tags
             && document.metadata == input.metadata && document.references == input.references
             && retention == (input.retention ?? retention) && document.body.utf8.elementsEqual(input.body.utf8)
+            && document.markdown == (input.markdown ?? document.markdown)
     }
 }
 
@@ -2563,5 +2589,354 @@ private struct MetaBrainSearchTopCandidates: Sendable {
             return lhs.documentID < rhs.documentID
         }
         return lhs.chunkOrdinal < rhs.chunkOrdinal
+    }
+}
+
+extension MetaBrainStore {
+    /// Reads one passage from the current document or an explicitly retained revision.
+    /// The result uses the selected revision's path and half-open Character offsets.
+    public func readPassage(
+        _ reference: DocumentReference,
+        selector: DocumentPassageSelector,
+        version: UInt64? = nil
+    ) async throws -> DocumentPassage? {
+        let document: StoredDocument?
+        if let version {
+            document = try await getDocument(reference, version: version)
+        } else {
+            document = try await getDocument(reference, trackingRead: false)
+        }
+        guard let document else { return nil }
+
+        let range: Range<Int>
+        switch selector {
+        case .range(let start, let end):
+            guard start >= 0, end >= start, end <= document.body.count else {
+                throw DocumentPassageError.invalidRange(start: start, end: end)
+            }
+            range = start..<end
+        case .heading, .block:
+            guard document.isMarkdown,
+                  let anchor = try MarkdownDocument(body: document.body, includeLinks: false).anchor(for: selector) else {
+                return nil
+            }
+            range = anchor.range
+        }
+        let start = document.body.index(document.body.startIndex, offsetBy: range.lowerBound)
+        let end = document.body.index(start, offsetBy: range.count)
+        return DocumentPassage(
+            documentID: document.id,
+            path: document.path,
+            version: document.currentVersion,
+            selector: selector,
+            passage: RecallPassage(start: range.lowerBound, end: range.upperBound, text: String(document.body[start..<end]))
+        )
+    }
+
+    /// Lists current Markdown occurrences in source path and body order.
+    /// A block filter matches the source block for outgoing links and the cited block for incoming links.
+    public func links(
+        for reference: DocumentReference,
+        direction: DocumentLinkDirection = .outgoing,
+        block: String? = nil
+    ) async throws -> [DocumentLinkOccurrence] {
+        try await writes.run {
+            try await self.ensureCitationIndex()
+            guard let id = try await self.documentID(for: reference),
+                  try await self.citationPath(id) != nil else {
+                return []
+            }
+            let citations: [MarkdownCitation]
+            let requestedBlock = block.map(MarkdownDocument.blockName)
+            switch direction {
+            case .outgoing:
+                citations = try await self.outgoingCitationRecords(from: id).filter {
+                    requestedBlock == nil || $0.link.sourceBlock == requestedBlock
+                }
+            case .incoming:
+                citations = try await self.citationRecords(at: MetaBrainKeyspace.citationInPrefix(id)).filter {
+                    guard let requestedBlock else { return true }
+                    return $0.destination.fragment == "^" + requestedBlock
+                }
+            }
+            return try await self.linkOccurrences(citations)
+        }
+    }
+
+    private func linkOccurrences(_ records: [MarkdownCitation]) async throws -> [DocumentLinkOccurrence] {
+        var paths: [DocumentID: DocumentPath] = [:]
+        var parsedTargets: [DocumentID: MarkdownDocument] = [:]
+        var checkedTargets: Set<DocumentID> = []
+        var occurrences: [DocumentLinkOccurrence] = []
+        for record in records {
+            var targetPath: DocumentPath?
+            var status = record.status
+            if status == .resolved, let target = record.targetID {
+                if paths[target] == nil { paths[target] = try await citationPath(target) }
+                targetPath = paths[target]
+                if targetPath == nil {
+                    status = .unresolved
+                } else if let fragment = record.destination.fragment, !fragment.isEmpty {
+                    if checkedTargets.insert(target).inserted,
+                       let document = try await documentRecord(id: target)?.document, document.isMarkdown {
+                        parsedTargets[target] = MarkdownDocument(body: document.body, includeLinks: false)
+                    }
+                    let selector: DocumentPassageSelector = fragment.hasPrefix("^") ? .block(fragment) : .heading(fragment)
+                    do {
+                        if try parsedTargets[target]?.anchor(for: selector) == nil {
+                            status = .unresolved
+                        }
+                    } catch DocumentPassageError.ambiguousSelector {
+                        status = .ambiguous
+                    }
+                }
+            }
+            var candidates: [DocumentLinkCandidate] = []
+            for id in record.candidates {
+                if paths[id] == nil { paths[id] = try await citationPath(id) }
+                if let path = paths[id] {
+                    candidates.append(DocumentLinkCandidate(documentID: id, path: path))
+                }
+            }
+            occurrences.append(record.occurrence(
+                targetPath: targetPath,
+                status: status,
+                candidates: candidates.sorted { $0.path < $1.path }
+            ))
+        }
+        return occurrences.sorted {
+            if $0.sourcePath != $1.sourcePath { return $0.sourcePath < $1.sourcePath }
+            return $0.start < $1.start
+        }
+    }
+
+    private func citationPath(_ id: DocumentID) async throws -> DocumentPath? {
+        guard let data = try await rawValue(forKey: MetaBrainKeyspace.citationPath(id)),
+              let path = String(data: data, encoding: .utf8) else { return nil }
+        return try DocumentPath(path)
+    }
+
+    private func ensureCitationIndex() async throws {
+        try await citationIndex.prepare { try await self.prepareCitationIndex() }
+    }
+
+    private func prepareCitationIndex() async throws {
+        let layout = Data([1])
+        if let current = try await rawValue(forKey: MetaBrainKeyspace.citationLayout) {
+            guard current == layout else {
+                throw MetaBrainStoreError.operationFailed(message: "Unrecognized Markdown citation index layout.")
+            }
+            return
+        }
+
+        let prefix = MetaBrainKeyspace.prefix(.documentID)
+        var catalog: [MarkdownCitationHeader] = []
+        var citations: [MarkdownCitation] = []
+        var edit = MarkdownCitationEdit()
+        for key in try await scanKeys(withPrefix: prefix) {
+            let id = try DocumentID(rawValue: String(key.dropFirst(prefix.count)))
+            guard let document = try await documentRecord(id: id)?.document else { continue }
+            let header = MarkdownCitationHeader(id: id, path: document.path)
+            catalog.append(header)
+            Self.insertCitationHeader(header, in: &edit)
+            citations += Self.markdownCitations(from: document)
+        }
+
+        let resolver = MarkdownCitationCatalog(catalog)
+        for citation in citations {
+            let resolved = try await resolveCitation(citation, catalog: resolver)
+            try addCitation(resolved, to: &edit)
+        }
+        edit.put(layout, for: MetaBrainKeyspace.citationLayout)
+        try await Self.mapLevelDBErrors(path: url.path) { [edit] in
+            let records = try await currentRecords()
+            try await records.write { batch in
+                for (key, value) in edit.puts { try batch.put(value, forKey: key) }
+            }
+        }
+    }
+
+    private func citationEdit(
+        replacing previous: StoredDocument?,
+        with next: StoredDocument?
+    ) async throws -> MarkdownCitationEdit {
+        try await ensureCitationIndex()
+        guard let id = next?.id ?? previous?.id else { return MarkdownCitationEdit() }
+        let old = if previous?.isMarkdown == true {
+            try await outgoingCitationRecords(from: id, operation: "update Markdown citations")
+        } else {
+            [] as [MarkdownCitation]
+        }
+        var edit = MarkdownCitationEdit()
+        var bindings: [DocumentLinkSyntax: [Data: MarkdownCitation]] = [:]
+        for citation in old {
+            edit.remove(citation)
+            if citation.targetID != nil {
+                let target = Data(citation.destination.rawTarget.utf8)
+                bindings[citation.link.syntax, default: [:]][target] = citation
+            }
+        }
+        if previous?.path != next?.path {
+            if let previous {
+                edit.remove(MetaBrainKeyspace.citationPath(id))
+                edit.remove(Self.citationNameKey(previous.path, id: id))
+            }
+            if let next {
+                Self.insertCitationHeader(MarkdownCitationHeader(id: id, path: next.path), in: &edit)
+            }
+            var prefixes: Set<String> = []
+            if let previous { prefixes.formUnion(MarkdownDestination.pendingPrefixes(changedBy: previous.path)) }
+            if let next { prefixes.formUnion(MarkdownDestination.pendingPrefixes(changedBy: next.path)) }
+            var visited = Set<String>()
+            for prefix in prefixes {
+                for citation in try await citationRecords(at: prefix, operation: "resolve Markdown citations")
+                    where citation.sourceID != id && visited.insert(citation.key).inserted {
+                    let resolved = try await resolveCitation(citation, replacing: previous?.path, with: next?.path, id: id)
+                    edit.remove(citation)
+                    try addCitation(resolved, to: &edit)
+                }
+            }
+        }
+
+        if let next {
+            for var citation in Self.markdownCitations(from: next) {
+                let target = Data(citation.destination.rawTarget.utf8)
+                if let binding = bindings[citation.link.syntax]?[target] {
+                    citation.targetID = binding.targetID
+                    citation.status = binding.status
+                } else {
+                    citation = try await resolveCitation(citation, replacing: previous?.path, with: next.path, id: id)
+                }
+                try addCitation(citation, to: &edit)
+            }
+        } else {
+            let prefix = MetaBrainKeyspace.citationInPrefix(id)
+            for var citation in try await citationRecords(at: prefix, operation: "delete Markdown citations")
+                where citation.sourceID != id {
+                edit.remove(citation)
+                citation.status = .unresolved
+                try addCitation(citation, to: &edit)
+            }
+        }
+        return edit
+    }
+
+    private static func markdownCitations(from document: StoredDocument) -> [MarkdownCitation] {
+        guard document.isMarkdown else { return [] }
+        return MarkdownDocument(body: document.body).links.map {
+            MarkdownCitation(
+                sourceID: document.id,
+                sourcePath: document.path,
+                sourceVersion: document.currentVersion,
+                link: $0,
+                status: .unresolved
+            )
+        }
+    }
+
+    private static func insertCitationHeader(_ header: MarkdownCitationHeader, in edit: inout MarkdownCitationEdit) {
+        edit.put(Data(header.path.rawValue.utf8), for: MetaBrainKeyspace.citationPath(header.id))
+        edit.put(for: citationNameKey(header.path, id: header.id))
+    }
+
+    private static func citationNameKey(_ path: DocumentPath, id: DocumentID) -> String {
+        MetaBrainKeyspace.citationNamePrefix(MarkdownDestination.wikiName(path.name)) + id.rawValue
+    }
+
+    private func addCitation(_ citation: MarkdownCitation, to edit: inout MarkdownCitationEdit) throws {
+        edit.put(try compressedData(citation), for: citation.key)
+        for key in citation.secondaryKeys { edit.put(for: key) }
+    }
+
+    private func resolveCitation(
+        _ citation: MarkdownCitation,
+        replacing oldPath: DocumentPath? = nil,
+        with newPath: DocumentPath? = nil,
+        id: DocumentID? = nil,
+        catalog: MarkdownCitationCatalog? = nil
+    ) async throws -> MarkdownCitation {
+        var citation = citation
+        citation.candidates = []
+        let destination = citation.destination
+        if destination.isExternal {
+            citation.status = .external
+            return citation
+        }
+        if destination.isSelfLink {
+            citation.targetID = citation.sourceID
+        }
+        for path in destination.paths where citation.targetID == nil {
+            if let catalog {
+                citation.targetID = catalog.id(for: path)
+            } else if path == newPath {
+                citation.targetID = id
+            } else if path != oldPath {
+                citation.targetID = try await documentID(forPath: path)
+            }
+        }
+        if citation.targetID == nil, let name = destination.name {
+            var matches: Set<DocumentID>
+            if let catalog {
+                matches = catalog.ids(named: name)
+            } else {
+                let prefix = MetaBrainKeyspace.citationNamePrefix(name)
+                matches = try await Set(scanKeys(withPrefix: prefix).map { key in
+                    try DocumentID(rawValue: String(key.dropFirst(prefix.count)))
+                })
+                if let id, let oldPath, MarkdownDestination.wikiName(oldPath.name).utf8.elementsEqual(name.utf8) {
+                    matches.remove(id)
+                }
+                if let id, let newPath, MarkdownDestination.wikiName(newPath.name).utf8.elementsEqual(name.utf8) {
+                    matches.insert(id)
+                }
+            }
+            if matches.count == 1 {
+                citation.targetID = matches.first
+            } else if matches.count > 1 {
+                citation.candidates = matches.sorted()
+            }
+        }
+        if citation.targetID != nil {
+            citation.status = .resolved
+        } else {
+            citation.status = citation.candidates.isEmpty ? .unresolved : .ambiguous
+        }
+        return citation
+    }
+
+    private func outgoingCitationRecords(
+        from id: DocumentID,
+        operation: String? = nil
+    ) async throws -> [MarkdownCitation] {
+        let prefix = MetaBrainKeyspace.citationOutPrefix(id)
+        return try await Self.mapLevelDBErrors(path: url.path) {
+            let records = try await currentRecords()
+            return try await records.scanEncodedPrefix(Data(prefix.utf8), readOptions: Self.bulkReadOptions).map { row in
+                let decoded = try decodeCompressedRecord(row.value, as: MarkdownCitation.self)
+                if let operation { try decoded.requireCurrentSchemaVersion(operation: operation) }
+                return decoded.payload
+            }
+        }
+    }
+
+    private func citationRecords(at prefix: String, operation: String? = nil) async throws -> [MarkdownCitation] {
+        var citations: [MarkdownCitation] = []
+        for key in try await scanKeys(withPrefix: prefix) {
+            let occurrence = try Self.citationOccurrenceKey(key, prefix: prefix)
+            let outbound = MetaBrainKeyspace.citationOutPrefix(occurrence.source) + occurrence.start
+            if let decoded = try await compressedStoredRecord(forKey: outbound, as: MarkdownCitation.self) {
+                if let operation { try decoded.requireCurrentSchemaVersion(operation: operation) }
+                citations.append(decoded.payload)
+            }
+        }
+        return citations
+    }
+
+    private static func citationOccurrenceKey(_ key: String, prefix: String) throws -> (source: DocumentID, start: String) {
+        let parts = key.dropFirst(prefix.count).split(separator: "/", maxSplits: 1)
+        guard parts.count == 2, let start = Int(parts[1]), start >= 0 else {
+            throw MetaBrainStoreError.operationFailed(message: "Invalid Markdown citation occurrence key.")
+        }
+        return (try DocumentID(rawValue: String(parts[0])), String(parts[1]))
     }
 }

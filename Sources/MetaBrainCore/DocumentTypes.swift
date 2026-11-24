@@ -37,6 +37,7 @@ public struct DocumentID: Codable, Hashable, Sendable, Comparable, CustomStringC
     }
 }
 
+/// A normalized virtual path whose spelling is compared as UTF-8, matching the durable store keys.
 public struct DocumentPath: Codable, Hashable, Sendable, Comparable, CustomStringConvertible {
     public let rawValue: String
 
@@ -65,8 +66,16 @@ public struct DocumentPath: Codable, Hashable, Sendable, Comparable, CustomStrin
         rawValue
     }
 
+    public static func == (lhs: DocumentPath, rhs: DocumentPath) -> Bool {
+        lhs.rawValue.utf8.elementsEqual(rhs.rawValue.utf8)
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        for byte in rawValue.utf8 { hasher.combine(byte) }
+    }
+
     public static func < (lhs: DocumentPath, rhs: DocumentPath) -> Bool {
-        lhs.rawValue < rhs.rawValue
+        lhs.rawValue.utf8.lexicographicallyPrecedes(rhs.rawValue.utf8)
     }
 
     public static func normalized(_ value: String) throws -> String {
@@ -113,6 +122,11 @@ public struct DocumentInput: Codable, Equatable, Sendable {
     public var metadata: [String: String]
     public var references: [DocumentReference]
     public var retention: VersionRetentionPolicy?
+    /// Explicit Markdown opt-in for a document whose path has no `.md` extension.
+    /// A replacement with `nil` preserves the prior setting.
+    public var markdown: Bool?
+
+    public var isMarkdown: Bool { markdown == true || path.hasMarkdownExtension }
 
     public init(
         path: DocumentPath,
@@ -121,7 +135,8 @@ public struct DocumentInput: Codable, Equatable, Sendable {
         tags: [String] = [],
         metadata: [String: String] = [:],
         references: [DocumentReference] = [],
-        retention: VersionRetentionPolicy? = nil
+        retention: VersionRetentionPolicy? = nil,
+        markdown: Bool? = nil
     ) {
         self.path = path
         self.title = title
@@ -130,6 +145,7 @@ public struct DocumentInput: Codable, Equatable, Sendable {
         self.metadata = metadata
         self.references = references
         self.retention = retention
+        self.markdown = markdown
     }
 }
 
@@ -144,6 +160,9 @@ public struct StoredDocument: Codable, Equatable, Sendable, Identifiable {
     public var currentVersion: UInt64
     public var createdAt: Date
     public var updatedAt: Date
+    public var markdown: Bool?
+
+    public var isMarkdown: Bool { markdown == true || path.hasMarkdownExtension }
 
     public init(
         id: DocumentID,
@@ -155,7 +174,8 @@ public struct StoredDocument: Codable, Equatable, Sendable, Identifiable {
         references: [DocumentReference] = [],
         currentVersion: UInt64,
         createdAt: Date,
-        updatedAt: Date
+        updatedAt: Date,
+        markdown: Bool? = nil
     ) {
         self.id = id
         self.path = path
@@ -167,7 +187,12 @@ public struct StoredDocument: Codable, Equatable, Sendable, Identifiable {
         self.currentVersion = currentVersion
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.markdown = markdown
     }
+}
+
+extension DocumentPath {
+    var hasMarkdownExtension: Bool { name.lowercased().hasSuffix(".md") }
 }
 
 public enum DocumentWriteStatus: String, Sendable {

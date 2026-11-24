@@ -6,6 +6,7 @@ enum MetaBrainKeyspace {
     static let treeLayout = "meta/tree-layout"
     static let searchFieldLayout = "meta/search-field-layout"
     static let searchDocumentCount = "meta/search-document-count"
+    static let citationLayout = "meta/citation-layout"
 
     static func document(id: DocumentID) -> String {
         "doc/id/\(id.rawValue)"
@@ -85,6 +86,26 @@ enum MetaBrainKeyspace {
 
     static func inboundReferencePrefix(targetID: DocumentID) -> String {
         "idx/ref/in/\(targetID.rawValue)/"
+    }
+
+    static func citationOutPrefix(_ source: DocumentID) -> String {
+        "idx/cite/out/\(source.rawValue)/"
+    }
+
+    static func citationInPrefix(_ target: DocumentID) -> String {
+        "idx/cite/in/\(target.rawValue)/"
+    }
+
+    static func citationPendingPrefix(_ lookup: String) -> String {
+        "idx/cite/pending/\(escapedComponent(lookup))/"
+    }
+
+    static func citationNamePrefix(_ name: String) -> String {
+        "idx/cite/name/\(escapedComponent(name))/"
+    }
+
+    static func citationPath(_ document: DocumentID) -> String {
+        "idx/cite/path/\(document.rawValue)"
     }
 
     static func tree(parentPath: DocumentPath, name: String) -> String {

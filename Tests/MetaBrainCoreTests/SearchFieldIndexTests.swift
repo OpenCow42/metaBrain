@@ -104,7 +104,7 @@ import Testing
 @Test func searchFieldIndexPreservesUnknownLayouts() async throws {
     try await withTemporaryStoreFixture { fixture in
         let store = try MetaBrainStore(url: fixture.storeURL)
-        let futureLayout = Data([2])
+        let futureLayout = Data([3])
         let key = MetaBrainKeyspace.searchFieldLayout
         try await store.writeRawValue(futureLayout, forKey: key)
         let path = try DocumentPath("/must-remain-absent")

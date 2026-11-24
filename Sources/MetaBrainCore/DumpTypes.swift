@@ -54,6 +54,7 @@ public struct DocumentDumpEntry: Encodable, Equatable, Sendable {
     public var versionCreatedAt: Date
     public var isCurrent: Bool
     public var tags: [String]
+    public var markdown: Bool?
     public var metadata: [String: String]
     public var references: [DocumentDumpReference]
     public var bodyCharacterCount: Int
@@ -71,7 +72,8 @@ public struct DocumentDumpEntry: Encodable, Equatable, Sendable {
         tags: [String],
         metadata: [String: String],
         references: [DocumentDumpReference],
-        fileSystemPath: String? = nil
+        fileSystemPath: String? = nil,
+        markdown: Bool? = nil
     ) {
         self.documentID = documentID
         self.path = path
@@ -81,6 +83,7 @@ public struct DocumentDumpEntry: Encodable, Equatable, Sendable {
         self.versionCreatedAt = versionCreatedAt
         self.isCurrent = isCurrent
         self.tags = tags
+        self.markdown = markdown
         self.metadata = metadata
         self.references = references
         self.bodyCharacterCount = body.count
@@ -97,6 +100,7 @@ public struct DocumentDumpEntry: Encodable, Equatable, Sendable {
         case versionCreatedAt
         case isCurrent
         case tags
+        case markdown
         case metadata
         case references
         case bodyCharacterCount
@@ -114,6 +118,7 @@ public struct DocumentDumpEntry: Encodable, Equatable, Sendable {
         try container.encode(versionCreatedAt, forKey: .versionCreatedAt)
         try container.encode(isCurrent, forKey: .isCurrent)
         try container.encode(tags, forKey: .tags)
+        try container.encodeIfPresent(markdown, forKey: .markdown)
         try container.encode(metadata, forKey: .metadata)
         try container.encode(references, forKey: .references)
         try container.encode(bodyCharacterCount, forKey: .bodyCharacterCount)
