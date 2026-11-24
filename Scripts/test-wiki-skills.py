@@ -402,6 +402,7 @@ class SkillsTest(unittest.TestCase):
         missing = root + "/gone.md"
         self.mb(cli, "put", path,
                 "## Empty\n<!--\n# Ignored HTML heading\n-->\n%%\n# Ignored wiki heading\n%%\n"
+                "<!-- Another HTML comment --!>\n"
                 "## Code only\n~~~sh\n# Literal code\n~~~\n"
                 "## Present\nText.\n", "--if-version", "0")
         yaml = root + "/titled.md"

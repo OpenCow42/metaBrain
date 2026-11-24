@@ -11,7 +11,7 @@ import subprocess
 ATX = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*)|$)")
 SETEXT = re.compile(r"^ {0,3}(=+|-+)\s*$")
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
-COMMENT = re.compile(r"<!--|-->|(?<!\\)%%")
+COMMENT = re.compile(r"<!--|--!?>|(?<!\\)%%")
 RULE = re.compile(r"^ {0,3}([*_-])(?: *\1){2,}\s*$")
 YAML_TITLE = re.compile(r"""^(?:title|'title'|"title")\s*:\s*(.*?)\s*$""", re.IGNORECASE)
 
@@ -47,7 +47,7 @@ def markdown_lines(lines, first):
             if match[0] in ("<!--", "%%") and not comment_end:
                 visible.append(line[start:match.start()])
                 comment_end = "-->" if match[0] == "<!--" else "%%"
-            elif match[0] == comment_end:
+            elif match[0] == comment_end or (comment_end == "-->" and match[0] == "--!>"):
                 start = match.end()
                 comment_end = None
         if not comment_end:
