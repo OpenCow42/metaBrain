@@ -62,6 +62,12 @@ public struct ServerRouter: Sendable {
             }
         case (_, "/v1/init"):
             return methodNotAllowed(request, allowedMethod: "POST")
+        case (.post, "/v1/ensure-guide"):
+            return await routeStoreOperation(request) { storeServer in
+                try await storeServer.ensureAgentGuide()
+            }
+        case (_, "/v1/ensure-guide"):
+            return methodNotAllowed(request, allowedMethod: "POST")
         case (.post, "/v1/put"):
             return await routeStoreOperation(request, createIfMissing: true) { storeServer in
                 let decoded = try decode(ServerPutRequest.self, from: request)

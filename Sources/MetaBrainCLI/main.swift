@@ -17,6 +17,7 @@ struct MetaBrainCommand: AsyncParsableCommand {
         searchable store instead of scattering scratch files across a workspace.
 
         Store manual: read the selected store's agent guide with mb get /AGENTS.md.
+        Use mb ensure-guide to add the default guide to an existing store.
 
         Agent discovery:
           mb
@@ -67,6 +68,7 @@ struct MetaBrainCommand: AsyncParsableCommand {
         subcommands: [
             Help.self,
             Initialize.self,
+            EnsureGuide.self,
             Put.self,
             Patch.self,
             Move.self,
@@ -346,6 +348,29 @@ extension MetaBrainCommand {
             let store = try await MetaBrainStore.initialize(at: storeOptions.resolvedStoreURL, empty: empty)
             await store.close()
             try printInitializeOutput(InitializeOutput(storePath: store.url.path), format: output.format)
+        }
+    }
+
+    struct EnsureGuide: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "ensure-guide",
+            abstract: "Add the default /AGENTS.md to an existing store if absent.",
+            discussion: "Preserves existing instructions and their version. Read the guide with mb get /AGENTS.md."
+        )
+
+        @OptionGroup var storeOptions: StoreOptions
+        @OptionGroup var output: OutputFormatOptions
+
+        func run() async throws {
+            let result: PutOutput
+            if let client = try storeOptions.serverClient() {
+                result = try client.post("/v1/ensure-guide")
+            } else {
+                result = try await storeOptions.withOpenStore { store in
+                    PutOutput(try await store.ensureAgentGuide(), operation: "ensure-guide")
+                }
+            }
+            try printPutOutput(result, format: output.format)
         }
     }
 
@@ -1944,6 +1969,7 @@ private func currentSoftwareTag() -> String {
 
 private let daemonBackedCommands: Set<String> = [
     "init",
+    "ensure-guide",
     "put",
     "patch",
     "move",

@@ -33,6 +33,10 @@ public actor MetaBrainStoreServer {
         InitializeOutput(storePath: storePath)
     }
 
+    public func ensureAgentGuide() async throws -> PutOutput {
+        PutOutput(try await store.ensureAgentGuide(), operation: "ensure-guide")
+    }
+
     public func version() -> VersionOutput {
         VersionOutput(
             currentTag: MetaBrainVersion.currentSoftwareTag(),

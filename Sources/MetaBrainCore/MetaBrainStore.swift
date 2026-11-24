@@ -201,6 +201,19 @@ public final class MetaBrainStore: Sendable {
         try await writeDocument(input).document
     }
 
+    /// Installs the bundled /AGENTS.md once. An existing guide, including a
+    /// locally edited one, is returned without changing its content or version.
+    public func ensureAgentGuide() async throws -> DocumentWriteResult {
+        try await writes.run {
+            let guide = MetaBrainAgentGuide.document
+            if let existing = try await self.getDocument(.path(guide.path), trackingRead: false) {
+                return DocumentWriteResult(document: existing, status: .unchanged)
+            }
+            let created = try await self.writeNewDocument(guide)
+            return DocumentWriteResult(document: created, status: .created)
+        }
+    }
+
     /// Writes a full replacement or updates only the body of an existing document.
     /// Version zero allows creation. A matching write at the current version or its immediate
     /// predecessor returns `.unchanged` without creating a version.

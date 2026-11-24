@@ -5,30 +5,45 @@ enum MetaBrainAgentGuide {
         body: """
         # Working with metaBrain
 
-        Search before writing. Use `mb recall "release decision" --tag release --max-bytes 4096` to find passages you can cite. Cite the path, version, and passage offsets from the result. Set `document_id` and `cited_version` from recall. Before editing, set `current_version` from the current `mb get` result.
+        ## Find evidence with a small context budget
 
-        Prefer Markdown for prose and use descriptive virtual paths such as `/notes/release.md`. Record durable findings, their date and sources, and enough context to verify them. Reuse tags and metadata keys that help you retrieve related work. Keep credentials and transient logs out of the store.
+        Start with a scoped search. Use refs when choosing documents and evidence when answering a question. Each evidence item contains a verbatim passage and a reference to its stored revision.
 
         ```sh
-        mb put /notes/release.md --body-file release.md --tag release --meta date=2026-01-15
-        mb recall "release decision" --tag release --max-bytes 4096
-        mb get --id "$document_id" --version "$cited_version"
+        mb search --tag release --meta status=current --view refs --limit 5
+        mb search "rollback trigger" --path-prefix /releases --view evidence --max-tokens 512
+        mb get --ref "$ref" --context section --max-tokens 1024
+        ```
+
+        Copy a returned `ref` into the last command if you need the surrounding section. Read any conditions and exceptions before quoting. A `truncated` response means the limit or budget omitted material. Narrow the query, or increase the budget when you need more context. The budget covers the complete compact JSON response plus its newline. It conservatively counts one token per UTF-8 byte. `--limit` caps the number of distinct documents in these views.
+
+        Use `mb recall "release decision" --tag release --max-bytes 4096` for passages with external source URLs and character offsets. To read the full cited revision, use `mb get --id "$document_id" --version "$cited_version"`. Historical citations depend on version retention.
+
+        ## Write and follow citations
+
+        Prefer descriptive Markdown paths such as `/notes/release.md`. Use `--markdown` on an extensionless note to enable Markdown indexing. A link such as `[[Policy#^rollback]]` cites a paragraph marked with `^rollback`. A relative Markdown link such as `[Policy](Policy.md)` cites a document. Inspect outgoing or incoming citations with:
+
+        ```sh
+        mb links /notes/release.md
+        mb links /notes/Policy.md --incoming --block rollback
+        mb get /notes/Policy.md --block rollback
+        ```
+
+        Qualify an ambiguous name with its path. Use explicit `--ref-id` for a document relationship, `--ref-path` for a location, and `--ref-url` for an external source. Add tags and metadata with `--tag` and `--meta` or with simple YAML properties at the top of a Markdown note.
+
+        ## Edit safely
+
+        Record durable findings, dates, and sources. Keep credentials and transient logs out of the store. Read the current version before replacing a body. Use a patch for a focused edit.
+
+        ```sh
         mb get /notes/release.md
         mb put /notes/release.md --body-file revised.md --body-only --if-version "$current_version"
-        ```
-
-        Use descriptive Markdown links such as `[Release notes](/notes/release.md)` in the body. Add an indexed reference with `--ref-id` for relationships that should survive a move. Get the stable `documentID` from `mb get`. Use `--ref-path` for a relationship to a location and `--ref-url` for an external source. Indexed document references support backlinks. Markdown links by themselves are body text.
-
-        ```sh
-        mb put /notes/follow-up.md --body-file follow-up.md --tag release --ref-path /notes/release.md
-        ```
-
-        Use `mb patch` for focused Markdown edits. It creates a new version and carries forward the document's tags, metadata, and references.
-
-        ```sh
         mb patch /notes/release.md --patch-file change.diff --check
         mb patch /notes/release.md --patch-file change.diff
         ```
-        """ + "\n"
+
+        Use `mb man search` for CLI options. Use `mb ensure-guide` to install this guide in an existing store that lacks it.
+        """ + "\n",
+        metadata: ["guide-revision": "2"]
     )
 }
