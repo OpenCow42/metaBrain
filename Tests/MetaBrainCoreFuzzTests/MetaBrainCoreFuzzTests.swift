@@ -68,6 +68,68 @@ struct MetaBrainCoreFuzzTests {
         }
     }
 
+    @Test func generatedMarkdownCitationsReturnExactlyTheAuthoredOccurrences() async throws {
+        // Each fragment supplies its own expected source spelling and destination.
+        // Joining fragments varies line endings, offsets, repetitions, and adjacent syntax.
+        let fragments: [(text: String, spelling: String?, destination: String?)] = [
+            ("👩🏽‍💻 [[Target#^rule|café]] and more", "[[Target#^rule|café]]", "Target#^rule"),
+            ("e\u{301} ![[Policy]]", "![[Policy]]", "Policy"),
+            ("Before [link](../shelf/name.md#Heading) after", "[link](../shelf/name.md#Heading)", "../shelf/name.md#Heading"),
+            ("📄 ![image](<photo%20album.png>)", "![image](<photo%20album.png>)", "photo%20album.png"),
+            ("[bookmark][ref]", "[bookmark][ref]", "/reference.md"),
+            ("<code>[[hidden]]</code> [[shown]]", "[[shown]]", "shown"),
+            ("%% [[hidden]] %% and [site](https://example.test)", "[site](https://example.test)", "https://example.test"),
+            ("\u{60}[[code]]\u{60}", nil, nil),
+            ("~~~md\n[[example]]\n~~~", nil, nil),
+            ("<!-- comment\n[[ignore]] -->", nil, nil),
+            ("    [sample](hidden.md)", nil, nil),
+            ("\\[[escaped]]", nil, nil)
+        ]
+        let choices = Gen<Int>.int(in: fragments.indices).array(of: 1...24)
+        try await runGeneratedCases(choices, defaultCount: 200, seed: Seed.citations) { choices in
+            var body = "---\r\nsummary: '[[metadata]]'\r\n---\r\n\r\n"
+            var expected: [(range: Range<Int>, destination: String)] = []
+            for (index, choice) in choices.enumerated() {
+                let fragment = fragments[choice]
+                if let spelling = fragment.spelling, let destination = fragment.destination {
+                    let range = try #require(fragment.text.range(of: spelling))
+                    let start = body.count + fragment.text.distance(from: fragment.text.startIndex, to: range.lowerBound)
+                    expected.append((start..<start + spelling.count, destination))
+                }
+                body += fragment.text + (index.isMultiple(of: 2) ? "\r\n\r\n" : "\n\n")
+            }
+            body += "[ref]: /reference.md"
+
+            let links = MarkdownDocument(body: body).links
+            #expect(links.map(\.destination) == expected.map(\.destination))
+            #expect(links.map { $0.start..<$0.end } == expected.map(\.range))
+        }
+    }
+
+    @Test func malformedMarkdownStillReturnsOrderedReadableCitationRanges() async throws {
+        let pieces = [
+            "[[", "]]", "![", "](", ")", "[label]", "[id]:", "\\", "^id", "#", "|", "%23",
+            "<", ">", "<code", "</pre>", "\"", "'", "(", "%%", "<!--", "-->", "\u{60}", "~~~",
+            "::", "\n", "\r\n", "\r", "\t", " ", "👩‍🚀", "e\u{301}", "x.md", "[[valid]]"
+        ]
+        let generator = Gen<String?>.element(of: pieces).map { $0! }.array(of: 0...96)
+        try await runGeneratedCases(generator, defaultCount: 300, seed: Seed.malformedCitations) { tokens in
+            let body = tokens.joined()
+            let characters = Array(body)
+            let parsed = MarkdownDocument(body: body)
+            var end = 0
+            for link in parsed.links {
+                try #require(end <= link.start && link.start < link.end && link.end <= characters.count)
+                let slice = String(characters[link.start..<link.end])
+                #expect(slice.hasPrefix(link.embed == true ? "![" : "["))
+                end = link.end
+            }
+            for anchor in parsed.anchors {
+                #expect(anchor.range.lowerBound >= 0 && anchor.range.upperBound <= characters.count)
+            }
+        }
+    }
+
     @Test func malformedUnifiedDiffFuzzingRejectsOrAppliesSafely() async throws {
         await runGeneratedCases(malformedPatchGenerator, defaultCount: 180, seed: Seed.malformedPatch) { text in
             do {
@@ -124,6 +186,8 @@ private enum Seed {
     static let malformedPatch: (UInt64, UInt64, UInt64, UInt64) = (0x06, 0x20, 0x30, 0x40)
     static let codable: (UInt64, UInt64, UInt64, UInt64) = (0x07, 0x20, 0x30, 0x40)
     static let store: (UInt64, UInt64, UInt64, UInt64) = (0x08, 0x20, 0x30, 0x40)
+    static let citations: (UInt64, UInt64, UInt64, UInt64) = (0x09, 0x20, 0x30, 0x40)
+    static let malformedCitations: (UInt64, UInt64, UInt64, UInt64) = (0x0A, 0x20, 0x30, 0x40)
 }
 
 private func fuzzCaseCount(defaultCount: Int) -> Int {

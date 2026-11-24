@@ -1047,10 +1047,15 @@ private func storeTestCodec<Value: Codable & Sendable>(
 @Test func conditionalDocumentWritesSerializeSameBase() async throws {
     try await withTemporaryStoreFixture { fixture in
         let store = try MetaBrainStore(url: fixture.storeURL)
-        let path = try DocumentPath("/notes/competing-writes")
+        let path = try DocumentPath("/notes/competing-writes.md")
         _ = try await store.putDocument(DocumentInput(path: path, body: "base"))
 
-        let contenders = (1...16).map { DocumentInput(path: path, body: "writer \($0)") }
+        var targets: [StoredDocument] = []
+        for number in 1...16 {
+            let target = try await store.putDocument(DocumentInput(path: DocumentPath("/target-\(number)"), body: ""))
+            targets.append(target)
+        }
+        let contenders = targets.map { DocumentInput(path: path, body: "[[\($0.path.rawValue)]]") }
         let outcomes = await withTaskGroup(of: Result<DocumentWriteResult, Error>.self) { group in
             for contender in contenders {
                 group.addTask {
@@ -1076,6 +1081,14 @@ private func storeTestCodec<Value: Codable & Sendable>(
             #expect(error as? MetaBrainStoreError == .documentVersionConflict(path, expected: 1, actual: 2))
         }
         #expect(try await store.getDocument(.path(path), trackingRead: false) == winner.document)
+        let target = try #require(targets.first { winner.document.body == "[[\($0.path.rawValue)]]" })
+        let outgoing = try await store.links(for: .path(path))
+        #expect(outgoing.map(\.targetID) == [target.id])
+        #expect(outgoing.map(\.sourceVersion) == [winner.document.currentVersion])
+        for candidate in targets {
+            let incoming = try await store.links(for: .documentID(candidate.id), direction: .incoming)
+            #expect(incoming == (target.id == candidate.id ? outgoing : []))
+        }
         let versions = try await store.listVersions(of: .path(path))
         #expect(versions.map(\.sequence) == [1, 2])
         #expect(versions.last?.snapshot.body == winner.document.body)
