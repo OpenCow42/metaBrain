@@ -149,12 +149,15 @@ public struct MoveOutput: Codable, Equatable, Sendable {
 
 public struct GetOutput: Codable, Equatable, Sendable {
     public var body: String
+    public var claims: [ProjectClaim]?
     public var createdAt: Date
     public var documentID: String
     public var markdown: Bool?
     public var metadata: [String: String]
     public var path: String
     public var references: [DocumentDumpReference]
+    public var sourceCapture: SourceCapture?
+    public var sourceProfile: ClaimSourceProfile?
     public var tags: [String]
     public var title: String?
     public var updatedAt: Date
@@ -171,15 +174,21 @@ public struct GetOutput: Codable, Equatable, Sendable {
         title: String?,
         updatedAt: Date,
         version: UInt64,
-        markdown: Bool? = nil
+        markdown: Bool? = nil,
+        sourceCapture: SourceCapture? = nil,
+        claims: [ProjectClaim]? = nil,
+        sourceProfile: ClaimSourceProfile? = nil
     ) {
         self.body = body
+        self.claims = claims
         self.createdAt = createdAt
         self.documentID = documentID
         self.markdown = markdown
         self.metadata = metadata
         self.path = path
         self.references = references
+        self.sourceCapture = sourceCapture
+        self.sourceProfile = sourceProfile
         self.tags = tags
         self.title = title
         self.updatedAt = updatedAt
@@ -198,18 +207,24 @@ public struct GetOutput: Codable, Equatable, Sendable {
             title: document.title,
             updatedAt: document.updatedAt,
             version: document.currentVersion,
-            markdown: document.markdown
+            markdown: document.markdown,
+            sourceCapture: document.sourceCapture,
+            claims: document.claims,
+            sourceProfile: document.sourceProfile
         )
     }
 
     private enum CodingKeys: String, CodingKey {
         case body
+        case claims
         case createdAt
         case documentID
         case markdown
         case metadata
         case path
         case references
+        case sourceCapture
+        case sourceProfile
         case tags
         case title
         case updatedAt
@@ -219,12 +234,15 @@ public struct GetOutput: Codable, Equatable, Sendable {
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(body, forKey: .body)
+        try container.encodeIfPresent(claims, forKey: .claims)
         try container.encode(createdAt, forKey: .createdAt)
         try container.encode(documentID, forKey: .documentID)
         try container.encodeIfPresent(markdown, forKey: .markdown)
         try container.encode(metadata, forKey: .metadata)
         try container.encode(path, forKey: .path)
         try container.encode(references, forKey: .references)
+        try container.encodeIfPresent(sourceCapture, forKey: .sourceCapture)
+        try container.encodeIfPresent(sourceProfile, forKey: .sourceProfile)
         try container.encode(tags, forKey: .tags)
         try container.encode(title, forKey: .title)
         try container.encode(updatedAt, forKey: .updatedAt)

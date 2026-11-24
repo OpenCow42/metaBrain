@@ -73,3 +73,18 @@ import Testing
         await reopened.close()
     }
 }
+
+@Test func unterminatedFrontmatterDoesNotIndexItsProperties() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let path = try DocumentPath("/notes/unterminated.md")
+        let note = try await store.putDocument(DocumentInput(
+            path: path, body: "---\ntags: [implicit]\n", tags: ["explicit"]
+        ))
+        let omitted = try await store.searchEvidence(SearchQuery(text: "", tags: ["implicit"]), view: .refs)
+        let retained = try await store.searchEvidence(SearchQuery(text: "", tags: ["explicit"]), view: .refs)
+        #expect(omitted.items.isEmpty)
+        #expect(retained.items.map(\.ref.documentID) == [note.id])
+        await store.close()
+    }
+}

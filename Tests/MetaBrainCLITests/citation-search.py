@@ -21,6 +21,11 @@ def read(*args):
     return json.loads(run(*args))
 
 
+def rejected(args, message):
+    result = subprocess.run([*command, *args], capture_output=True, text=True)
+    assert result.returncode != 0 and message in result.stderr, (args, result)
+
+
 def occurrence_ref(link):
     return f'{link["sourceID"]}@{link["sourceVersion"]}#{link["start"]}-{link["end"]}'
 
@@ -34,6 +39,23 @@ def graph_refs(query, path, flag, field):
 run("ensure-guide", ok=False)
 assert not store.exists()
 run("init", "--empty")
+for arguments, message in [
+    (["put", "/p", "body", "--body-only", "--if-version", "0"], "--body-only requires an existing document"),
+    (["put", "/p", "body", "--body-only", "--markdown"], "--body-only preserves Markdown"),
+    (["get", "/p", "--context", "paragraph"], "Use --context section"),
+    (["get", "/p", "--version", "0"], "--version must be greater than zero"),
+    (["get", "/p", "--ref", "note@1#0-1"], "--ref cannot be combined"),
+    (["get", "--ref", "note@1#0-1", "--format", "text"], "--ref uses compact JSON"),
+    (["get", "/p", "--max-tokens", "512"], "--context and --max-tokens require --ref"),
+    (["links", "/p", "--block", ""], "--block requires a nonempty block ID"),
+    (["search", "term", "--view", "unknown"], "Use --view evidence or --view refs"),
+    (["search", "term", "--view", "refs", "--format", "text"], "--view uses compact JSON"),
+    (["search", "term", "--view", "refs", "--include-backlinks"], "--include-backlinks are available with regular search"),
+    (["search", "term", "--max-tokens", "512"], "--max-tokens requires --view"),
+    (["search"], "Provide search text"),
+    (["recall", "term", "--limit", "0"], "--limit must be greater than zero"),
+]:
+    rejected(arguments, message)
 assert read("ensure-guide")["status"] == "created"
 guide = read("get", "/AGENTS.md")
 assert "--view evidence" in guide["body"] and "--view refs" in guide["body"]
@@ -155,6 +177,12 @@ assert ambiguous[0]["candidates"] == [
     {"documentID": item["documentID"], "path": item["path"]} for item in [shared_a, shared_b]
 ]
 assert ambiguous[1]["syntax"] == "markdown" and ambiguous[1]["targetID"] == shared_a["documentID"]
+readable = run("links", review, "--format", "text").decode()
+assert all("candidate: " + item["path"] in readable for item in [shared_a, shared_b])
+lint_text = run("lint", review, "--format", "text").decode()
+candidates = ", ".join(item["path"] for item in [shared_a, shared_b])
+assert f"{review}@1:0-10\tambiguousTarget\tShared\t{candidates}" in lint_text.splitlines(), lint_text
+assert run("get", target, "--block", "keep-last", "--format", "text").decode().strip() == "Independent policy."
 assert read("links", shared_b["path"], "--incoming", "--format", "json") == []
 run("move", shared_b["path"], "/standards/b/Renamed.md")
 unambiguous = read("links", review, "--format", "json")

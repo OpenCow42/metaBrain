@@ -325,16 +325,12 @@ extension MetaBrainDaemonCommand {
         }
 
         private static func runServiceCommands(_ commands: [[String]]) throws {
-            for command in commands {
+            for command in commands where !command.isEmpty {
                 try runServiceCommand(command)
             }
         }
 
         private static func runServiceCommand(_ command: [String]) throws {
-            guard !command.isEmpty else {
-                return
-            }
-
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
             process.arguments = command

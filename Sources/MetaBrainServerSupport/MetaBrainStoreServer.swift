@@ -94,6 +94,10 @@ public actor MetaBrainStoreServer {
         ).map(DocumentLinkOutput.init)
     }
 
+    public func lint(_ request: ServerLintRequest) async throws -> DocumentLintReport {
+        try await store.lint(request.lintQuery())
+    }
+
     public func list(_ request: ServerListRequest) async throws -> [ListOutput] {
         try await store.listDirectory(
             path: request.documentPath(),
@@ -141,6 +145,32 @@ public actor MetaBrainStoreServer {
 
         let document = try await store.patchDocument(patchRequest)
         return .patch(PatchOutput(document))
+    }
+
+    public func inspectOperation(_ operation: ProjectOperation) async throws -> OperationPreview {
+        try await store.inspectOperation(operation)
+    }
+
+    public func applyOperation(_ preview: OperationPreview) async throws -> OperationReceipt {
+        try await store.applyOperation(preview)
+    }
+
+    func stageSourceChunk(_ request: ServerSourceChunk) async throws -> ServerSourceChunkDigest {
+        try await ServerSourceChunkDigest(sha256: store.stageSourceChunk(request.bytes))
+    }
+
+    func finishSourceBlob(_ request: ServerSourceFinishRequest) async throws -> SourceBlob {
+        try await store.finishSourceBlob(chunks: request.chunks)
+    }
+
+    func sourceDescriptor(_ request: ServerSourceDescriptorRequest) async throws -> SourceDescriptor {
+        try await store.sourceDescriptor(request.reference.documentReference(), version: request.version)
+    }
+
+    func sourceChunk(_ request: ServerSourceReadRequest) async throws -> ServerSourceChunk {
+        try await ServerSourceChunk(bytes: store.sourceChunk(
+            request.reference.documentReference(), version: request.version, index: request.index
+        ))
     }
 
     public func move(_ request: ServerMoveRequest) async throws -> MoveOutput {

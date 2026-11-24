@@ -17,7 +17,18 @@ operates on a local metaBrain store directly or through the
 daemon.
 Read the selected store's own agent manual with
 .Cm mb get /AGENTS.md .
-It describes efficient retrieval, citations, and local instructions.
+Start with a scoped search.
+Use
+.Fl Fl view Cm refs
+to choose documents or
+.Fl Fl view Cm evidence
+to find verbatim passages.
+Use
+.Cm mb get Fl Fl ref
+to verify the passage in its retained revision before citing it.
+Use
+.Cm mb links
+to inspect Markdown citations to current documents.
 A newly initialized store includes this document by default.
 Run
 .Cm mb ensure-guide
@@ -36,6 +47,76 @@ Store location when no explicit
 .Fl Fl store
 is supplied.
 .El
+.Sh CITATION AUDIT
+.Cm mb lint
+audits current Markdown links across the selected store.
+An optional virtual path scopes the audit to that document and its descendants.
+Link resolution still uses the whole store.
+The report includes missing or ambiguous targets and heading or block anchors.
+Use
+.Fl Fl orphans
+to check for Markdown notes with no indexed backlink from another document.
+Use
+.Fl Fl strict
+to exit with status 3 after printing any selected findings.
+The default format is JSON.
+Use
+.Fl Fl format Cm text
+for a readable summary or
+.Fl Fl format Cm jsonl
+for one finding per line.
+.Sh PROJECT OPERATIONS
+.Cm mb operation inspect Ar operation.json
+prints a JSON preview containing the project, full document replacements, target identities and versions, and a digest.
+Review the preview, then pass that file to
+.Cm mb operation apply Ar preview.json .
+The operation commits all proposed notes in one batch.
+On a conflict, inspect the changed notes and generate a new preview.
+After a lost response, submit the original preview again to retrieve its receipt.
+.Sh WIKI FORMAT PREVIEW
+.Nm
+.Cm preview
+.Ar path
+.Fl Fl project Ar root
+.Op Fl Fl body-file Ar draft
+validates the current
+.Pa .canvas
+or
+.Pa .base
+body at an exact virtual path strictly below a non-root project path.
+The optional local UTF-8 draft supplies the body for preview.
+Canvas output is one JSON board object.
+Saved-view output is a JSON array of tables.
+The command validates each saved view before loading current project rows.
+Preview leaves stored content and read counts unchanged.
+.Sh CLAIMS
+Project inspection reports the document IDs it will assign to new paths.
+Use those IDs in versioned evidence references on the decision's claims, then inspect and apply the completed operation.
+Each claim has a stable UUID within its note, a state, and supporting or contradicting evidence.
+The JSON form of
+.Cm mb get
+includes stored claims and source assessments.
+Run
+.Cm mb lint Ar project Fl Fl format Cm text
+to report changed, unavailable, or insufficient evidence.
+.Sh ORIGINAL FILES
+.Cm mb source stage Ar file Fl Fl origin Ar origin
+reads one local file and prints capture JSON.
+Use
+.Fl Fl media-type Ar type
+to record its MIME type and
+.Fl Fl extraction Ar method
+to record how the note body was derived.
+Set the source document's
+.Cm sourceCapture
+field to this JSON in a project operation.
+.Cm mb source export Ar path Fl Fl output Ar file
+writes the verified original to a local file.
+Use
+.Fl Fl id Ar id
+in place of a path after a move, and
+.Fl Fl version Ar sequence
+to select a retained revision.
 .Sh FILES
 .Bl -tag -width ".metabrain/store.leveldb"
 .It Pa /AGENTS.md
@@ -50,5 +131,9 @@ Default store discovered in the working directory or its ancestors.
 mb search --tag storage --view refs --limit 5
 mb search "nightly backups" --view evidence --max-tokens 512
 mb get --ref "$ref" --context section --max-tokens 1024
+mb links /decisions/backups.md
 mb links /policies/Retention.md --incoming --block keep-last
+mb lint /decisions --strict
+mb preview /projects/atlas/reviews.base --project /projects/atlas --body-file reviews.base
+mb get /policies/Retention.md --block keep-last
 .Ed

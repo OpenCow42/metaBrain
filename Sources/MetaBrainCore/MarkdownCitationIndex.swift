@@ -250,20 +250,7 @@ enum MarkdownCitationBindings {
     }
 }
 
-struct MarkdownCitationEdit: Sendable {
-    var removals: Set<String> = []
-    var puts: [String: Data] = [:]
-
-    mutating func remove(_ key: String) {
-        puts.removeValue(forKey: key)
-        removals.insert(key)
-    }
-
-    mutating func put(_ value: Data = Data(), for key: String) {
-        removals.remove(key)
-        puts[key] = value
-    }
-
+extension MetaBrainRecordEdit {
     mutating func remove(_ citation: MarkdownCitation) {
         remove(citation.key)
         for key in citation.secondaryKeys { remove(key) }

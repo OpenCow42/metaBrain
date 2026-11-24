@@ -17,19 +17,14 @@ extension MetaBrainStore {
         }
 
         let body = EvidenceBody(document.body)
-        let markdown: MarkdownDocument?
+        let markdown = document.isMarkdown && (context == .section || reference.needsMarkdown)
+            ? MarkdownDocument(body: document.body, includeLinks: false) : nil
         let exact: Range<Int>
-        switch reference.location {
-        case .range(let range):
-            guard range.upperBound <= body.count else { throw EvidenceError.invalidRange(reference) }
-            exact = range
-            markdown = context == .section && document.isMarkdown ? MarkdownDocument(body: document.body, includeLinks: false) : nil
-        case .block(let name):
-            guard document.isMarkdown else { throw EvidenceError.blockNotFound(reference) }
-            let parsed = MarkdownDocument(body: document.body, includeLinks: false)
-            guard let anchor = try? parsed.anchor(for: .block(name)) else { throw EvidenceError.blockNotFound(reference) }
-            exact = anchor.range
-            markdown = parsed
+        do {
+            exact = try reference.exactRange(body: body, markdown: markdown)
+        } catch DocumentPassageError.ambiguousSelector {
+            // The existing budgeted retrieval API groups unavailable block selectors together.
+            throw EvidenceError.blockNotFound(reference)
         }
 
         let expanded = if context == .section {

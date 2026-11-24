@@ -1,16 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+minimum=100
+if [[ "$#" -gt 0 ]]; then
+  if [[ "$#" -ne 2 || "$1" != "--minimum" || ! "$2" =~ ^(9[5-9]|100)$ ]]; then
+    echo "Usage: bash Scripts/check-coverage.sh [--minimum 95..100]" >&2
+    exit 2
+  fi
+  minimum="$2"
+fi
+
 rm -f default.profraw
 
-llvm_profdata="${LLVM_PROFDATA:-$(command -v llvm-profdata || true)}"
-llvm_cov="${LLVM_COV:-$(command -v llvm-cov || true)}"
-if [[ -z "${llvm_profdata}" || -z "${llvm_cov}" ]]; then
-  if command -v xcrun >/dev/null 2>&1; then
-    llvm_profdata="${llvm_profdata:-$(xcrun --find llvm-profdata)}"
-    llvm_cov="${llvm_cov:-$(xcrun --find llvm-cov)}"
-  fi
+build_dir="$PWD/.build"
+
+llvm_profdata="${LLVM_PROFDATA:-}"
+llvm_cov="${LLVM_COV:-}"
+if [[ "$(uname -s)" == "Darwin" ]] && command -v xcrun >/dev/null 2>&1; then
+  llvm_profdata="${llvm_profdata:-$(xcrun --find llvm-profdata || true)}"
+  llvm_cov="${llvm_cov:-$(xcrun --find llvm-cov || true)}"
 fi
+llvm_profdata="${llvm_profdata:-$(command -v llvm-profdata || true)}"
+llvm_cov="${llvm_cov:-$(command -v llvm-cov || true)}"
 
 if [[ -z "${llvm_profdata}" || -z "${llvm_cov}" ]]; then
   echo "Unable to locate llvm-profdata and llvm-cov." >&2
@@ -20,21 +31,22 @@ fi
 echo "Running Swift tests with coverage..."
 swift test --quiet --enable-code-coverage
 echo "Building coverage-instrumented CLI..."
-swift build --quiet --product mb --enable-code-coverage --build-path .build/coverage-cli
+swift build --quiet --product mb --enable-code-coverage --build-path "${build_dir}/coverage-cli" \
+  -Xswiftc -DMETABRAIN_COVERAGE_SMOKE
 echo "Building coverage-instrumented daemon..."
-swift build --quiet --product mbd --enable-code-coverage --build-path .build/coverage-daemon
+swift build --quiet --product mbd --enable-code-coverage --build-path "${build_dir}/coverage-daemon"
 
-test_binary="$(find .build -path '*/metaBrainPackageTests.xctest/Contents/MacOS/metaBrainPackageTests' -type f | head -n 1)"
-if [[ -z "${test_binary}" ]]; then
-  test_binary="$(find .build -path '*/metaBrainPackageTests.xctest' -type f -perm -111 | head -n 1)"
+test_binary="$(find "${build_dir}" -path '*/metaBrainPackageTests.xctest/Contents/MacOS/metaBrainPackageTests' -type f | head -n 1)"
+if [[ ! -x "${test_binary}" ]]; then
+  test_binary="${build_dir}/debug/metaBrainPackageTests.xctest"
 fi
-test_profile="$(find .build -path '*/codecov/default.profdata' -type f | head -n 1)"
-cli_binary="$(find .build/coverage-cli -path '*/debug/mb' -type f -perm -111 | head -n 1)"
+test_profile="${build_dir}/debug/codecov/default.profdata"
+cli_binary="${build_dir}/coverage-cli/debug/mb"
 cli_codecov_dir="$(dirname "${cli_binary}")/codecov"
-daemon_binary="$(find .build/coverage-daemon -path '*/debug/mbd' -type f -perm -111 | head -n 1)"
+daemon_binary="${build_dir}/coverage-daemon/debug/mbd"
 daemon_codecov_dir="$(dirname "${daemon_binary}")/codecov"
 
-if [[ -z "${test_binary}" || -z "${test_profile}" || ! -x "${cli_binary}" || ! -x "${daemon_binary}" ]]; then
+if [[ ! -x "${test_binary}" || ! -s "${test_profile}" || ! -x "${cli_binary}" || ! -x "${daemon_binary}" ]]; then
   echo "Unable to locate SwiftPM coverage artifacts." >&2
   exit 1
 fi
@@ -45,9 +57,12 @@ mkdir -p "${daemon_codecov_dir}"
 rm -f "${daemon_codecov_dir}"/daemon-*.profraw
 
 export METABRAIN_BIN="${cli_binary}"
+export METABRAIN_DAEMON_BIN="${daemon_binary}"
+export METABRAIN_CLIENT_BIN="${cli_binary}"
 export LLVM_PROFILE_FILE="${cli_codecov_dir}/cli-%p.profraw"
 echo "Running CLI smoke coverage..."
-Tests/MetaBrainCLITests/cli-smoke.sh
+# Port 0 keeps pre-daemon probes isolated until the smoke daemon gets a real port.
+METABRAIN_COVERAGE_LOOPBACK_PORT=0 Tests/MetaBrainCLITests/cli-smoke.sh
 
 cli_profiles=("${cli_codecov_dir}"/cli-*.profraw)
 if [[ ! -f "${cli_profiles[0]}" ]]; then
@@ -55,7 +70,6 @@ if [[ ! -f "${cli_profiles[0]}" ]]; then
   exit 1
 fi
 
-export METABRAIN_DAEMON_BIN="${daemon_binary}"
 export LLVM_PROFILE_FILE="${daemon_codecov_dir}/daemon-%p.profraw"
 echo "Running daemon smoke coverage..."
 Tests/MetaBrainServerTests/daemon-smoke.sh
@@ -91,31 +105,23 @@ echo "${cli_report}"
 echo "${server_support_report}"
 echo "${server_report}"
 
-coverage_lines() {
-  awk '/^TOTAL[[:space:]]/ { if ($8 == 0) exit 1; printf "%.2f%%", ($8 - $9) * 100 / $8 }'
+status=0
+check_target() {
+  if ! awk -v name="$1" -v minimum="$minimum" '
+    /^TOTAL[[:space:]]/ && $8 > 0 {
+      found = 1
+      if (($8 - $9) * 100 < minimum * $8) {
+        printf "Expected at least %d%% %s line coverage, got %s (%d lines missed).\n", minimum, name, $10, $9
+        exit 1
+      }
+    }
+    END { if (!found) exit 1 }
+  ' <<<"$2"; then
+    status=1
+  fi
 }
-
-core_lines="$(printf '%s\n' "${core_report}" | coverage_lines)"
-cli_lines="$(printf '%s\n' "${cli_report}" | coverage_lines)"
-server_support_lines="$(printf '%s\n' "${server_support_report}" | coverage_lines)"
-server_lines="$(printf '%s\n' "${server_report}" | coverage_lines)"
-
-if [[ "${core_lines}" != "100.00%" ]]; then
-  echo "Expected 100.00% MetaBrainCore line coverage, got ${core_lines}." >&2
-  exit 1
-fi
-
-if [[ "${cli_lines}" != "100.00%" ]]; then
-  echo "Expected 100.00% MetaBrainCLI line coverage, got ${cli_lines}." >&2
-  exit 1
-fi
-
-if [[ "${server_support_lines}" != "100.00%" ]]; then
-  echo "Expected 100.00% MetaBrainServerSupport line coverage, got ${server_support_lines}." >&2
-  exit 1
-fi
-
-if [[ "${server_lines}" != "100.00%" ]]; then
-  echo "Expected 100.00% MetaBrainServer line coverage, got ${server_lines}." >&2
-  exit 1
-fi
+check_target MetaBrainCore "$core_report"
+check_target MetaBrainCLI "$cli_report"
+check_target MetaBrainServerSupport "$server_support_report"
+check_target MetaBrainServer "$server_report"
+exit "$status"

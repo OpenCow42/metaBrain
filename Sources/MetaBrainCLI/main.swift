@@ -17,7 +17,7 @@ struct MetaBrainCommand: AsyncParsableCommand {
         searchable store instead of scattering scratch files across a workspace.
 
         Store manual: read the selected store's agent guide with mb get /AGENTS.md.
-        Use mb ensure-guide to add the default guide to an existing store.
+        Use mb ensure-guide to add the default guide if the store lacks one.
 
         Agent discovery:
           mb
@@ -26,29 +26,27 @@ struct MetaBrainCommand: AsyncParsableCommand {
           mb help list
           mb help tree
           mb help search
+          mb help get
+          mb help links
+          mb help lint
           mb help recall
           mb help dump
+          mb help preview
           mb help move
           mb help delete
           mb help remove-version
           mb help version
 
         Common workflow:
-          mb version
-          mb init --store .metabrain/store.leveldb
           mb get /AGENTS.md
-          mb put /notes/today "Important context" --tag planning --meta source=agent
-          mb patch /notes/today --patch-file change.diff
-          mb move /notes/today /notes/archive/today
-          mb list
-          mb list /notes --recursive --dates
-          mb tree --max-depth 2
-          mb search "Important context" --tag planning
-          mb recall "Important context" --tag planning --max-bytes 4096
-          mb get /notes/today --version 1
-          mb dump /notes --output-dir ./metabrain-dump
-          mb delete /notes/today
-          mb remove-version /notes/today --sequence 1
+          mb search --tag storage --view refs --limit 5
+          mb search "nightly backups" --view evidence --max-tokens 512
+          mb get --ref "$ref" --context section --max-tokens 1024
+          mb put /decisions/backups.md 'Follow [[Retention#^keep-last]].' --if-version 0
+          mb links /decisions/backups.md
+          mb lint /decisions
+
+        Run mb init to create a store. Set ref to a value returned by search.
 
         Store selection uses --store, then METABRAIN_STORE, then the nearest
         ancestor .metabrain/store.leveldb, starting in the current directory.
@@ -71,14 +69,18 @@ struct MetaBrainCommand: AsyncParsableCommand {
             EnsureGuide.self,
             Put.self,
             Patch.self,
+            Operation.self,
+            Source.self,
             Move.self,
             Get.self,
             Links.self,
+            Lint.self,
             List.self,
             Tree.self,
             Search.self,
             Recall.self,
             Dump.self,
+            Preview.self,
             Versions.self,
             Prune.self,
             Delete.self,
@@ -93,7 +95,16 @@ struct MetaBrainCommand: AsyncParsableCommand {
 }
 
 struct StoreOptions: ParsableArguments {
-    static let defaultLoopbackServer = "http://127.0.0.1:\(ServerServeConfiguration.defaultLoopbackPort)"
+    static let defaultLoopbackServer: String = {
+        let defaultPort = ServerServeConfiguration.defaultLoopbackPort
+        #if METABRAIN_COVERAGE_SMOKE
+        let port = ProcessInfo.processInfo.environment["METABRAIN_COVERAGE_LOOPBACK_PORT"]
+            .flatMap(UInt16.init) ?? UInt16(defaultPort)
+        return "http://127.0.0.1:\(port)"
+        #else
+        return "http://127.0.0.1:\(defaultPort)"
+        #endif
+    }()
     static let autoProbeTimeoutMilliseconds = 50
     static let daemonRequestTimeoutMilliseconds = 30_000
 
@@ -156,11 +167,10 @@ struct StoreOptions: ParsableArguments {
                 return candidate
             }
             let parent = directory.deletingLastPathComponent()
-            if parent.path == directory.path {
-                return Self.workspaceStoreURL(in: currentDirectory)
-            }
+            guard parent.path != directory.path else { break }
             directory = parent
         }
+        return Self.workspaceStoreURL(in: currentDirectory)
     }
 
     private static func workspaceStoreURL(in directory: URL) -> URL {
@@ -568,6 +578,162 @@ extension MetaBrainCommand {
         }
     }
 
+    struct Operation: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "operation",
+            abstract: "Inspect and apply reviewed project writes.",
+            subcommands: [Inspect.self, Apply.self]
+        )
+
+        @OptionGroup var storeOptions: StoreOptions
+
+        struct Inspect: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(
+                commandName: "inspect",
+                abstract: "Print a JSON preview without writing project documents."
+            )
+
+            @OptionGroup var storeOptions: StoreOptions
+            @Argument(help: "JSON file describing the project operation.")
+            var file: String
+
+            func run() async throws {
+                let data = try Data(contentsOf: URL.expandingShellPath(file, isDirectory: false))
+                let operation = try MetaBrainJSON.decoder().decode(ProjectOperation.self, from: data)
+                let preview: OperationPreview
+                if let client = try storeOptions.serverClient() {
+                    preview = try client.post("/v1/operation-inspect", request: operation)
+                } else {
+                    preview = try await storeOptions.withOpenStore { store in
+                        try await store.inspectOperation(operation)
+                    }
+                }
+                try printJSON(preview)
+            }
+        }
+
+        struct Apply: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(
+                commandName: "apply",
+                abstract: "Apply an inspected preview and print its JSON receipt."
+            )
+
+            @OptionGroup var storeOptions: StoreOptions
+            @Argument(help: "JSON preview returned by mb operation inspect.")
+            var file: String
+
+            func run() async throws {
+                let data = try Data(contentsOf: URL.expandingShellPath(file, isDirectory: false))
+                let preview = try MetaBrainJSON.decoder().decode(OperationPreview.self, from: data)
+                let receipt: OperationReceipt
+                if let client = try storeOptions.serverClient() {
+                    receipt = try client.post("/v1/operation-apply", request: preview)
+                } else {
+                    receipt = try await storeOptions.withOpenStore { store in
+                        try await store.applyOperation(preview)
+                    }
+                }
+                try printJSON(receipt)
+            }
+        }
+    }
+
+    struct Source: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "source",
+            abstract: "Stage or export original source bytes.",
+            subcommands: [Stage.self, Export.self]
+        )
+
+        @OptionGroup var storeOptions: StoreOptions
+
+        struct Stage: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(
+                commandName: "stage",
+                abstract: "Stage a local file and print its source capture as JSON."
+            )
+
+            @OptionGroup var storeOptions: StoreOptions
+            @Argument(help: "Local file containing the original bytes.")
+            var file: String
+
+            @Option(help: "Where the original bytes came from.")
+            var origin: String
+
+            @Option(help: "Media type of the original file.")
+            var mediaType = "application/octet-stream"
+
+            @Option(help: "Extraction method, if one ran.")
+            var extraction: String?
+
+            func run() async throws {
+                let fileURL = URL.expandingShellPath(file, isDirectory: false)
+                let filename = fileURL.lastPathComponent
+                try SourceCapture.validateMetadata(filename: filename, mediaType: mediaType, origin: origin, extraction: extraction)
+                let blob: SourceBlob
+                if let client = try storeOptions.serverClient() {
+                    blob = try await SourceFileTransfer.stage(file: fileURL) { bytes in
+                        try client.stageSourceChunk(bytes)
+                    } finish: { chunks in
+                        try client.finishSourceBlob(chunks: chunks)
+                    }
+                } else {
+                    blob = try await storeOptions.withOpenStore { store in
+                        try await SourceFileTransfer.stage(file: fileURL) { bytes in
+                            try await store.stageSourceChunk(bytes)
+                        } finish: { chunks in
+                            try await store.finishSourceBlob(chunks: chunks)
+                        }
+                    }
+                }
+                try printJSON(SourceCapture(
+                    blob: blob, filename: filename, mediaType: mediaType, origin: origin, extraction: extraction
+                ))
+            }
+        }
+
+        struct Export: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(
+                commandName: "export",
+                abstract: "Write the verified original bytes of a document version to a local file."
+            )
+
+            @OptionGroup var storeOptions: StoreOptions
+            @OptionGroup var referenceOptions: ReferenceOptions
+
+            @Option(help: "Retained document version. Omit to use the current version.")
+            var version: UInt64?
+
+            @Option(help: "Local destination file.")
+            var output: String
+
+            func validate() throws {
+                _ = try referenceOptions.reference()
+                if version == 0 {
+                    throw ValidationError("--version must be greater than zero.")
+                }
+            }
+
+            func run() async throws {
+                let reference = try referenceOptions.reference()
+                let destination = URL.expandingShellPath(output, isDirectory: false)
+                if let client = try storeOptions.serverClient() {
+                    let descriptor = try client.sourceDescriptor(reference, version: version)
+                    try await SourceFileTransfer.export(descriptor.capture.blob, to: destination) { index in
+                        try client.sourceChunk(.documentID(descriptor.documentID), version: descriptor.version, index: index)
+                    }
+                } else {
+                    try await storeOptions.withOpenStore { store in
+                        let descriptor = try await store.sourceDescriptor(reference, version: version)
+                        try await SourceFileTransfer.export(descriptor.capture.blob, to: destination) { index in
+                            try await store.sourceChunk(.documentID(descriptor.documentID), version: descriptor.version, index: index)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     struct Move: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "move",
@@ -835,6 +1001,71 @@ extension MetaBrainCommand {
         }
     }
 
+    struct Lint: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "lint",
+            abstract: "Audit current Markdown citations and claim evidence.",
+            discussion: """
+            Omit the path to audit the whole store. A path selects that document and its descendants.
+            Citations resolve against the whole store. JSONL prints one finding per line.
+            """
+        )
+
+        @OptionGroup var storeOptions: StoreOptions
+        @OptionGroup var output: OutputFormatOptions
+
+        @Argument(help: "Virtual path to audit, including its descendants.")
+        var path: String?
+
+        @Flag(help: "Report Markdown notes with no incoming link from another document.")
+        var orphans = false
+
+        @Flag(help: "Exit with status 3 when any selected check reports a finding.")
+        var strict = false
+
+        func run() async throws {
+            let request = ServerLintRequest(path: path, includeOrphans: orphans)
+            let query = try request.lintQuery()
+            let report: DocumentLintReport
+            if let client = try storeOptions.serverClient() {
+                report = try client.lint(request)
+            } else {
+                report = try await storeOptions.withOpenStore { store in
+                    try await store.lint(query)
+                }
+            }
+            switch output.format {
+            case .text:
+                for finding in report.findings {
+                    var location = "\(finding.sourcePath)@\(finding.sourceVersion)"
+                    if let start = finding.start, let end = finding.end {
+                        location += ":\(start)-\(end)"
+                    }
+                    if let claimID = finding.claimID, let issue = finding.evidenceIssue, let message = finding.message {
+                        let reference = finding.evidenceRef.map { "\t\($0)" } ?? ""
+                        print("\(location)\t\(finding.kind.rawValue)\t\(claimID.uuidString)\t\(issue.rawValue)\(reference)\t\(message)")
+                        continue
+                    }
+                    var details = finding.destination.map { "\t\($0)" } ?? ""
+                    if let target = finding.targetPath { details += "\tresolved document \(target)" }
+                    if let candidates = finding.candidatePaths { details += "\t\(candidates.joined(separator: ", "))" }
+                    print("\(location)\t\(finding.kind.rawValue)\(details)")
+                }
+                let noun = report.documentsChecked == 1 ? "document" : "documents"
+                print("Checked \(report.documentsChecked) \(noun) under \(report.path).")
+                let counts = DocumentLintKind.allCases.compactMap { kind in
+                    report.counts[kind.rawValue].map { "\(kind.rawValue)=\($0)" }
+                }
+                print(counts.joined(separator: " "))
+            case .json:
+                try printJSON(report)
+            case .jsonl:
+                try printJSONLines(report.findings)
+            }
+            if strict, !report.findings.isEmpty { throw ExitCode(3) }
+        }
+    }
+
     struct List: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "list",
@@ -1010,9 +1241,6 @@ extension MetaBrainCommand {
                 guard maxTokens == nil else {
                     throw ValidationError("--max-tokens requires --view.")
                 }
-                guard query != nil else {
-                    throw ValidationError("Provide search text or use --view refs with a filter.")
-                }
             }
         }
 
@@ -1022,9 +1250,12 @@ extension MetaBrainCommand {
                 try await searchEvidence(view: view, metadata: metadata)
                 return
             }
+            guard let query else {
+                throw ValidationError("Provide search text or use --view refs with a filter.")
+            }
 
             let searchQuery = SearchQuery(
-                text: query ?? "",
+                text: query,
                 pathPrefix: try pathPrefix.map(DocumentPath.init),
                 tags: tags,
                 metadata: metadata,
@@ -1188,6 +1419,103 @@ extension MetaBrainCommand {
             }
 
             try printDumpOutputs(dumpOutputs, format: output.format)
+        }
+    }
+
+    struct Preview: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "preview",
+            abstract: "Validate and preview a project .canvas or .base document as JSON."
+        )
+
+        @OptionGroup var storeOptions: StoreOptions
+
+        @Argument(help: "Exact virtual path of the .canvas or .base document.")
+        var path: String
+
+        @Option(help: "Explicit virtual project root.")
+        var project: String
+
+        @Option(help: "Preview the UTF-8 contents of this local draft file.")
+        var bodyFile: String?
+
+        func run() async throws {
+            let target = try DocumentPath(path)
+            let root = try DocumentPath(project)
+            guard path.utf8.elementsEqual(target.rawValue.utf8),
+                  project.utf8.elementsEqual(root.rawValue.utf8),
+                  root.rawValue != "/",
+                  target.rawValue.utf8.starts(with: (root.rawValue + "/").utf8) else {
+                throw ValidationError("Use an exact virtual path strictly inside an explicit non-root --project.")
+            }
+            let isCanvas = target.name.hasSuffix(".canvas")
+            guard isCanvas || target.name.hasSuffix(".base") else {
+                throw ValidationError("Preview requires a .canvas or .base document path.")
+            }
+
+            let body: String
+            if let bodyFile {
+                do {
+                    body = try readBody(argument: nil, filePath: bodyFile)
+                } catch {
+                    throw ValidationError("Cannot read UTF-8 preview draft at '\(bodyFile)': \(error.localizedDescription)")
+                }
+            } else {
+                body = try await storedBody(at: target)
+            }
+
+            if isCanvas {
+                let canvas: WikiCanvas
+                do {
+                    canvas = try WikiPreview.canvas(body: body, project: root)
+                } catch let error as DecodingError {
+                    throw ValidationError("Invalid Canvas JSON at '\(target)': \(error)")
+                }
+                try printJSON(canvas)
+                return
+            }
+
+            let views = try WikiPreview.base(body: body, project: root)
+            let documents = try await projectDocuments(root)
+            try printJSON(views.preview(documents: documents))
+        }
+
+        private func storedBody(at path: DocumentPath) async throws -> String {
+            let reference = DocumentReference.path(path)
+            if let client = try storeOptions.serverClient() {
+                let result: GetOutput = try client.post(
+                    "/v1/get",
+                    request: ServerGetRequest(reference: DocumentReferenceDTO(reference), trackingRead: false)
+                )
+                return result.body
+            }
+            return try await storeOptions.withOpenStore { store in
+                guard let document = try await store.getDocument(reference, trackingRead: false) else {
+                    throw MetaBrainStoreError.documentNotFound(path.rawValue)
+                }
+                return document.body
+            }
+        }
+
+        private func projectDocuments(_ project: DocumentPath) async throws -> [WikiPreviewDocument] {
+            let entries: [DumpOutput]
+            if let client = try storeOptions.serverClient() {
+                entries = try client.post("/v1/dump", request: ServerDumpRequest(path: project.rawValue))
+            } else {
+                entries = try await storeOptions.withOpenStore { store in
+                    try await store.dump(DocumentDumpQuery(path: project)).map(DumpOutput.init)
+                }
+            }
+            return try entries.map { entry in
+                try WikiPreviewDocument(
+                    path: DocumentPath(entry.path),
+                    title: entry.title,
+                    body: entry.body,
+                    tags: entry.tags,
+                    metadata: entry.metadata,
+                    markdown: entry.markdown
+                )
+            }
         }
     }
 
@@ -1972,14 +2300,18 @@ private let daemonBackedCommands: Set<String> = [
     "ensure-guide",
     "put",
     "patch",
+    "operation",
+    "source",
     "move",
     "get",
     "links",
+    "lint",
     "list",
     "tree",
     "search",
     "recall",
     "dump",
+    "preview",
     "versions",
     "prune",
     "delete",

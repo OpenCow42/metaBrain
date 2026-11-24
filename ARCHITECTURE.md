@@ -1,10 +1,11 @@
 # Architecture Notes
 
-This document captures the planned storage architecture for `metaBrain`. The implementation will come later; these notes are the intended direction for `MetaBrainCore`.
+This document describes the storage, retrieval, and process model for
+`metaBrain`.
 
 ## Storage Foundation
 
-`metaBrain` will use LevelDB through `swift-leveldb` and `swift-leveldb-zstd`.
+`metaBrain` uses LevelDB through `swift-leveldb` and `swift-leveldb-zstd`.
 
 The useful shape of the dependency is:
 
@@ -14,7 +15,9 @@ The useful shape of the dependency is:
   compressed frame at the configured level when the probe saves enough space.
 - Write batches can commit compressed records and plain ordered index keys atomically.
 
-The core store should use ZSTD-compressed Codable JSON envelopes for document records, version records, and chunk records. Index keys and tiny index values should stay raw and ordered so LevelDB can scan them efficiently.
+The core store uses ZSTD-compressed Codable JSON envelopes for document
+records, version records, and chunk records. Index keys and tiny index values
+stay raw and ordered so LevelDB can scan them efficiently.
 
 ## Store Format Compatibility
 
@@ -44,12 +47,12 @@ required fields or key families that old code cannot decode.
 
 ## Public Store Shape
 
-The core API should expose an async reference type:
+The core API exposes an async reference type. Selected operations are shown below.
 
 ```swift
 public final class MetaBrainStore: Sendable {
     public func putDocument(_ input: DocumentInput) async throws -> StoredDocument
-    public func getDocument(_ reference: DocumentReference) async throws -> StoredDocument?
+    public func getDocument(_ reference: DocumentReference, trackingRead: Bool = true) async throws -> StoredDocument?
     public func search(_ query: SearchQuery) async throws -> [SearchResult]
     public func listVersions(of reference: DocumentReference) async throws -> [DocumentVersion]
     public func prune(_ request: PruneRequest) async throws -> PruneResult
@@ -62,23 +65,30 @@ public final class MetaBrainStore: Sendable {
 - A public actor would be safe but would over-serialize reads and searches that LevelDB can handle concurrently.
 - A final class gives the CLI and UI one clear store handle while letting the implementation choose internal coordination.
 
-Internally, high-level mutations should be serialized by a private write coordinator, likely an internal actor. Reads and searches may run concurrently and should use LevelDB snapshots when they need a consistent view across multiple keys.
+The private write coordinator serializes high-level mutations and operations
+that need a consistent view of document records and their indexes.
 
 ## Process Model
+
+Project operations expose `inspectOperation` and `applyOperation` on the same store handle. The store keeps a UUID in the database directory, so replacing the directory at the same path invalidates prior previews. Preserve the identity file when backing up the directory. Inspect observes the current IDs and versions of all requested paths under the write coordinator. Apply revalidates the preview, stages document revisions, chunks, graph edges, tree entries, corpus counts, and the operation receipt, then commits one synchronous LevelDB write batch. Newly created targets are visible during planning of same-batch links. Receipt lookup precedes version comparison on retry. Existing stores prepare their usual derived indexes on first use.
+
+Claim IDs are scoped to their stable owner document ID. The current note and its retained snapshots carry their claim lists and source assessments. An operation derives creation IDs from its UUID and the byte spelling of each new path. During claim review, the store resolves sources against the proposed state and retained versions, accounting for revisions the same batch would prune. The current owner record and its retained versions record the reviewed project root. Lint reruns assessment against that root, current source standing and pinned passages. [Claim model](docs/claim-evidence.md)
+
+Original files use immutable chunks and a manifest keyed by the SHA-256 of the complete byte stream. The owning document revision stores the manifest digest and byte count alongside filename, media type, origin and optional extraction method. Several revisions or source notes can refer to the same manifest. Staging alone creates no navigable note. Removing a revision drops that route to the original. Chunks and manifests are retained in this release, including uploads abandoned before publication.
+
 
 LevelDB allows concurrent access from multiple threads inside one process, but a database may only be opened by one process at a time.
 
 The v1 model is:
 
-- CLI: each default-store-backed command first makes a short health probe to
+- CLI: store-backed commands normally make a short health probe to
   `http://127.0.0.1:6374`. If a healthy daemon is already listening there, the
   CLI stays thin by reading client-side files, sending JSON DTOs over loopback
   HTTP, formatting the response, and avoiding any direct LevelDB open. If the
   probe is refused or times out, the CLI opens the store directly, performs one
-  operation, and exits. Commands with explicit `--store` stay direct unless
-  daemon mode is requested with `--server <socket-or-url>` or `--server auto`;
-  `--no-server` disables the probe. The default loopback endpoint is
-  `127.0.0.1:6374`, with `6374` chosen as a leetspeak `META` port.
+  operation, and exits. `--store` selects the store path independently of the
+  transport. `--server <socket-or-url>` selects a specific daemon, `--server auto`
+  probes the default endpoint, and `--no-server` opens the store directly.
 - `mb version` is not store-backed, but it follows the same short local probe by
   default so the user can see whether `http://127.0.0.1:6374` is reachable and
   which daemon version is serving. `mb version --server <socket-or-url>` queries
@@ -99,9 +109,9 @@ If a CLI command cannot open a store because another process owns it, surface a 
 Explicit initialization through `mb init` or `POST /v1/init` uses
 `MetaBrainStore.initialize`. On new database creation, the core writes
 `/AGENTS.md` as a versioned and indexed document unless empty initialization
-was requested. Ordinary opens and existing databases preserve their
-document contents. Concurrent requests in one daemon share the first open
-for the selected store.
+was requested. `ensureAgentGuide()` installs the same bundled guide if the
+path is absent. Both operations preserve existing guides and local edits.
+Concurrent requests in one daemon share the first open for the selected store.
 
 ## Document Model
 
@@ -133,7 +143,7 @@ On-write pruning should apply the configured policy after edits. Explicit prune 
 
 Use one LevelDB database with stable ASCII key namespaces and the default bytewise ordering.
 
-Planned key families:
+Key families include the following:
 
 - `doc/id/<id>`: compressed document metadata and current-version pointer
 - `doc/path/<normalized-path>`: raw document ID lookup
@@ -147,6 +157,10 @@ Planned key families:
 - `idx/meta/<key>/<value>/<id>`: metadata lookup
 - `idx/ref/out/<source-id>/<target-id>`: outbound document reference
 - `idx/ref/in/<target-id>/<source-id>`: backlink lookup
+- `idx/cite/out/`, `idx/cite/in/`, and `idx/cite/pending/`: outgoing, incoming,
+  and pending Markdown citation occurrences
+- `idx/cite/name/` and `idx/cite/path/`: citation target lookups
+- `meta/citation-layout`: layout marker for the derived citation index
 - `tree/<parent-path>/<name>`: filesystem-like discovery with case-sensitive escaped components
 - `meta/tree-layout`: layout marker for the derived tree index
 
@@ -230,8 +244,17 @@ record. Current-document indexes record link occurrences (including source
 revision and character offsets), bindings to stable target IDs, pending lookup
 names, and derived frontmatter filter postings. Writes update the affected
 indexes with the document in one LevelDB batch. Resolved IDs preserve citation
-identity across path changes. The Markdown block/heading selector is evaluated
-against the target revision requested by the reader.
+identity across path changes. The link listing checks anchors against the
+current target. A passage read can select an anchor in a retained revision.
+The citation layout upgrade reparses current Markdown and preserves surviving
+bindings. See [Complexity](COMPLEXITY.md#markdown-properties-and-citations) for
+the cost of rebuilding and maintaining these indexes.
+
+The citation audit uses the document path index to enumerate its sources under
+the write coordinator. It shares the link resolver with `links` and caches
+target paths and parsed target anchors across source notes. Optional orphan
+checks use both inbound indexes against the entire store. An audit reads
+current revisions without tracking document access.
 
 Evidence quotes and range references come from the same document revision.
 A compact reference identifies a document ID, retained version and half-open

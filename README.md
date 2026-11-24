@@ -107,8 +107,9 @@ Relative paths are resolved from the current directory. `mb init` and `mb put`
 can create a store at the selected location. Other store-backed commands require
 an existing store and report the selected location when it is missing.
 
-`mb init` creates `/AGENTS.md` as the first document in a new store. Read it for
-guidance on writing, finding, and linking notes. Run `mb init --empty` to start
+`mb init` creates `/AGENTS.md` as the first document in a new store. This is a
+virtual document inside the selected store. The repository's [AGENTS.md](AGENTS.md)
+is for contributors to metaBrain itself. Run `mb init --empty` to start
 with zero documents. Reopening a store preserves its contents. A command such
 as `mb put` that creates a store implicitly only writes the requested document.
 Use `mb ensure-guide` to install the current default in any existing store
@@ -119,27 +120,45 @@ to that store-specific guide.
 
 ## Agent Workflow
 
-Use `put` for durable facts and summaries:
+For project wiki setup, evidence capture, query, and saving through Codex or Claude Code, see
+[Project wiki skills](docs/skills.md).
+
+1. Work from the project directory and run `mb get /AGENTS.md` to read local
+   guidance. Use `--store` when you need to select another store explicitly.
+2. Search what the project already knows before answering or writing. Use
+   `--view refs` to shortlist documents and `--view evidence` for passages
+   that support an answer. Start with a path, tag, or metadata filter.
+3. Verify the passage in context before quoting it. Reopen its `ref` with
+   `mb get --ref` and keep the versioned reference with your answer. See
+   [Find and reopen evidence](#find-and-reopen-evidence).
+4. Save decisions and durable findings under descriptive Markdown paths. Record
+   the date, what was learned, and where it came from. Use tags and metadata
+   for later filtering and [Markdown citations](#markdown-citations) to link
+   related notes. Keep credentials and transient logs out of the store.
+5. Update a relevant existing note when the project already has one. Read its
+   current version and use a guarded write or check a focused patch first.
+
+For example, save a new decision with a tag and a status filter.
 
 ```bash
-mb put /tasks/release-checklist \
+mb put /tasks/release-checklist.md \
   "Prepare first public release, confirm license, and publish the CLI." \
   --tag release \
-  --meta status=active
+  --meta status=active --if-version 0
 ```
 
-Use `--body-file` for larger notes:
+Use `--body-file` for larger notes.
 
 ```bash
-mb put /research/leveldb-notes --body-file notes.md --tag research
+mb put /research/leveldb-notes.md --body-file notes.md --tag research --if-version 0
 ```
 
 Use `--if-version` when another writer may change the document between a read
 and a write. Version 0 creates the document only if the path is free.
 `--body-only` replaces just the body of an existing document and preserves its
-title, tags, metadata, references, and retention policy. Omit those options
-when using `--body-only`. Ordinary `put` replaces the document's title, tags,
-metadata, and references with the values supplied in the request.
+title, tags, metadata, references, retention policy, and Markdown opt-in. Omit
+those options when using `--body-only`. Ordinary `put` replaces the document's
+title, tags, metadata, and references with the values supplied in the request.
 
 ```bash
 mb put /notes/today "First draft" --if-version 0 --tag planning
@@ -157,11 +176,12 @@ report the expected and current versions. Read the current document and
 reapply your change using its current version. Guarded and body-only writes require a
 daemon that supports them, or direct access with `mb --no-server`.
 
-Use `patch` when an agent has a focused unified diff:
+For a focused edit, review a unified diff against the current body, then check
+it before applying it.
 
 ```bash
-mb patch /tasks/release-checklist --patch-file change.diff
-mb patch /tasks/release-checklist --patch-file change.diff --check
+mb patch /tasks/release-checklist.md --patch-file change.diff --check
+mb patch /tasks/release-checklist.md --patch-file change.diff
 ```
 
 Export a subtree as JSONL, optionally with UTF-8 body files:
@@ -176,8 +196,8 @@ or array bodies are written with `.json`; other extensionless bodies use `.md`.
 Inspect history and prune retained versions:
 
 ```bash
-mb versions /tasks/release-checklist
-mb prune /tasks/release-checklist --keep-last 5
+mb versions /tasks/release-checklist.md
+mb prune /tasks/release-checklist.md --keep-last 5
 ```
 
 Ask the CLI what it can do:
@@ -187,9 +207,64 @@ mb version
 mb --help
 mb help search
 mb help dump
+mb help preview
 ```
 
 ## Commands
+
+### Commit related notes together
+
+Create an operation file such as `operation.json` with a fresh UUID for each logical change. Each document is a full replacement with the same field semantics as `put`. The project is a virtual directory below the store root. All document paths must be unique descendants of it.
+
+```json
+{
+  "operationID": "a744f24c-317e-4e89-a1d4-cff18c642a54",
+  "project": {"rawValue": "/projects/atlas"},
+  "documents": [
+    {"path": {"rawValue": "/projects/atlas/review.md"}, "body": "Support offline work. ^offline", "tags": [], "metadata": {}, "references": []},
+    {"path": {"rawValue": "/projects/atlas/decision.md"}, "body": "See [[/projects/atlas/review.md#^offline]].", "tags": [], "metadata": {}, "references": []}
+  ]
+}
+```
+
+```sh
+mb operation inspect operation.json > preview.json
+cat preview.json
+mb operation apply preview.json
+```
+
+Inspection records the canonical store path, store identity, expected document IDs and versions, and a SHA-256 digest. Apply uses the reviewed file. Changed targets cause a conflict before any proposed note is written. After a lost response, submit the **same preview** to recover the committed receipt, even if the documents have since changed. The CLI reads these files locally in either connection mode.
+
+### Record claims and evidence
+
+Use a project operation to attach claims to a decision note. Each claim has its own ID, state, and supporting or contradicting versioned passages. The CLI and daemon return claims on current and historical reads. Run `mb lint PROJECT --format text` to check whether the cited passages and source assessments still support the recorded decision. [Worked example and acceptance rules](docs/claim-evidence.md)
+
+### Capture and recover an original file
+
+Stage the original before inspecting the operation. Supply its origin and, if text was extracted for the note, the method used. An opaque binary can have an empty note body.
+
+```sh
+mb source stage review.pdf --origin "Design review, 2026-11-21" --media-type application/pdf > capture.json
+jq --arg id "$(uuidgen)" --slurpfile capture capture.json '.operationID = $id | .documents[0].sourceCapture = $capture[0]' operation.json > ingest.json
+mb operation inspect ingest.json > preview.json
+mb operation apply preview.json
+mb source export /projects/atlas/review.md --output recovered.pdf
+cmp review.pdf recovered.pdf
+```
+
+Staging saves the original under its SHA-256 digest. Applying the operation attaches the original and its provenance to the note revision. A second note can cite the same file under a different origin while sharing the stored bytes. A move preserves the attachment. Export accepts a current path or `--id ID` and an optional retained `--version N`. The destination is replaced after the complete file passes verification. The same commands work with a directly opened store or a daemon.
+
+
+### Preview a wiki board or saved view
+
+```sh
+mb preview /projects/atlas/review.canvas --project /projects/atlas
+mb preview /projects/atlas/reviews.base --project /projects/atlas --body-file reviews.base
+```
+
+Pass the exact virtual path strictly below an explicit project root. The command reads the current saved body, or uses a local UTF-8 draft with `--body-file`. It prints one JSON board object for `.canvas` or an array of table views for `.base`. A saved-view definition must pass validation before the command loads the project's current rows. Preview leaves stored content and read counts unchanged. [Wiki formats and workflows](docs/skills.md)
+
+### Command list
 
 - `version` prints the current release tag, probes the default local daemon, and
   checks GitHub for newer releases.
@@ -198,14 +273,18 @@ mb help dump
 - `put` creates or updates a document at a path. Use `--markdown` to index an extensionless note as Markdown.
 - `patch` applies a single-file unified diff to an existing document body.
 - `move` relocates an existing document to a new path without changing its ID.
-- `get` reads the current document or a retained `--version` by path or stable document ID.
+- `get` reads documents by path or stable ID and supports retained `--version`,
+  Markdown `--block` or `--heading`, and exact evidence `--ref` reads.
 - `links` lists outgoing Markdown citations, or incoming citations with `--incoming`.
+- `lint` audits current Markdown citations across the store or under a selected path.
 - `list` lists stored document paths in a virtual folder.
 - `tree` prints the stored document path tree.
 - `search` ranks current documents using their titles, paths, and body passages
-  with optional filters.
+  with optional filters. Use `--view refs` or `--view evidence` for compact
+  versioned references or passages.
 - `recall` returns relevant passages with versioned citations in a byte-budgeted JSON array.
 - `dump` exports documents as JSONL and optional body files.
+- `preview` validates and previews a project board or saved table view as JSON.
 - `versions` lists retained snapshots for a document.
 - `prune` applies a retention policy to document versions.
 - `delete` removes a current document and all retained versions.
@@ -233,12 +312,15 @@ daemon-backed searches.
 
 ## Find and reopen evidence
 
-Use `--view refs` to choose documents, and `--view evidence` to read quoted
-passages. Copy a returned `ref` into `mb get` when you need more context.
+Use `--view refs` to choose documents. This view accepts a query or filters
+alone. Use `--view evidence` with a query to read verbatim passages. These
+commands use the policy created in the next section. Set `ref` to the value
+from an evidence item before running the third command.
+Read the surrounding section for qualifiers and exceptions before citing it.
 
 ```sh
-mb search --tag storage --meta status=draft --view refs --limit 5
-mb search "nightly backups" --path-prefix /policies --view evidence --max-tokens 512
+mb search --tag storage --meta status=current --view refs --limit 5
+mb search "nightly backups" --tag storage --view evidence --max-tokens 512
 mb get --ref "$ref" --context section --max-tokens 1024
 ```
 
@@ -246,38 +328,63 @@ Both views return compact JSON with `items` and `truncated`. Each item has
 a version-bound `ref` and a `path`. Evidence items also have verbatim `text`.
 `--max-tokens` bounds the complete serialized output including its final newline.
 It counts one unit per UTF-8 byte, a conservative upper bound for byte-level
-tokenizers. No model-specific vocabulary is required. Lower the document limit
-or narrow the filters first. If important context is missing, increase the
-budget or request the containing section. Reads by reference require a retained
-revision. Plain text documents also support references using half-open Swift
-Character offsets into that revision.
+tokenizers. `--limit` caps distinct documents. If `truncated` is `true`, some
+material was omitted. Narrow the filters or increase the budget when you need
+more context. A `ref` identifies a stable document ID and a retained version
+with a half-open character range (`ID@VERSION#START-END`) or a named Markdown
+block (`ID@VERSION#^BLOCK`). Keep the reference with your quote. It can be
+reopened after a move while the cited revision is retained. Range references
+also work for plain text.
 
-### Markdown citations
+## Markdown citations
 
 `.md` notes and documents marked with `mb put --markdown` support wikilinks,
 relative Markdown links, heading targets, and explicit block IDs. In the
 following example the decision arrives before the cited rule.
 
 ```sh
-mb put /decisions/backups.md 'Follow [[Retention#^keep-last]].'
-mb put /policies/Retention.md 'Keep the last seven backups. ^keep-last'
+mb put /decisions/backups.md 'Follow [[Retention#^keep-last]]. See [exceptions](../policies/Retention.md#exceptions).' --if-version 0
+mb links /decisions/backups.md
+mb put /policies/Retention.md '# Retention
+
+Keep the last seven nightly backups. ^keep-last
+
+## Exceptions
+
+Keep migration backups until the migration is verified.' --tag storage --meta status=current --if-version 0
 mb links /decisions/backups.md
 mb links /policies/Retention.md --incoming --block keep-last
 mb get /policies/Retention.md --block keep-last
+mb get /policies/Retention.md --heading Exceptions
+```
+
+Move the policy to see how both citations follow it.
+
+```sh
 mb move /policies/Retention.md /archive/Retention-2026.md
 mb links /decisions/backups.md
 ```
 
-A resolved occurrence records the target's stable ID, so it follows the move.
-Deleting that target leaves the occurrence unresolved. A new document at the
-former path gets its own ID and leaves the original binding intact.
-Adding another citation to that path resolves it against the current store.
+`mb links` lists outgoing occurrences by default. `--incoming` lists backlinks.
+`--block` filters by the source block on outgoing links and the cited block on
+incoming links. If a short name is ambiguous, qualify it with the full store
+path, such as `[[/policies/Retention.md#^keep-last]]`. If a link is unresolved,
+check that both the target document and any specified heading or block exist.
+Use distinct headings and block IDs so each anchor selects one passage.
+
+A resolved occurrence binds to the target's stable ID and follows a move. Its
+anchor is checked against the current target body. Deleting the target leaves
+the citation unresolved even if a different document later occupies its path.
+New occurrences resolve against the current store.
 Distinct link labels help preserve each binding when reordering citations.
 Repeated occurrences with identical syntax and labels are matched in source order.
-The author's Markdown stays verbatim. For a specific revision use
-`mb get --id "$document_id" --version 1 --block keep-last`. A reference copied
-from evidence search also selects the exact revision. Use `--ref-id` for explicit
-document-level relationships alongside the citations written in prose.
+The author's Markdown stays verbatim. For an exact quote use the versioned
+evidence `ref` or select a retained revision explicitly, for example with
+`mb get --id "$document_id" --version 1 --block keep-last`.
+
+Use `--ref-id` for an explicit document relationship that follows its target,
+`--ref-path` for a location, or `--ref-url` to record an external source.
+These fields can accompany citations in the body.
 
 Keep each citation on one line. Inline Markdown links, reference-style links
 with a single-line definition, wikilinks, and their image/embed forms are
@@ -288,6 +395,46 @@ The first citation lookup or document edit upgrades a store with the original
 citation index. It checks current Markdown bodies again and preserves the IDs
 of surviving occurrences, including links whose targets moved or were deleted.
 Upgrade `mb`, `mbd`, and any other writers together before opening that store.
+New CLI commands require a daemon that supports the citation routes. For a
+store you can open directly, use `mb --no-server`.
+
+### Audit citations
+
+Run `mb lint` to audit the whole store or pass a virtual path to select that
+document and its descendants. Links and backlinks can cross the selected path.
+Lint reports each missing or ambiguous document target or heading/block anchor.
+It checks current Markdown, including embeds and documents marked with
+`--markdown`, and skips external URLs.
+
+For example, the following commands in a scratch store create a working citation
+and then remove the block it points to.
+
+```bash
+mb put /policies/Retention.md 'Keep the last seven backups. ^keep-last'
+mb put /decisions/backups.md 'Follow [[/policies/Retention.md#^keep-last]].'
+mb put /policies/Retention.md 'Keep the last seven backups.' --body-only
+mb lint /decisions --format text
+```
+
+The report identifies `/decisions/backups.md` at revision 1 with a
+`missingAnchor` finding for `^keep-last`. Use `mb links /decisions/backups.md`
+to inspect the note's citations.
+
+Use `--orphans` to include Markdown notes with no indexed backlink from another
+document. Explicit references count, as do citations to an existing document
+with a broken anchor. A self-link alone leaves a note orphaned.
+
+JSON is the default. It returns the normalized `path`, `documentsChecked`,
+`counts` by finding kind, and ordered `findings`. Each citation finding
+identifies the source revision with half-open Swift Character offsets. Text
+includes a summary. JSONL prints one finding per line and is empty for a clean
+audit. An explicitly supplied path must match a document or a subtree.
+For CI, `--strict` prints the report and exits 3 on any selected finding.
+
+Lint preserves document bodies, revisions, and access counters. Opening an older
+store may prepare the derived citation index, as with `mb links`.
+
+### Markdown properties
 
 Flat YAML properties between opening and closing `---` lines participate in
 search. A `tags` scalar or list adds tag postings. Other scalar and flat list
@@ -300,8 +447,9 @@ index layout rejects searches and ordinary document writes after migration.
 
 ## Recall and citations
 
-Use `recall` to retrieve compact evidence for a question. It uses the same
-path-prefix, tag, and metadata filters as `search`.
+Use `recall` when you need recorded external sources and character offsets
+alongside passages. It uses the same path-prefix, tag, and metadata filters as
+`search`.
 
 ```bash
 mb recall "release rollback" --path-prefix /notes --tag release --meta state=current --limit 3 --max-bytes 4096
@@ -313,15 +461,12 @@ contains `text` and half-open `start` and `end` offsets measured in characters
 in that version's body. A title or path match can return an opening excerpt.
 An empty body can return a citation without passages. Sources come from
 external URL references and the `source` metadata field. Cite the path,
-version, and passage range. Keep the
-document ID so you can reopen the same retained version after a path changes.
-Use the recalled ID and version for `document_id` and `cited_version`. Before
-editing, read the latest version and use it for `current_version`.
+version, and passage range. Keep the document ID so you can reopen the same
+retained version after a move. Use the recalled ID and version for
+`document_id` and `cited_version`.
 
 ```bash
 mb get --id "$document_id" --version "$cited_version"
-mb get /notes/release.md
-mb put /notes/release.md --body-file revised.md --body-only --if-version "$current_version"
 ```
 
 Recall defaults to at most five distinct documents and 8,192 UTF-8 output
@@ -335,8 +480,9 @@ When using a daemon, update `mbd` for recall and historical reads, or use
 
 `mbd` runs the local daemon surface. The daemon listens on one local endpoint,
 serves `/health` with daemon version metadata, and exposes store-backed JSON
-endpoints for version, init, put, patch, move, get, historical get, list, tree,
-search, recall, dump, versions, prune, delete, and remove-version.
+endpoints for document operations, including store guides, Markdown citations,
+and versioned evidence. See [Agent retrieval routes](SERVER.md#agent-retrieval-routes)
+for the citation and evidence API.
 
 ```bash
 mbd serve --store .metabrain/store.leveldb --socket ~/.metabrain/mbd.sock
@@ -423,10 +569,7 @@ The CLI and daemon stay thin. Shared behavior belongs in `MetaBrainCore`, while
 server-facing transport DTOs live in the internal `MetaBrainServerSupport`
 target when they are not part of the core storage model.
 
-The native Apple platform GUI lives in the sibling
-[`metaBrainExplorer`](../metaBrainExplorer) repository. It depends on
-`MetaBrainCore` and owns app-specific state, presentation, and Apple UI
-integration.
+MetaBrainExplorer is the first optional viewer. Check it out at `../MetaBrainExplorer` and open its Xcode project. Inspect a decision's cited passages, follow a moved source by document ID, or export the retained original. In a configured project, open a Canvas file card to navigate to its note or preview a saved table with its filters applied. The app can open the store directly or connect through the local daemon. [MetaBrainExplorer](https://github.com/OpenCow42/MetaBrainExplorer)
 
 ## Implemented Store Behavior
 
@@ -498,6 +641,8 @@ swift build
 swift test
 git diff --check
 ```
+
+Run `bash Scripts/check-coverage.sh` to verify line coverage in each of the four Swift targets. The default target is 100%. For an explicitly agreed exception, `--minimum 95` sets a per-target floor for that run. The report includes every missed line count.
 
 The project also has deeper coverage, smoke-test, fuzzing, benchmark, and
 release workflows for maintainers. Maintainer smoke tests use `ripgrep`. See

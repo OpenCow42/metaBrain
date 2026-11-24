@@ -125,6 +125,9 @@ public struct DocumentInput: Codable, Equatable, Sendable {
     /// Explicit Markdown opt-in for a document whose path has no `.md` extension.
     /// A replacement with `nil` preserves the prior setting.
     public var markdown: Bool?
+    public var sourceCapture: SourceCapture?
+    public var claims: [ProjectClaim]?
+    public var sourceProfile: ClaimSourceProfile?
 
     public var isMarkdown: Bool { markdown == true || path.hasMarkdownExtension }
 
@@ -136,7 +139,10 @@ public struct DocumentInput: Codable, Equatable, Sendable {
         metadata: [String: String] = [:],
         references: [DocumentReference] = [],
         retention: VersionRetentionPolicy? = nil,
-        markdown: Bool? = nil
+        markdown: Bool? = nil,
+        sourceCapture: SourceCapture? = nil,
+        claims: [ProjectClaim]? = nil,
+        sourceProfile: ClaimSourceProfile? = nil
     ) {
         self.path = path
         self.title = title
@@ -146,6 +152,9 @@ public struct DocumentInput: Codable, Equatable, Sendable {
         self.references = references
         self.retention = retention
         self.markdown = markdown
+        self.sourceCapture = sourceCapture
+        self.claims = claims
+        self.sourceProfile = sourceProfile
     }
 }
 
@@ -161,6 +170,9 @@ public struct StoredDocument: Codable, Equatable, Sendable, Identifiable {
     public var createdAt: Date
     public var updatedAt: Date
     public var markdown: Bool?
+    public var sourceCapture: SourceCapture?
+    public var claims: [ProjectClaim]?
+    public var sourceProfile: ClaimSourceProfile?
 
     public var isMarkdown: Bool { markdown == true || path.hasMarkdownExtension }
 
@@ -175,7 +187,10 @@ public struct StoredDocument: Codable, Equatable, Sendable, Identifiable {
         currentVersion: UInt64,
         createdAt: Date,
         updatedAt: Date,
-        markdown: Bool? = nil
+        markdown: Bool? = nil,
+        sourceCapture: SourceCapture? = nil,
+        claims: [ProjectClaim]? = nil,
+        sourceProfile: ClaimSourceProfile? = nil
     ) {
         self.id = id
         self.path = path
@@ -188,6 +203,9 @@ public struct StoredDocument: Codable, Equatable, Sendable, Identifiable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.markdown = markdown
+        self.sourceCapture = sourceCapture
+        self.claims = claims
+        self.sourceProfile = sourceProfile
     }
 }
 
@@ -195,7 +213,7 @@ extension DocumentPath {
     var hasMarkdownExtension: Bool { name.lowercased().hasSuffix(".md") }
 }
 
-public enum DocumentWriteStatus: String, Sendable {
+public enum DocumentWriteStatus: String, Codable, Sendable {
     case created
     case updated
     case unchanged
@@ -286,6 +304,9 @@ public struct DocumentVersion: Codable, Equatable, Sendable, Identifiable {
     public var id: String {
         "\(documentID.rawValue):\(sequence)"
     }
+
+    /// Store-assigned review scope for the claims in this snapshot.
+    var claimProject: DocumentPath? = nil
 
     public var documentID: DocumentID
     public var sequence: UInt64

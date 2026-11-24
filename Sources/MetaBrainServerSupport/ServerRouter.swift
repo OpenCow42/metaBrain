@@ -107,6 +107,35 @@ public struct ServerRouter: Sendable {
             }
         case (_, "/v1/patch"):
             return methodNotAllowed(request, allowedMethod: "POST")
+        case (.post, "/v1/operation-inspect"):
+            return await routeStoreOperation(request) { storeServer in
+                try await storeServer.inspectOperation(decode(ProjectOperation.self, from: request))
+            }
+        case (.post, "/v1/operation-apply"):
+            return await routeStoreOperation(request) { storeServer in
+                try await storeServer.applyOperation(decode(OperationPreview.self, from: request))
+            }
+        case (_, "/v1/operation-inspect"), (_, "/v1/operation-apply"):
+            return methodNotAllowed(request, allowedMethod: "POST")
+        case (.post, "/v1/source-stage-chunk"):
+            return await routeStoreOperation(request) { storeServer in
+                try await storeServer.stageSourceChunk(decode(ServerSourceChunk.self, from: request))
+            }
+        case (.post, "/v1/source-finish-blob"):
+            return await routeStoreOperation(request) { storeServer in
+                try await storeServer.finishSourceBlob(decode(ServerSourceFinishRequest.self, from: request))
+            }
+        case (.post, "/v1/source-descriptor"):
+            return await routeStoreOperation(request) { storeServer in
+                try await storeServer.sourceDescriptor(decode(ServerSourceDescriptorRequest.self, from: request))
+            }
+        case (.post, "/v1/source-chunk"):
+            return await routeStoreOperation(request) { storeServer in
+                try await storeServer.sourceChunk(decode(ServerSourceReadRequest.self, from: request))
+            }
+        case (_, "/v1/source-stage-chunk"), (_, "/v1/source-finish-blob"),
+             (_, "/v1/source-descriptor"), (_, "/v1/source-chunk"):
+            return methodNotAllowed(request, allowedMethod: "POST")
         case (.post, "/v1/move"):
             return await routeStoreOperation(request) { storeServer in
                 let decoded = try decode(ServerMoveRequest.self, from: request)
@@ -145,6 +174,12 @@ public struct ServerRouter: Sendable {
                 try await storeServer.links(decode(ServerLinksRequest.self, from: request))
             }
         case (_, "/v1/links"):
+            return methodNotAllowed(request, allowedMethod: "POST")
+        case (.post, "/v1/lint"):
+            return await routeStoreOperation(request) { storeServer in
+                try await storeServer.lint(decode(ServerLintRequest.self, from: request))
+            }
+        case (_, "/v1/lint"):
             return methodNotAllowed(request, allowedMethod: "POST")
         case (.post, "/v1/list"):
             return await routeStoreOperation(request) { storeServer in
@@ -332,6 +367,13 @@ public struct ServerRouter: Sendable {
             return patchErrorResponse(patchError)
         }
 
+        if case ProjectOperationError.conflict(let message) = error {
+            return jsonResponse(
+                statusCode: 409,
+                payload: ServerErrorPayload(error: "conflict", message: message)
+            )
+        }
+
         if error as? ServerPassageError == .passageNotFound {
             return jsonResponse(
                 statusCode: 404,
@@ -372,6 +414,11 @@ public struct ServerRouter: Sendable {
                     error: "document_not_found",
                     message: error.description
                 )
+            )
+        case .lintScopeNotFound:
+            return jsonResponse(
+                statusCode: 404,
+                payload: ServerErrorPayload(error: "lint_scope_not_found", message: error.description)
             )
         case .documentVersionNotFound:
             return jsonResponse(

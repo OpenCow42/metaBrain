@@ -8,6 +8,20 @@ enum MetaBrainKeyspace {
     static let searchDocumentCount = "meta/search-document-count"
     static let citationLayout = "meta/citation-layout"
 
+    static func operationReceipt(_ id: UUID) -> String {
+        "op/receipt/\(id.uuidString.lowercased())"
+    }
+
+    static func sourceChunk(_ sha256: String) -> String {
+        "source/chunk/\(sha256)"
+    }
+
+    static let sourceBlobPrefix = "source/blob/"
+
+    static func sourceBlob(_ sha256: String) -> String {
+        sourceBlobPrefix + sha256
+    }
+
     static func document(id: DocumentID) -> String {
         "doc/id/\(id.rawValue)"
     }

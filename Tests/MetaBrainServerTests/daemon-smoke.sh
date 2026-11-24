@@ -82,6 +82,52 @@ if "${daemon_bin}" service start 2>"$TMP_DIR/service-start-missing-user.err"; th
 fi
 rg -F -q 'only user service files are supported; pass --user' "$TMP_DIR/service-start-missing-user.err"
 
+# Exercise real process dispatch using stand-ins for both platform service managers.
+# The isolated PATH prevents a smoke test from touching any installed service.
+python3 - "$daemon_bin" "$TMP_DIR" "$config_path" <<'PY'
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+daemon, scratch, config = sys.argv[1:]
+scratch = Path(scratch)
+commands = scratch / "service-bin"
+commands.mkdir()
+calls = scratch / "calls.log"
+for manager in ["launchctl", "systemctl"]:
+    executable = commands / manager
+    executable.write_text("""#!/bin/sh
+printf '%s\\n' "$*" >> "$SERVICE_TEST_CALLS"
+case "$SERVICE_TEST_RESULT" in
+  timeout) exec /bin/sleep 30 ;;
+  fail) exit 7 ;;
+esac
+""")
+    executable.chmod(0o755)
+environment = dict(os.environ, PATH=str(commands), HOME=str(scratch / "service-dispatch"),
+                   SERVICE_TEST_CALLS=str(calls))
+
+def run(action, *args, outcome="ok"):
+    result = subprocess.run([daemon, "service", action, *args], text=True, capture_output=True,
+                            env=dict(environment, SERVICE_TEST_RESULT=outcome), timeout=25)
+    return result
+
+for action in ["stop", "status"]:
+    result = run(action)
+    assert result.returncode and "pass --user" in result.stderr, result
+for action in ["install", "start", "status", "stop"]:
+    arguments = ["--user", "--config", config, "--now"] if action == "install" else ["--user"]
+    result = run(action, *arguments)
+    assert result.returncode == 0, result
+recorded = calls.read_text()
+assert any(word in recorded for word in ["kickstart", "start --no-block"]), recorded
+assert any(word in recorded for word in ["bootout", "disable --now"]), recorded
+for outcome, message in [("fail", "exit code 7"), ("timeout", "timed out after 15 seconds")]:
+    result = run("status", "--user", outcome=outcome)
+    assert result.returncode and message in result.stderr, result
+PY
+
 if env -u HOME "${daemon_bin}" service install --user --config "$config_path" 2>"$TMP_DIR/service-install-missing-home.err"; then
     echo "Expected service install without HOME to fail" >&2
     exit 1

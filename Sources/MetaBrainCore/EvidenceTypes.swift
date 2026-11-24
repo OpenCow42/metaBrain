@@ -149,3 +149,33 @@ public enum EvidenceError: Error, Equatable, Sendable, CustomStringConvertible {
         }
     }
 }
+
+extension EvidenceReference {
+    /// Returns the full verbatim passage and distinguishes an ambiguous block from a missing one.
+    /// The caller must supply the exact retained document identified by this reference.
+    public func exactText(in document: StoredDocument) throws -> String {
+        guard document.id == documentID, document.currentVersion == version else {
+            throw MetaBrainStoreError.documentVersionNotFound(reference: rawValue, version: version)
+        }
+        let body = EvidenceBody(document.body)
+        let markdown = document.isMarkdown && needsMarkdown
+            ? MarkdownDocument(body: document.body, includeLinks: false) : nil
+        return body.text(in: try exactRange(body: body, markdown: markdown))
+    }
+
+    var needsMarkdown: Bool {
+        if case .block = location { return true }
+        return false
+    }
+
+    func exactRange(body: EvidenceBody, markdown: MarkdownDocument?) throws -> Range<Int> {
+        switch location {
+        case .range(let offsets):
+            guard offsets.upperBound <= body.count else { throw EvidenceError.invalidRange(self) }
+            return offsets
+        case .block(let name):
+            guard let anchor = try markdown?.anchor(for: .block(name)) else { throw EvidenceError.blockNotFound(self) }
+            return anchor.range
+        }
+    }
+}

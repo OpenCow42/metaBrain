@@ -92,11 +92,13 @@ and [LevelDB options](https://github.com/google/leveldb/blob/main/include/leveld
 | `move` | `moveDocument`, `writeDocumentUpdate`, `writeDocumentBatch`, retention helpers | `O(B + B_old + T + T_old + R + R_old + V log V + H + L * seek(S) + X_tree + D)` | Resolves an existing document, preserves its stable ID and content fields, writes a new path alias, removes the old path alias, and updates affected tree branches. |
 | `get` | `getDocument`, `documentID(for:)`, `documentRecord(id:)`, `printDocument` | `O(seek(S) + B)` | Decoding and printing the stored document body dominate once the point lookup succeeds. |
 | `get --version` | `getDocument(_:version:)`, document reference resolution, version lookup | `O(seek(S) + B_version)` | Point-reads one retained version and prints its snapshot. |
+| `lint` | `lint`, path and citation indexes, optional backlink scans | See [Markdown properties and citations](#markdown-properties-and-citations) | Scans scoped source documents and resolves their links against the store. |
 | `list` non-recursive | `listDirectory`, `childTreeEntries`, `formatListEntry` | `O(seek(S) + K log K)` | Scans one tree prefix, decodes child records, sorts by display path, and prints them. |
 | `list --recursive` | `listDirectory`, `flattenedTreeEntries`, `childTreeEntries` | `O(A * seek(S) + A log A)` typical, with extra recursive array-copy overhead | Walks directories with many separate prefix scans and materializes the whole subtree. `--directories-only` filters output but still traverses descendants. |
 | `tree` | `tree`, `flattenedTreeEntries`, `printTree` | `O(A * seek(S) + A log A)` typical for an unbounded tree | `--max-depth 0` is `O(1)`. Larger depths scan and materialize the requested subtree, then group and sort for printing. |
 | `dump` current | `dump`, `listDirectory`, `getDocument`, optional `DocumentDumpFileWriter.write` | `O(A * seek(S) + D_dump * B + H_dump)` for the requested subtree | Includes the exact path document plus descendant documents, emits JSONL, and optionally writes UTF-8 body copies. |
 | `dump --versions` | `dump`, `versionRecords`, optional `DocumentDumpFileWriter.write` | `O(A * seek(S) + D_dump * (seek(S) + V log V + H) + H_dump)` | Selects current documents by path, then scans retained full-snapshot versions for each selected document. |
+| `preview` | Untracked `getDocument`, wiki format parser, optional project `dump` | See [preview](#preview) | A project scan starts only after parsing a valid saved-view definition. |
 | `search` | `search`, filter and term postings, `searchChunks`, ranking, optional edge scans | `O((Q + G + D_match + D_limit) * seek(S) + Q log Q + F log F + P + B_match + C_match + M * (Q + K_limit) + E)` | Uses corpus IDF and saturated field-weighted frequencies. The limit bounds retained candidates and reference enrichment. |
 | `recall` | `recall`, ranked document traversal, passage drafting, JSON budget selection | `O((Q + G + D_match) * seek(S) + Q log Q + F log F + P + B_match + C_match + M * Q + M log M + D_match log D_match + J_recall)` | Selects distinct documents from the matched pool and fits their citations to a serialized byte budget. |
 | `versions` | `listVersions`, `versionRecords` | `O(seek(S) + V log V + H)` | Scans, decodes, sorts, and prints every full-snapshot version for the document. |
@@ -122,6 +124,13 @@ postings and the count alongside each affected document write batch and
 reads the count with a point lookup at search time.
 
 ## Current Complex Calls To Treat Carefully
+
+For a project operation with N documents, inspect reads N path aliases and current records and hashes the serialized proposal. Apply performs the per-document chunk, posting, retention, and reference work of the corresponding puts. It combines their affected tree branches and citation candidates, including pending links to newly introduced names. Memory includes the proposed bodies and encoded record edits until the single batch commits. Replaying the identical preview verifies its digest and reads one receipt without rebuilding the affected indexes.
+
+An inspection containing claims prepares the proposed document versions and retention decisions. For each evidence relationship it resolves a retained revision and the current source, extracts the cited passage, and compares it with the live passage. Work includes decoding the referenced document bodies and parsing Markdown for block selectors. Independent-source checks use sets of groups and original digests. Scoped lint adds this evidence work for the owners it visits, including plain notes with claims.
+
+Source staging and verified export each process O(B) bytes for an original of B bytes. Finalization streams the stored chunks to hash the complete file. The client and store each hold a bounded chunk buffer and O(C) digests for C chunks during staging. A daemon transfer uses O(C) requests, with each binary chunk limited to 1 MiB before base64 encoding. Each chunk request resolves the retained note revision. The store caches one verified manifest per handle. Interleaved exports of different originals can evict it and repeat O(C) manifest decoding. Notes containing the same original contribute separate provenance records and share its content-addressed storage.
+
 
 - `put` builds one large in-memory `WriteBatch` for document, version, chunk,
   term, metadata, reference, tree, and prune edits. LevelDB applies it
@@ -388,6 +397,17 @@ and decodes retained full-snapshot versions for every selected document. This
 adds `O(D_dump * (seek(S) + V log V + H))`, and the final stdout/file output
 cost grows with all emitted version bodies.
 
+### `preview`
+
+The command verifies project scope before store access. A stored definition uses
+one untracked point lookup and current record decode, `O(seek(S) + B)`. A draft
+reads one local file. Canvas preview parses and encodes the board with no
+project traversal. A valid saved view loads current documents with the project
+subtree dump, sorts the scoped candidates by path once, and projects their
+properties. Each view can test up to `D_dump` candidates, and JSON output
+grows with the projected cells. Both modes use the existing read paths in
+direct and daemon connections.
+
 ### `search`
 
 `search` calls `MetaBrainStore.search(_:)`.
@@ -448,6 +468,17 @@ parses the distinct cited Markdown bodies. The returned occurrences are sorted
 by source path and position. `get --heading` and `get --block` decode and parse
 the selected current or retained body. `ensure-guide` checks a single virtual
 path under the write coordinator. Only a missing guide incurs a document insertion.
+
+`lint` does one path prefix scan and one exact-path lookup for a non-root scope.
+It decodes each selected current document and scans one outbound index prefix
+per Markdown source. For a source with `L` occurrences, sorting offsets costs
+`O(L log L)`. Target-path lookups and target-body parsing are shared across the
+audit. Anchor lookup scans the parsed anchors for each fragment occurrence.
+Ambiguous targets also read and sort their candidate paths. With `--orphans`,
+lint scans both inbound prefixes for each Markdown source and deduplicates
+and sorts backlink IDs. Peak memory includes the selected document IDs,
+cached target paths and anchors, one source's outgoing rows, and the findings.
+The one-time citation layout preparation also applies to lint.
 
 ### Compact evidence views
 

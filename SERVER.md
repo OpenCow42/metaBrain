@@ -1,7 +1,9 @@
-# metaBrain Server Plan
+# metaBrain Server
 
-This document specifies a future local `metaBrain` server/daemon. The work is
-planned for `feat/server`.
+`mbd` is the local metaBrain daemon. See the [README](README.md#daemon) for
+current CLI usage and [Architecture](ARCHITECTURE.md#process-model) for the
+process model. This document records the API and the original design plan.
+Sections on goals, implementation order, and distribution describe that plan.
 
 The goal is to keep the existing architecture intact while removing the current
 multi-process LevelDB lock problem for agents and tools. LevelDB supports
@@ -133,18 +135,14 @@ The daemon should close the store on SIGINT and SIGTERM.
 
 ## CLI Relationship
 
-The existing `mb` CLI should continue to work directly against LevelDB for
-simple one-shot use.
-
-After the daemon exists, add optional client behavior in a separate slice:
+By default, `mb` probes `http://127.0.0.1:6374` and sends store operations to a
+healthy daemon there. Otherwise it opens the selected store directly. Use
+`--no-server` for a direct open or `--server` to select a daemon explicitly.
 
 ```bash
 mb --server .metabrain/mbd.sock put /notes/today "..."
 mb --server .metabrain/mbd.sock search "..."
 ```
-
-Do not make the CLI silently switch to daemon mode until the socket discovery,
-error model, and compatibility behavior are documented and tested.
 
 ## Transports
 
@@ -277,6 +275,8 @@ GET  /v1/version
 POST /v1/init
 POST /v1/put
 POST /v1/put-conditional
+POST /v1/operation-inspect
+POST /v1/operation-apply
 POST /v1/patch
 POST /v1/move
 POST /v1/get
@@ -284,6 +284,7 @@ POST /v1/get-version
 POST /v1/ensure-guide
 POST /v1/put-markdown
 POST /v1/links
+POST /v1/lint
 POST /v1/get-passage
 POST /v1/get-ref
 POST /v1/search-evidence
@@ -308,21 +309,53 @@ document can return `document_not_found`.
 
 ### Agent retrieval routes
 
+Source transfer uses bounded JSON requests. All four routes use POST and the selected store. References use the ordinary `DocumentReferenceDTO` wire format.
+
+| Route | Request | Result |
+| --- | --- | --- |
+| `/v1/source-stage-chunk` | `{"bytes":"<base64>"}` | `{"sha256":"<chunk digest>"}` |
+| `/v1/source-finish-blob` | `{"chunks":["<chunk digest>"]}` in file order | `{"sha256":"<file digest>","byteCount":42}` |
+| `/v1/source-descriptor` | `reference` and optional `version` | Stable document ID, retained version and capture metadata |
+| `/v1/source-chunk` | `reference`, positive `version`, zero-based `index` | `{"bytes":"<base64>"}` |
+
+Use 1 MiB chunks, with a possibly shorter final chunk. An empty file has an empty chunk list. Submit the returned blob and provenance as `sourceCapture` on its document during operation inspection. Readers resolve a descriptor once, fetch chunks by the returned ID and version, then verify the original length and SHA-256. An older daemon needs an upgrade to serve these routes. [CLI capture example](README.md#capture-and-recover-an-original-file)
+
+The `/v1/get` and `/v1/get-version` results can include `claims`, `sourceProfile`, and `sourceCapture`. Claims use the same stable document IDs and retained references as passage retrieval. Project inspection returns an ordered `creations` array with the proposed path and document ID for each new note. Lint findings of kind `claimEvidence` include `claimID`, `evidenceIssue`, `message`, and the specific `evidenceRef` when applicable. [Claim request example](docs/claim-evidence.md)
+
+For project writes, `POST /v1/operation-inspect` accepts a `ProjectOperation` and returns the full `OperationPreview`. `POST /v1/operation-apply` takes that exact preview and returns an `OperationReceipt` with ordered document IDs, versions, and statuses. A malformed operation returns HTTP 400. A stale preview, wrong store, or reused operation ID with different contents returns HTTP 409. The client selects the store on both calls. See the [complete request example](README.md#commit-related-notes-together).
+
 - `POST /v1/ensure-guide` with `{}` installs `/AGENTS.md` in an existing
   store only when absent. Response fields match a put result, with operation
   `ensure-guide` and status `created` or `unchanged`.
 - `POST /v1/put-markdown` explicitly enables Markdown on a put, including for
   extensionless paths. The request wraps ordinary put fields in `document` and
-  optionally accepts a top-level `ifVersion`. Existing `.md` writes use the normal put route.
+  optionally accepts a top-level `ifVersion`. Ordinary `.md` puts already
+  enable Markdown through the normal put route.
 - `POST /v1/links` takes a document reference and optional `direction`
-  (`incoming` or `outgoing`) and `block`. It returns one entry per citation.
-- `POST /v1/get-passage` takes a document reference, a `block` or `heading`,
-  and an optional retained `version`.
-- `POST /v1/search-evidence` accepts search filters, a `view` of `refs` or
-  `evidence`, and an optional `maxTokens`. Filter-only requests use `refs`.
+  (`incoming` or `outgoing`, the default) and `block`. The block filter matches
+  the cited block for incoming links and the source block for outgoing links.
+  Each occurrence includes its source revision and character offsets, target
+  details when available, and a resolution status.
+- `POST /v1/lint` takes optional `path` and `includeOrphans` fields. The path
+  selects the exact document and its descendants. Omit it to audit the whole
+  store. `includeOrphans` defaults to false. A completed audit returns HTTP 200
+  with `path`, `documentsChecked`, `counts`, and `findings`. Counts use keys
+  `missingTarget`, `ambiguousTarget`, `missingAnchor`, `ambiguousAnchor`, and
+  `orphan`. Findings carry `kind`, `sourceID`, `sourcePath`, and `sourceVersion`.
+  Citation findings add `start`, `end`, and `destination`, plus `targetPath`,
+  `fragment`, and `candidatePaths` where applicable. An explicit scope with no
+  document or descendants returns HTTP 404 with `lint_scope_not_found`.
+- `POST /v1/get-passage` takes a document reference, exactly one of `block` or
+  `heading`, and an optional retained `version`. It uses the current revision
+  by default.
+- `POST /v1/search-evidence` accepts `query`, `pathPrefix`, `tags`, `metadata`,
+  `limit`, a required `view` of `refs` or `evidence`, and optional `maxTokens`.
+  Filter-only requests require `refs`.
 - `POST /v1/get-ref` expands a versioned `ref`, with optional `context`
-  (`section`) and `maxTokens`. Its compact JSON envelope matches search
-  evidence. The budget includes JSON framing and the CLI's final line feed.
+  (`section`) and `maxTokens`. The cited revision must still be retained.
+  Both evidence routes return compact JSON with `items` and `truncated`. Each
+  item has `path` and `ref`, plus `text` when returning passages. The budget
+  counts UTF-8 bytes including JSON framing and the CLI's final line feed.
 
 ### Request Shapes
 
@@ -674,7 +707,7 @@ When `feat/server` changes command flow or store scan patterns, update:
 - `RELEASING.md` for packaging changes.
 - `SERVER.md` as implementation decisions settle.
 
-## Implementation Order
+## Original Implementation Order
 
 1. Add shared DTOs and output encoders without changing CLI behavior.
 2. Add `MetaBrainServerSupport` and a router with `/health` only.

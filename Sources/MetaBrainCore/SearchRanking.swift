@@ -38,8 +38,14 @@ struct MetaBrainSearchMatch {
 }
 
 struct MetaBrainSearchRanking: Sendable {
-    let terms: [String]
-    let weights: [String: Double]
+    private let weights: [String: Double]
+    private let orderedWeights: [Dictionary<String, Double>.Element]
+
+    init(weights: [String: Double]) {
+        self.weights = weights
+        // Stable summation order keeps tied search scores reproducible.
+        orderedWeights = weights.sorted { $0.key < $1.key }
+    }
 
     static func inverseDocumentFrequency(corpusSize: Int, documentFrequency: Int) -> Double {
         // The corpus count and postings can be observed on opposite sides of a concurrent write.
@@ -71,9 +77,10 @@ struct MetaBrainSearchRanking: Sendable {
 
     func score(fields: [String: Double], body: [String: Int]) -> Double {
         let saturation = 0.8
-        return terms.reduce(0) { score, term in
+        return orderedWeights.reduce(0) { score, entry in
+            let (term, weight) = entry
             let frequency = fields[term, default: 0] + Double(body[term, default: 0])
-            return score + weights[term, default: 0] * frequency * (saturation + 1) / (frequency + saturation)
+            return score + weight * frequency * (saturation + 1) / (frequency + saturation)
         }
     }
 }

@@ -66,6 +66,8 @@ private func storeTestCodec<Value: Codable & Sendable>(
         let original = try #require(try await store.getDocument(.path(path), trackingRead: false))
 
         #expect(original.currentVersion == 1)
+        #expect(original.metadata["guide-revision"] == "9")
+        #expect(original.body.contains("mb get --ref"))
         #expect(original.body.contains("--ref-id"))
         #expect(try await store.listDirectory().map(\.path) == [path])
         #expect(try await store.search(SearchQuery(text: "credentials")).map(\.path) == [path])

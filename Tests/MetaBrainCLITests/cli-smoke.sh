@@ -2,14 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-TMP_PARENT="${METABRAIN_TMPDIR:-}"
-if [[ -z "$TMP_PARENT" ]]; then
-    if [[ -d /private/tmp ]]; then
-        TMP_PARENT=/private/tmp
-    else
-        TMP_PARENT=/tmp
-    fi
-fi
+# Foundation can rewrite existing /private/tmp paths to /tmp on macOS.
+TMP_PARENT="${METABRAIN_TMPDIR:-/tmp}"
 TMP_DIR="$(mktemp -d "$TMP_PARENT/metabrain-cli.XXXXXX")"
 STORE="$TMP_DIR/store.leveldb"
 release_server_pid=""
@@ -43,6 +37,8 @@ else
 fi
 
 cd "$ROOT_DIR"
+
+AUTO_EXPECTED_PORT="${METABRAIN_COVERAGE_LOOPBACK_PORT:-6374}"
 
 assert_put_json() {
     local actual="$1"
@@ -234,6 +230,7 @@ assert_remove_version_json() {
 "${METABRAIN[@]}" help | rg -q 'mb help list'
 "${METABRAIN[@]}" help | rg -q 'mb help tree'
 "${METABRAIN[@]}" help | rg -q 'mb help dump'
+"${METABRAIN[@]}" help | rg -q 'mb help preview'
 "${METABRAIN[@]}" help | rg -q 'mb help move'
 "${METABRAIN[@]}" help | rg -q 'mb help version'
 "${METABRAIN[@]}" help init | rg -q 'Create or open a metaBrain store'
@@ -244,11 +241,13 @@ assert_remove_version_json() {
 "${METABRAIN[@]}" help move | rg -q 'document IDs are preserved'
 "${METABRAIN[@]}" help move | rg -q 'Path references are location aliases'
 "${METABRAIN[@]}" help get | rg -q 'Read a document by path or ID'
+"${METABRAIN[@]}" help lint | rg -q 'Audit current Markdown citations'
 "${METABRAIN[@]}" help list | rg -q 'List stored document paths in a folder'
 "${METABRAIN[@]}" help tree | rg -q 'Show the stored document path tree'
 "${METABRAIN[@]}" help search | rg -q 'Search current document content'
 "${METABRAIN[@]}" help recall | rg -q 'byte-budgeted JSON array'
 "${METABRAIN[@]}" help dump | rg -q 'Dump stored documents as JSONL'
+"${METABRAIN[@]}" help preview | rg -q 'Validate and preview a project'
 "${METABRAIN[@]}" help versions | rg -q 'List stored versions for a document'
 "${METABRAIN[@]}" help prune | rg -q 'Prune document versions using a retention policy'
 "${METABRAIN[@]}" help delete | rg -q 'Delete a document and all retained versions'
@@ -258,8 +257,10 @@ if ! printf '%s\n' "$VERSION_DEFAULT_JSON" | rg -F -q '"currentTag":"9.8.7"'; th
     echo "Expected version default JSON output without release check, got: $VERSION_DEFAULT_JSON" >&2
     exit 1
 fi
-printf '%s\n' "$VERSION_DEFAULT_JSON" | rg -F -q '"endpoint":"http://127.0.0.1:6374"'
+printf '%s\n' "$VERSION_DEFAULT_JSON" | rg -F -q '"endpoint":"http://127.0.0.1:'"$AUTO_EXPECTED_PORT"'"'
 printf '%s\n' "$VERSION_DEFAULT_JSON" | rg -F -q '"reachable":false'
+VERSION_STANDARD_ENDPOINT="$(env -u METABRAIN_COVERAGE_LOOPBACK_PORT "${METABRAIN[@]}" version --no-release-check)"
+printf '%s\n' "$VERSION_STANDARD_ENDPOINT" | rg -F -q '"endpoint":"http://127.0.0.1:6374"'
 VERSION_TEXT="$(METABRAIN_VERSION=9.8.7 "${METABRAIN[@]}" version --no-server --no-release-check --format text)"
 if [[ "$VERSION_TEXT" != $'version: 9.8.7\nserver: skipped\nreleaseCheck: skipped' ]]; then
     echo "Expected version text output without release check, got: $VERSION_TEXT" >&2
@@ -279,6 +280,7 @@ fi
 release_port_file="$TMP_DIR/release-port"
 python3 - "$release_port_file" <<'PY' &
 import http.server
+import json
 import os
 import socketserver
 import sys
@@ -291,20 +293,36 @@ class Server(http.server.HTTPServer):
         self.server_port = port
 
 class Handler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
     def do_GET(self):
         if self.path != "/latest":
-            body = b'{}'
-            self.send_response(503)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            self.respond(503, b'{}')
             return
 
         body = b'{"html_url":"https://example.com/metabrain/releases/9.9.9","tag_name":"9.9.9"}'
-        self.send_response(200)
+        self.respond(200, body)
+
+    def do_POST(self):
+        request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        if self.path == "/v1/recall" and request["maxBytes"] == 3:
+            result = [{"documentID": "sample", "path": "/sample.md", "version": 1, "sources": [], "passages": []}]
+        elif self.path == "/v1/search-evidence" and request["maxTokens"] == 31:
+            result = {"items": [{"ref": "sample@1#0-6", "path": "/sample.md", "text": "Sample"}], "truncated": False}
+        elif self.path == "/v1/get-passage" and request.get("heading") == "Sample":
+            text = "# Sample\n"
+            result = {"documentID": "sample", "path": "/sample.md", "version": 1,
+                      "start": 0, "end": len(text), "heading": "Sample", "text": text}
+        else:
+            self.respond(404, b'{}')
+            return
+        self.respond(200, json.dumps(result).encode())
+
+    def respond(self, status, body):
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(body)
 
@@ -334,6 +352,28 @@ if [[ ! -s "$release_port_file" ]]; then
     exit 1
 fi
 release_port="$(cat "$release_port_file")"
+
+# Exercise the CLI's output limits with a daemon that ignores the requested budget.
+budget_store="$TMP_DIR/budget-store.leveldb"
+"${METABRAIN[@]}" --no-server init --empty --store "$budget_store" >/dev/null
+budget_command=("${METABRAIN[@]}" --store "$budget_store" --server "http://127.0.0.1:$release_port")
+if "${budget_command[@]}" recall sample --max-bytes 3 >"$TMP_DIR/budget.out" 2>"$TMP_DIR/budget.err"; then
+    echo "Expected an over-budget recall response to fail" >&2
+    exit 1
+fi
+[[ ! -s "$TMP_DIR/budget.out" ]]
+rg -F -q 'Recall response exceeded --max-bytes 3.' "$TMP_DIR/budget.err"
+if "${budget_command[@]}" search sample --view evidence --max-tokens 31 >"$TMP_DIR/budget.out" 2>"$TMP_DIR/budget.err"; then
+    echo "Expected an over-budget evidence response to fail" >&2
+    exit 1
+fi
+[[ ! -s "$TMP_DIR/budget.out" ]]
+rg -F -q 'Evidence output exceeded --max-tokens 31.' "$TMP_DIR/budget.err"
+
+# Preserve a daemon passage's trailing newline without printing a second one.
+"${budget_command[@]}" get /sample.md --heading Sample --format text >"$TMP_DIR/passage.out"
+printf '# Sample\n' | cmp - "$TMP_DIR/passage.out"
+
 VERSION_CHECKED_TEXT="$(METABRAIN_VERSION=9.8.7 "${METABRAIN[@]}" version --format text --release-api-url "http://127.0.0.1:${release_port}/latest")"
 printf '%s\n' "$VERSION_CHECKED_TEXT" | rg -F -q 'version: 9.8.7'
 printf '%s\n' "$VERSION_CHECKED_TEXT" | rg -F -q 'latest: 9.9.9'
@@ -516,6 +556,115 @@ check_guarded_put() {
 }
 
 check_guarded_put "$TMP_DIR/guarded-direct/store.leveldb" "${METABRAIN[@]}" --no-server
+
+check_project_operation() {
+    local store="$1"
+    shift
+    local command=("$@" --store "$store")
+    local operation="$TMP_DIR/project-operation.json" preview="$TMP_DIR/project-preview.json"
+    local direct_preview="$TMP_DIR/project-direct-preview.json"
+    local receipt="$TMP_DIR/project-receipt.json" retry="$TMP_DIR/project-retry.json"
+    local output="$TMP_DIR/project-output.json" error="$TMP_DIR/project-operation.err"
+
+    cat >"$operation" <<'JSON'
+{"operationID":"c44983b2-46c5-44a7-9877-227ce5b412ca","project":{"rawValue":"/projects/demo"},"documents":[{"path":{"rawValue":"/projects/demo/source.md"},"body":"Source text","metadata":{},"references":[],"tags":[]},{"path":{"rawValue":"/projects/demo/decision.md"},"body":"[[source]]","metadata":{},"references":[],"tags":[]}]}
+JSON
+    "${METABRAIN[@]}" --store "$store" --no-server init --empty >/dev/null
+    "${METABRAIN[@]}" operation --store "$store" --no-server inspect "$operation" >"$direct_preview"
+    "${command[@]}" operation inspect "$operation" >"$preview"
+    cmp "$direct_preview" "$preview"
+    if "${command[@]}" get /projects/demo/decision.md >"$output" 2>"$error"; then
+        echo "Operation inspect wrote the decision before apply" >&2
+        exit 1
+    fi
+
+    "${command[@]}" operation apply "$direct_preview" >"$receipt"
+    "$@" operation apply "$preview" --store "$store" >"$retry"
+    cmp "$receipt" "$retry"
+    assert_get_json "$("${command[@]}" get /projects/demo/source.md)" /projects/demo/source.md 'Source text' 1
+    assert_get_json "$("${command[@]}" get /projects/demo/decision.md)" /projects/demo/decision.md '[[source]]' 1
+
+    python3 - "$operation" <<'PYOPERATION'
+import json
+from pathlib import Path
+import sys
+
+file = Path(sys.argv[1])
+operation = json.loads(file.read_bytes())
+operation["operationID"] = "f4f73f95-4c1c-441f-ac0d-59dd4af03f3d"
+operation["documents"][0]["body"] = "Proposed update"
+file.write_text(json.dumps(operation))
+PYOPERATION
+    "${command[@]}" operation inspect "$operation" >"$preview"
+    "${command[@]}" put /projects/demo/decision.md 'Competing edit' >/dev/null
+    if "${command[@]}" operation apply "$preview" >"$output" 2>"$error"; then
+        echo "Expected a stale project operation preview to fail" >&2
+        exit 1
+    fi
+    [[ ! -s "$output" && -s "$error" ]]
+    assert_get_json "$("${command[@]}" get /projects/demo/source.md)" /projects/demo/source.md 'Source text' 1
+}
+
+check_project_operation "$TMP_DIR/operations-direct/store.leveldb" "${METABRAIN[@]}" --no-server
+
+check_wiki_preview() {
+    local store="$1"
+    shift
+    local -a command=("$@" --store "$store")
+    local board='{"nodes":[{"id":"item","type":"file","file":"item.md","x":0,"y":0,"width":10,"height":10}],"edges":[]}'
+    local base=$'filters: \'file.hasTag("decision")\'\nviews:\n  - type: table\n    name: Decisions\n    order: [file.name, status]'
+    local draft="$TMP_DIR/wiki-draft"
+    local output="$TMP_DIR/wiki-preview.json"
+    local errors="$TMP_DIR/wiki-preview.err"
+
+    "${command[@]}" put /wiki/item.md '# Decision' --tag decision --meta status=accepted >/dev/null
+    "${command[@]}" put /wiki-decoy/item.md '# Outside' --tag decision --meta status=decoy >/dev/null
+    "${command[@]}" put /wiki/board.canvas "$board" >/dev/null
+    "${command[@]}" put /wiki/view.base "$base" >/dev/null
+    "${command[@]}" preview /wiki/board.canvas --project /wiki >"$output"
+    python3 -c 'import json,sys; assert json.load(sys.stdin)["nodes"][0]["filePath"]["rawValue"] == "/wiki/item.md"' <"$output"
+    "${command[@]}" preview /wiki/view.base --project /wiki >"$output"
+    python3 -c 'import json,sys; assert json.load(sys.stdin)[0]["rows"] == [{"path":{"rawValue":"/wiki/item.md"},"cells":["item.md","accepted"]}]' <"$output"
+
+    printf '%s\n' "$board" >"$draft"
+    "${command[@]}" preview /wiki/draft.canvas --project /wiki --body-file "$draft" >"$output"
+    "${command[@]}" put /wiki/draft.canvas/child.md '# A child is not the board' >/dev/null
+    if "${command[@]}" preview /wiki/draft.canvas --project /wiki >"$output" 2>"$errors"; then
+        echo "Preview accepted an unsaved draft with a descendant at its path" >&2
+        exit 1
+    fi
+    rg -qi 'document.*not found' "$errors"
+
+    if "${command[@]}" preview /wiki-decoy/board.canvas --project /wiki >"$output" 2>"$errors"; then
+        echo "Preview accepted an out-of-project path" >&2
+        exit 1
+    fi
+    rg -F -q 'strictly inside an explicit non-root --project' "$errors"
+    if "${command[@]}" preview /wiki/item.md --project /wiki >"$output" 2>"$errors"; then
+        echo "Preview accepted an unsupported extension" >&2
+        exit 1
+    fi
+    rg -F -q 'requires a .canvas or .base document path' "$errors"
+    printf '\377' >"$draft"
+    if "${command[@]}" preview /wiki/board.canvas --project /wiki --body-file "$draft" >"$output" 2>"$errors"; then
+        echo "Preview accepted an invalid UTF-8 draft" >&2
+        exit 1
+    fi
+    rg -F -q 'Cannot read UTF-8 preview draft' "$errors"
+    [[ ! -s "$output" ]]
+
+    printf '%s\n' '{"nodes": [}' >"$draft"
+    if "${command[@]}" preview /wiki/board.canvas --project /wiki --body-file "$draft" >"$output" 2>"$errors"; then
+        echo "Preview accepted malformed Canvas JSON" >&2
+        exit 1
+    fi
+    rg -F -q "Invalid Canvas JSON at '/wiki/board.canvas'" "$errors"
+    [[ ! -s "$output" ]]
+}
+
+check_wiki_preview "$TMP_DIR/wiki-preview-direct/store.leveldb" "${METABRAIN[@]}" --no-server
+python3 Tests/MetaBrainCLITests/source-capture.py "$TMP_DIR/capture-direct/store.leveldb" "${METABRAIN[@]}" --no-server
+python3 Tests/MetaBrainCLITests/claim-evidence.py "$TMP_DIR/claims-direct/store.leveldb" "${METABRAIN[@]}" --no-server
 
 GUIDED_STORE="$TMP_DIR/guided.leveldb"
 "${METABRAIN[@]}" init --no-server --store "$GUIDED_STORE" >/dev/null
@@ -1331,9 +1480,14 @@ server_mb() {
 )
 
 check_guarded_put "$TMP_DIR/guarded-daemon/store.leveldb" "${METABRAIN[@]}" --server "$SERVER_SOCKET"
+check_project_operation "$TMP_DIR/operations-daemon/store.leveldb" "${METABRAIN[@]}" --server "$SERVER_SOCKET"
+check_wiki_preview "$TMP_DIR/wiki-preview-daemon/store.leveldb" "${METABRAIN[@]}" --server "$SERVER_SOCKET"
+python3 Tests/MetaBrainCLITests/source-capture.py "$TMP_DIR/capture-daemon/store.leveldb" "${METABRAIN[@]}" --server "$SERVER_SOCKET"
+python3 Tests/MetaBrainCLITests/claim-evidence.py "$TMP_DIR/claims-daemon/store.leveldb" "${METABRAIN[@]}" --server "$SERVER_SOCKET"
 
 check_recall "$TMP_DIR/recall-daemon/store.leveldb" "${METABRAIN[@]}" --server "$SERVER_SOCKET"
 python3 Tests/MetaBrainCLITests/citation-search.py "$TMP_DIR/citations-daemon/store.leveldb" "${METABRAIN[@]}" --server "$SERVER_SOCKET"
+python3 Tests/MetaBrainCLITests/citation-lint.py "$TMP_DIR/lint/store.leveldb" "$SERVER_SOCKET" "${METABRAIN[@]}"
 
 SERVER_INIT_JSON="$(server_mb init)"
 SERVER_EXPECTED_INIT_JSON="{\"operation\":\"init\",\"status\":\"initialized\",\"storePath\":\"$SERVER_STORE\"}"
@@ -1451,7 +1605,11 @@ wait "$daemon_server_pid" 2>/dev/null || true
 daemon_server_pid=""
 
 AUTO_SERVER_STORE="$TMP_DIR/auto-server-store.leveldb"
-METABRAIN_VERSION=6.7.8 "${METABRAIN_DAEMON[@]}" serve --store "$AUTO_SERVER_STORE" --host 127.0.0.1 --log-level error >"$TMP_DIR/mbd-auto.out" 2>"$TMP_DIR/mbd-auto.err" &
+auto_listen_options=(--host 127.0.0.1)
+if [[ "$AUTO_EXPECTED_PORT" == "0" ]]; then
+    auto_listen_options+=(--port 0)
+fi
+METABRAIN_VERSION=6.7.8 "${METABRAIN_DAEMON[@]}" serve --store "$AUTO_SERVER_STORE" "${auto_listen_options[@]}" --log-level error >"$TMP_DIR/mbd-auto.out" 2>"$TMP_DIR/mbd-auto.err" &
 daemon_server_pid="$!"
 AUTO_SERVER_PORT=""
 for _ in $(seq 1 400); do
@@ -1468,8 +1626,12 @@ for _ in $(seq 1 400); do
     fi
     sleep 0.05
 done
-if [[ "$AUTO_SERVER_PORT" != "6374" ]]; then
-    echo "Expected auto daemon to use default port 6374, got: ${AUTO_SERVER_PORT:-<none>}" >&2
+if [[ "$AUTO_EXPECTED_PORT" == "0" && -n "$AUTO_SERVER_PORT" && "$AUTO_SERVER_PORT" != "0" ]]; then
+    export METABRAIN_COVERAGE_LOOPBACK_PORT="$AUTO_SERVER_PORT"
+    AUTO_EXPECTED_PORT="$AUTO_SERVER_PORT"
+fi
+if [[ "$AUTO_SERVER_PORT" != "$AUTO_EXPECTED_PORT" || "$AUTO_SERVER_PORT" == "0" ]]; then
+    echo "Expected auto daemon to use a bound port (requested $AUTO_EXPECTED_PORT), got: ${AUTO_SERVER_PORT:-<none>}" >&2
     cat "$TMP_DIR/mbd-auto.out" >&2 || true
     cat "$TMP_DIR/mbd-auto.err" >&2 || true
     exit 1
@@ -1484,7 +1646,9 @@ if [[ "$AUTO_INIT_JSON" != "$AUTO_EXPECTED_INIT_JSON" ]]; then
 fi
 AUTO_VERSION_JSON="$(METABRAIN_VERSION=4.5.6 "${METABRAIN[@]}" version --no-release-check)"
 printf '%s\n' "$AUTO_VERSION_JSON" | rg -F -q '"currentTag":"4.5.6"'
-printf '%s\n' "$AUTO_VERSION_JSON" | rg -F -q '"server":{"currentTag":"6.7.8","endpoint":"http://127.0.0.1:6374","reachable":true}'
+printf '%s\n' "$AUTO_VERSION_JSON" | rg -F -q '"server":{"currentTag":"6.7.8","endpoint":"http://127.0.0.1:'"$AUTO_EXPECTED_PORT"'","reachable":true}'
+AUTO_VERSION_TEXT="$(METABRAIN_VERSION=4.5.6 "${METABRAIN[@]}" version --format text --no-release-check)"
+printf '%s\n' "$AUTO_VERSION_TEXT" | rg -F -x -q 'serverVersion: 6.7.8'
 AUTO_PUT_JSON="$("${METABRAIN[@]}" put --store "$AUTO_SELECTED_STORE" /auto/today 'auto daemon memory' --tag auto)"
 assert_put_json "$AUTO_PUT_JSON" /auto/today created 1
 AUTO_GET_JSON="$("${METABRAIN[@]}" get --store "$AUTO_SELECTED_STORE" /auto/today)"
