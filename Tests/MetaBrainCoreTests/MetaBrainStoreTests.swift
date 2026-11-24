@@ -52,7 +52,7 @@ private func storeTestCodec<Value: Codable & Sendable>(
         let store = try MetaBrainStore(url: fixture.storeURL)
 
         #expect(store.url == fixture.storeURL)
-        #expect(store.options.zstdCompressionLevel == 3)
+        #expect(store.options.zstdCompressionLevel == 9)
         #expect(store.options.paranoidChecks)
         #expect(FileManager.default.fileExists(atPath: fixture.storeURL.path))
     }
@@ -171,6 +171,31 @@ private func storeTestCodec<Value: Codable & Sendable>(
             try MetaBrainStore(url: url, options: options)
         }
         #expect(try fileManager.contentsOfDirectory(atPath: url.path).isEmpty)
+    }
+}
+
+@Test func defaultCompressionReadsAndUpdatesLevelThreeDocuments() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let path = try DocumentPath("/notes/legacy.md")
+        let originalBody = String(repeating: "A durable note written at compression level three.\n", count: 200)
+        let legacyStore = try MetaBrainStore(url: fixture.storeURL, options: .init(zstdCompressionLevel: 3))
+        #expect(legacyStore.options.zstdCompressionLevel == 3)
+        let original = try await legacyStore.putDocument(DocumentInput(path: path, body: originalBody))
+        await legacyStore.close()
+
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        #expect(store.options.zstdCompressionLevel == 9)
+        #expect(try await store.getDocument(.path(path), trackingRead: false)?.body == originalBody)
+        let updatedBody = originalBody + "Updated with the new default.\n"
+        let updated = try await store.putDocument(DocumentInput(path: path, body: updatedBody))
+        #expect(updated.id == original.id)
+        await store.close()
+
+        let reopened = try MetaBrainStore(url: fixture.storeURL)
+        let versions = try await reopened.listVersions(of: .path(path))
+        #expect(versions.sorted { $0.sequence < $1.sequence }.map(\.snapshot.body) == [originalBody, updatedBody])
+        #expect(try await reopened.getDocument(.path(path), trackingRead: false)?.body == updatedBody)
+        await reopened.close()
     }
 }
 

@@ -10,7 +10,8 @@ The useful shape of the dependency is:
 
 - LevelDB provides ordered keys, efficient point lookups, prefix/range scans, atomic write batches, snapshots, Bloom filters, LRU cache options, approximate range sizes, and compaction.
 - `ZstdCodec` wraps another typed codec, such as `JSONCodec<T>`, so serialization and compression stay separate.
-- `ZstdCodec` defaults to ZSTD level `3` with adaptive storage: it stores compressed bytes only when compression saves enough space.
+- `ZstdCodec` uses adaptive storage. It probes at level `1` and writes a
+  compressed frame at the configured level when the probe saves enough space.
 - Write batches can commit compressed records and plain ordered index keys atomically.
 
 The core store should use ZSTD-compressed Codable JSON envelopes for document records, version records, and chunk records. Index keys and tiny index values should stay raw and ordered so LevelDB can scan them efficiently.
@@ -181,7 +182,7 @@ commands and the core store methods they call.
 
 Default store tuning should start conservatively:
 
-- ZSTD compression level `3`
+- ZSTD compression level `9`
 - adaptive compression savings threshold `0.10`
 - LevelDB paranoid checks enabled
 - Bloom filter around `10` bits per key

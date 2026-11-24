@@ -304,8 +304,9 @@ integration.
 The current store is embedded and LevelDB-backed. Document records, versions,
 and current chunks are Codable JSON envelopes stored through adaptive ZSTD
 compression. Ordered index keys remain plain ASCII strings for prefix scans.
-The default ZSTD compression level is `3`, and LevelDB paranoid checks are
-enabled by default.
+The default ZSTD compression level for new writes is `9`. Existing records
+remain readable across compression levels. LevelDB paranoid checks are enabled
+by default.
 
 ### Store Format Compatibility
 

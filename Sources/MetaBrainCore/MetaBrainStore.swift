@@ -18,7 +18,7 @@ public struct MetaBrainStoreOptions: Equatable, Sendable {
         createIfMissing: Bool = true,
         errorIfExists: Bool = false,
         paranoidChecks: Bool = true,
-        zstdCompressionLevel: Int32 = 3,
+        zstdCompressionLevel: Int32 = 9,
         zstdAdaptiveMinimumSavingsRatio: Double = 0.10,
         lruCacheCapacity: Int? = 64 * 1024 * 1024,
         bloomFilterBitsPerKey: Int? = 10
