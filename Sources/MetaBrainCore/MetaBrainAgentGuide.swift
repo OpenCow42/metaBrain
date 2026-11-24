@@ -62,8 +62,14 @@ enum MetaBrainAgentGuide {
 
         For a source and decision that must appear together, inspect their full replacements with `mb operation inspect operation.json > preview.json`, review the target paths and versions, then use `mb operation apply preview.json`. Retry the original preview if the response was lost.
 
+        ## 5. Work in a project wiki
+
+        If the metaBrain skills are installed in your agent, start with `$metabrain-wiki` in Codex or `/metabrain-wiki` in Claude Code. Give it the virtual project root, such as `/projects/atlas`. It checks for project configuration, a project index, and a recent-activity note. For an existing project, it previews additions and identifies occupied paths. Read the store and project guidance before proposing changes.
+
+        Use the same store, daemon endpoint or direct connection, and project root for the rest of the task. Keep the wiki's operation entry with the changes it describes in the reviewed operation.
+
         Use `mb man search` for CLI options. Use `mb ensure-guide` to install this guide in an existing store that lacks it.
         """ + "\n",
-        metadata: ["guide-revision": "7"]
+        metadata: ["guide-revision": "8"]
     )
 }

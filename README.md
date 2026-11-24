@@ -120,6 +120,9 @@ to that store-specific guide.
 
 ## Agent Workflow
 
+For project wiki setup and inspection through Codex or Claude Code, see
+[Project wiki skills](docs/skills.md).
+
 1. Work from the project directory and run `mb get /AGENTS.md` to read local
    guidance. Use `--store` when you need to select another store explicitly.
 2. Search what the project already knows before answering or writing. Use
