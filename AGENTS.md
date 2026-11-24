@@ -2,6 +2,12 @@
 
 These rules apply to the whole `metaBrain` repository. They are here to keep agent work small, reviewable, and aligned with the architecture of the project.
 
+## Documentation Maintenance
+
+- Update the affected documentation as part of every new feature. The feature is complete when its docs explain how to use the behavior that ships.
+- Review the README, command help and manual, public API and server docs, architecture, and complexity notes for affected behavior. Verify changed examples against the implementation.
+- When the recommended workflow changes, update the [bundled store guide](Sources/MetaBrainCore/MetaBrainAgentGuide.swift) as well. That guide becomes the virtual `/AGENTS.md` in new stores. This file guides contributors to the repository.
+
 ## Commit Discipline
 
 - Commit often.
