@@ -187,8 +187,11 @@ to store size.
 
 Per health request, parsing, validation, routing, and JSON response encoding are
 `O(H_req + B_req + B_resp)`, where request and response sizes are bounded by
-the configured limits. Current request handling uses a single concurrency
-limiter with bounded queued admission. Store-backed routes use the daemon-owned
+the configured limits. A single limiter applies bounded queued admission after
+socket parsing. Queued requests retain their socket and parsed request until
+a permit is available. Routing runs asynchronously, and socket reads and writes
+run on blocking I/O workers. Shutdown waits for accepted requests through the
+response write. Store-backed routes use the daemon-owned
 `MetaBrainStoreRegistry`, keyed by canonical store path. Each active store path
 owns one `MetaBrainStoreServer` actor, so document operations are serialized
 within one store but can proceed independently across unrelated stores. Idle

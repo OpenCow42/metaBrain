@@ -38,10 +38,21 @@ public enum ServerHTTPServerError: Error, Equatable, CustomStringConvertible, Se
     }
 }
 
+private typealias ServerRouteHandler = @Sendable (
+    ServerHTTPRequest,
+    @escaping @Sendable (ServerHTTPResponse) -> Void
+) -> Void
+
+#if canImport(Darwin) || canImport(Glibc)
+private typealias ServerAcceptedSocket = Int32
+#elseif canImport(WinSDK)
+private typealias ServerAcceptedSocket = SOCKET
+#endif
+
 #if canImport(Darwin) || canImport(Glibc)
 public final class ServerHTTPServer: @unchecked Sendable {
     private let configuration: ServerServeConfiguration
-    private let routeHandler: @Sendable (ServerHTTPRequest) -> ServerHTTPResponse
+    private let routeHandler: ServerRouteHandler
     private let codec: ServerHTTPCodec
     private let requestLimiter: ServerRequestLimiter
     private let logger: ServerStructuredLogger
@@ -62,8 +73,10 @@ public final class ServerHTTPServer: @unchecked Sendable {
     ) {
         let router = router ?? ServerRouter(configuration: configuration)
         self.configuration = configuration
-        self.routeHandler = { request in
-            router.routeBlocking(request)
+        self.routeHandler = { request, complete in
+            Task {
+                complete(await router.route(request))
+            }
         }
         self.codec = codec
         self.requestLimiter = requestLimiter ?? ServerRequestLimiter(
@@ -85,7 +98,11 @@ public final class ServerHTTPServer: @unchecked Sendable {
         receiveSocket: @escaping @Sendable (Int32, UnsafeMutableRawPointer?, Int, Int32) -> Int = systemRecv
     ) {
         self.configuration = configuration
-        self.routeHandler = routeHandler
+        self.routeHandler = { request, complete in
+            DispatchQueue.global(qos: .userInitiated).async {
+                complete(routeHandler(request))
+            }
+        }
         self.codec = codec
         self.requestLimiter = requestLimiter ?? ServerRequestLimiter(
             maximumConcurrentRequests: configuration.maximumConcurrentRequests,
@@ -124,8 +141,7 @@ public final class ServerHTTPServer: @unchecked Sendable {
             if isStopped { closeSocket(client); return }
             handlers.enter()
             DispatchQueue.global(qos: .userInitiated).async { [self] in
-                defer { handlers.leave() }
-                handle(clientSocket: client)
+                handle(clientSocket: client, handlers: handlers)
             }
             handledRequests += 1
         }
@@ -284,70 +300,6 @@ public final class ServerHTTPServer: @unchecked Sendable {
             }
         }
         return Int(UInt16(bigEndian: address.sin_port))
-    }
-
-    private func handle(clientSocket: Int32) {
-        defer { closeSocket(clientSocket) }
-        var parsedRequest: ServerHTTPRequest?
-
-        do {
-            try configureRequestTimeout(for: clientSocket)
-            let requestData = try readRequest(from: clientSocket)
-            let request = try codec.parseRequest(requestData)
-            parsedRequest = request
-            logger.requestStarted(request)
-            let response = route(request)
-            logger.requestCompleted(request, response: response)
-            try write(codec.serializeResponse(response), to: clientSocket)
-        } catch ServerHTTPServerError.requestReadTimedOut {
-            let response = errorResponse(
-                statusCode: 408,
-                error: "request_timeout",
-                message: "HTTP request was not received before the configured timeout."
-            )
-            logger.requestFailed(parsedRequest, response: response, error: ServerHTTPServerError.requestReadTimedOut)
-            try? write(codec.serializeResponse(response), to: clientSocket)
-        } catch let serverError as ServerHTTPServerError {
-            let response = payloadTooLargeResponse(for: serverError) ?? malformedRequestResponse()
-            logger.requestFailed(parsedRequest, response: response, error: serverError)
-            try? write(codec.serializeResponse(response), to: clientSocket)
-        } catch {
-            let response = malformedRequestResponse()
-            logger.requestFailed(parsedRequest, response: response, error: error)
-            try? write(codec.serializeResponse(response), to: clientSocket)
-        }
-    }
-
-    private func payloadTooLargeResponse(for error: ServerHTTPServerError) -> ServerHTTPResponse? {
-        switch error {
-        case .requestHeadersTooLarge:
-            return errorResponse(
-                statusCode: 413,
-                error: "payload_too_large",
-                message: "HTTP request headers exceed the configured maximum size."
-            )
-        case .requestBodyTooLarge:
-            return errorResponse(
-                statusCode: 413,
-                error: "payload_too_large",
-                message: "HTTP request body exceeds the configured maximum size."
-            )
-        default:
-            return nil
-        }
-    }
-
-    private func route(_ request: ServerHTTPRequest) -> ServerHTTPResponse {
-        guard requestLimiter.tryAcquire() else {
-            return errorResponse(
-                statusCode: 429,
-                error: "too_many_requests",
-                message: "Maximum concurrent and queued requests are already in progress."
-            )
-        }
-
-        defer { requestLimiter.release() }
-        return routeHandler(request)
     }
 
     private func configureRequestTimeout(for clientSocket: Int32) throws {
@@ -597,7 +549,7 @@ private func isRequestReadTimeout() -> Bool {
 #elseif canImport(WinSDK)
 public final class ServerHTTPServer: @unchecked Sendable {
     private let configuration: ServerServeConfiguration
-    private let routeHandler: @Sendable (ServerHTTPRequest) -> ServerHTTPResponse
+    private let routeHandler: ServerRouteHandler
     private let codec: ServerHTTPCodec
     private let requestLimiter: ServerRequestLimiter
     private let logger: ServerStructuredLogger
@@ -615,8 +567,10 @@ public final class ServerHTTPServer: @unchecked Sendable {
     ) {
         let router = router ?? ServerRouter(configuration: configuration)
         self.configuration = configuration
-        self.routeHandler = { request in
-            router.routeBlocking(request)
+        self.routeHandler = { request, complete in
+            Task {
+                complete(await router.route(request))
+            }
         }
         self.codec = codec
         self.requestLimiter = requestLimiter ?? ServerRequestLimiter(
@@ -657,8 +611,7 @@ public final class ServerHTTPServer: @unchecked Sendable {
                 }
                 handlers.enter()
                 DispatchQueue.global(qos: .userInitiated).async { [self] in
-                    defer { handlers.leave() }
-                    handle(clientSocket: client)
+                    handle(clientSocket: client, handlers: handlers)
                 }
                 handledRequests += 1
             }
@@ -747,70 +700,6 @@ public final class ServerHTTPServer: @unchecked Sendable {
             }
         }
         return Int(UInt16(bigEndian: address.sin_port))
-    }
-
-    private func handle(clientSocket: SOCKET) {
-        defer { closeSocket(clientSocket) }
-        var parsedRequest: ServerHTTPRequest?
-
-        do {
-            try configureRequestTimeout(for: clientSocket)
-            let requestData = try readRequest(from: clientSocket)
-            let request = try codec.parseRequest(requestData)
-            parsedRequest = request
-            logger.requestStarted(request)
-            let response = route(request)
-            logger.requestCompleted(request, response: response)
-            try write(codec.serializeResponse(response), to: clientSocket)
-        } catch ServerHTTPServerError.requestReadTimedOut {
-            let response = errorResponse(
-                statusCode: 408,
-                error: "request_timeout",
-                message: "HTTP request was not received before the configured timeout."
-            )
-            logger.requestFailed(parsedRequest, response: response, error: ServerHTTPServerError.requestReadTimedOut)
-            try? write(codec.serializeResponse(response), to: clientSocket)
-        } catch let serverError as ServerHTTPServerError {
-            let response = payloadTooLargeResponse(for: serverError) ?? malformedRequestResponse()
-            logger.requestFailed(parsedRequest, response: response, error: serverError)
-            try? write(codec.serializeResponse(response), to: clientSocket)
-        } catch {
-            let response = malformedRequestResponse()
-            logger.requestFailed(parsedRequest, response: response, error: error)
-            try? write(codec.serializeResponse(response), to: clientSocket)
-        }
-    }
-
-    private func payloadTooLargeResponse(for error: ServerHTTPServerError) -> ServerHTTPResponse? {
-        switch error {
-        case .requestHeadersTooLarge:
-            return errorResponse(
-                statusCode: 413,
-                error: "payload_too_large",
-                message: "HTTP request headers exceed the configured maximum size."
-            )
-        case .requestBodyTooLarge:
-            return errorResponse(
-                statusCode: 413,
-                error: "payload_too_large",
-                message: "HTTP request body exceeds the configured maximum size."
-            )
-        default:
-            return nil
-        }
-    }
-
-    private func route(_ request: ServerHTTPRequest) -> ServerHTTPResponse {
-        guard requestLimiter.tryAcquire() else {
-            return errorResponse(
-                statusCode: 429,
-                error: "too_many_requests",
-                message: "Maximum concurrent and queued requests are already in progress."
-            )
-        }
-
-        defer { requestLimiter.release() }
-        return routeHandler(request)
     }
 
     private func configureRequestTimeout(for clientSocket: SOCKET) throws {
@@ -987,5 +876,107 @@ private func withWinsock<Result>(_ operation: () throws -> Result) throws -> Res
 
 private func isRequestReadTimeout() -> Bool {
     WSAGetLastError() == WSAETIMEDOUT || WSAGetLastError() == WSAEWOULDBLOCK
+}
+#endif
+
+
+#if canImport(Darwin) || canImport(Glibc) || canImport(WinSDK)
+extension ServerHTTPServer {
+    private func handle(clientSocket: ServerAcceptedSocket, handlers: DispatchGroup) {
+        let request: ServerHTTPRequest
+        do {
+            try configureRequestTimeout(for: clientSocket)
+            request = try codec.parseRequest(readRequest(from: clientSocket))
+        } catch {
+            defer {
+                closeSocket(clientSocket)
+                handlers.leave()
+            }
+            respondToFailure(error, request: nil, clientSocket: clientSocket)
+            return
+        }
+
+        logger.requestStarted(request)
+        // Routing and queued admission must not park the worker that read the socket.
+        if requestLimiter.submit({ [self] in
+            routeHandler(request) { [self] response in
+                requestLimiter.release()
+                DispatchQueue.global(qos: .userInitiated).async { [self] in
+                    finish(response, request: request, clientSocket: clientSocket, handlers: handlers)
+                }
+            }
+        }) {
+            return
+        }
+
+        let response = errorResponse(
+            statusCode: 429,
+            error: "too_many_requests",
+            message: "Maximum concurrent and queued requests are already in progress."
+        )
+        finish(response, request: request, clientSocket: clientSocket, handlers: handlers)
+    }
+
+    private func finish(
+        _ response: ServerHTTPResponse,
+        request: ServerHTTPRequest,
+        clientSocket: ServerAcceptedSocket,
+        handlers: DispatchGroup
+    ) {
+        defer {
+            closeSocket(clientSocket)
+            handlers.leave()
+        }
+
+        logger.requestCompleted(request, response: response)
+        do {
+            try write(codec.serializeResponse(response), to: clientSocket)
+        } catch {
+            respondToFailure(error, request: request, clientSocket: clientSocket)
+        }
+    }
+
+    private func respondToFailure(
+        _ error: Error,
+        request: ServerHTTPRequest?,
+        clientSocket: ServerAcceptedSocket
+    ) {
+        let response: ServerHTTPResponse
+        if let serverError = error as? ServerHTTPServerError {
+            if serverError == .requestReadTimedOut {
+                response = errorResponse(
+                    statusCode: 408,
+                    error: "request_timeout",
+                    message: "HTTP request was not received before the configured timeout."
+                )
+            } else {
+                response = payloadTooLargeResponse(for: serverError) ?? malformedRequestResponse()
+            }
+        } else {
+            response = malformedRequestResponse()
+        }
+        logger.requestFailed(request, response: response, error: error)
+        try? write(codec.serializeResponse(response), to: clientSocket)
+    }
+
+    private func payloadTooLargeResponse(for error: ServerHTTPServerError) -> ServerHTTPResponse? {
+        switch error {
+        case .requestHeadersTooLarge:
+            return errorResponse(
+                statusCode: 413,
+                error: "payload_too_large",
+                message: "HTTP request headers exceed the configured maximum size."
+            )
+        case .requestBodyTooLarge:
+            return errorResponse(
+                statusCode: 413,
+                error: "payload_too_large",
+                message: "HTTP request body exceeds the configured maximum size."
+            )
+        default:
+            return nil
+        }
+    }
+
 }
 #endif

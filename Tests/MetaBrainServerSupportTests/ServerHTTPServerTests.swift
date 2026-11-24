@@ -174,6 +174,52 @@ import Glibc
     #expect(secondCall.hasSuffix(#"{"error":"too_many_requests","message":"Maximum concurrent and queued requests are already in progress."}"#))
 }
 
+@Test func httpServerDrainsAdmittedAndQueuedRequestsOnStop() throws {
+    let configuration = try ServerServeConfiguration(host: "127.0.0.1", port: 0)
+    let limiter = ServerRequestLimiter(maximumConcurrentRequests: 1, maximumQueuedRequests: 1)
+    let routeHandler = BlockingRouteHandler()
+    let running = try startServer(
+        configuration: configuration,
+        maxRequests: nil,
+        routeHandler: routeHandler.route,
+        requestLimiter: limiter
+    )
+    defer {
+        routeHandler.releaseFirstCall()
+        routeHandler.releaseFirstCall()
+        running.server.stop()
+    }
+
+    let request = "GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n"
+    let first = sendHTTPRequestAsync(to: running.mode, request: request)
+    try #require(routeHandler.waitForFirstCall(timeout: .now() + 5) == .success)
+    let second = sendHTTPRequestAsync(to: running.mode, request: request)
+
+    let queueDeadline = Date().addingTimeInterval(5)
+    while limiter.queuedRequestCount == 0, Date() < queueDeadline {
+        Thread.sleep(forTimeInterval: 0.001)
+    }
+    try #require(limiter.queuedRequestCount == 1)
+
+    let overflow = sendHTTPRequestAsync(to: running.mode, request: request)
+    try #require(overflow.finished.wait(timeout: .now() + 5) == .success)
+    #expect(try overflow.state.response().contains("HTTP/1.1 429 Too Many Requests\r\n"))
+
+    running.server.stop()
+    #expect(!running.isFinished())
+    routeHandler.releaseFirstCall()
+    routeHandler.releaseFirstCall()
+
+    try #require(first.finished.wait(timeout: .now() + 5) == .success)
+    try #require(second.finished.wait(timeout: .now() + 5) == .success)
+    try running.wait()
+    #expect(try first.state.response().contains("HTTP/1.1 200 OK\r\n"))
+    #expect(try second.state.response().contains("HTTP/1.1 200 OK\r\n"))
+    #expect(routeHandler.callCount == 2)
+    #expect(limiter.activeRequestCount == 0)
+    #expect(limiter.queuedRequestCount == 0)
+}
+
 @Test func httpServerAppliesRequestReadTimeout() throws {
     let configuration = try ServerServeConfiguration(
         host: "127.0.0.1",

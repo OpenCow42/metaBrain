@@ -65,3 +65,31 @@ import Testing
     }
     #expect(limiter.activeRequestCount == 0)
 }
+
+@Test func requestLimiterSubmitsQueuedOperationsWithoutBlocking() {
+    let limiter = ServerRequestLimiter(maximumConcurrentRequests: 1, maximumQueuedRequests: 2)
+    let first = DispatchSemaphore(value: 0)
+    let second = DispatchSemaphore(value: 0)
+    let third = DispatchSemaphore(value: 0)
+
+    #expect(limiter.submit { first.signal() })
+    #expect(limiter.submit { second.signal() })
+    #expect(limiter.submit { third.signal() })
+    #expect(!limiter.submit { Issue.record("An over-capacity request was admitted.") })
+    #expect(first.wait(timeout: .now()) == .success)
+    #expect(second.wait(timeout: .now()) == .timedOut)
+    #expect(third.wait(timeout: .now()) == .timedOut)
+    #expect(limiter.queuedRequestCount == 2)
+
+    limiter.release()
+    #expect(second.wait(timeout: .now()) == .success)
+    #expect(third.wait(timeout: .now()) == .timedOut)
+    #expect(limiter.activeRequestCount == 1)
+    #expect(limiter.queuedRequestCount == 1)
+
+    limiter.release()
+    #expect(third.wait(timeout: .now()) == .success)
+    limiter.release()
+    #expect(limiter.activeRequestCount == 0)
+    #expect(limiter.queuedRequestCount == 0)
+}

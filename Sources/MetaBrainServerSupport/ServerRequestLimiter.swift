@@ -1,12 +1,19 @@
+import Dispatch
 import Foundation
 
 public final class ServerRequestLimiter: @unchecked Sendable {
     public let maximumConcurrentRequests: Int
     public let maximumQueuedRequests: Int
 
-    private let condition = NSCondition()
+    private enum Admission {
+        case immediate
+        case queued
+        case rejected
+    }
+
+    private let lock = NSLock()
     private var activeRequests = 0
-    private var queuedRequests = 0
+    private var pending: [@Sendable () -> Void] = []
 
     public init(maximumConcurrentRequests: Int, maximumQueuedRequests: Int = 0) {
         self.maximumConcurrentRequests = maximumConcurrentRequests
@@ -14,47 +21,66 @@ public final class ServerRequestLimiter: @unchecked Sendable {
     }
 
     public var activeRequestCount: Int {
-        condition.lock()
-        defer { condition.unlock() }
-        return activeRequests
+        lock.withLock { activeRequests }
     }
 
     public var queuedRequestCount: Int {
-        condition.lock()
-        defer { condition.unlock() }
-        return queuedRequests
+        lock.withLock { pending.count }
     }
 
     public func tryAcquire() -> Bool {
-        condition.lock()
-        defer { condition.unlock() }
-
-        if activeRequests < maximumConcurrentRequests, queuedRequests == 0 {
-            activeRequests += 1
+        let accepted = DispatchSemaphore(value: 0)
+        switch reserve({ accepted.signal() }) {
+        case .immediate:
             return true
-        }
-
-        guard queuedRequests < maximumQueuedRequests else {
+        case .queued:
+            accepted.wait()
+            return true
+        case .rejected:
             return false
         }
+    }
 
-        queuedRequests += 1
-        while activeRequests >= maximumConcurrentRequests {
-            condition.wait()
+    // An admitted operation owns one permit until it calls release.
+    // Queued operations wait here without occupying a worker thread.
+    func submit(_ start: @escaping @Sendable () -> Void) -> Bool {
+        switch reserve(start) {
+        case .immediate:
+            start()
+            return true
+        case .queued:
+            return true
+        case .rejected:
+            return false
         }
-        queuedRequests -= 1
-
-        activeRequests += 1
-        return true
     }
 
     public func release() {
-        condition.lock()
-        defer { condition.unlock() }
-
-        if activeRequests > 0 {
+        let next: (@Sendable () -> Void)? = lock.withLock {
+            guard activeRequests > 0 else {
+                return nil
+            }
+            if !pending.isEmpty {
+                // Transfer the active permit directly to the next queued operation.
+                return pending.removeFirst()
+            }
             activeRequests -= 1
-            condition.signal()
+            return nil
+        }
+        next?()
+    }
+
+    private func reserve(_ start: @escaping @Sendable () -> Void) -> Admission {
+        lock.withLock {
+            if activeRequests < maximumConcurrentRequests {
+                activeRequests += 1
+                return .immediate
+            }
+            guard pending.count < maximumQueuedRequests else {
+                return .rejected
+            }
+            pending.append(start)
+            return .queued
         }
     }
 }
