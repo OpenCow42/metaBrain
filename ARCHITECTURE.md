@@ -95,6 +95,13 @@ The v1 model is:
 
 If a CLI command cannot open a store because another process owns it, surface a clear lock/open error rather than trying to bypass LevelDB's process lock.
 
+Explicit initialization through `mb init` or `POST /v1/init` uses
+`MetaBrainStore.initialize`. On new database creation, the core writes
+`/AGENTS.md` as a versioned and indexed document unless empty initialization
+was requested. Ordinary opens and existing databases preserve their
+document contents. Concurrent requests in one daemon share the first open
+for the selected store.
+
 ## Document Model
 
 Documents are text-first records with metadata and references.

@@ -302,8 +302,12 @@ document can return `document_not_found`.
 
 `POST /v1/init`
 
+Send an empty body or `{}` to initialize a new store with `/AGENTS.md`.
+Send the following body to create a store with zero documents.
+Either request preserves the contents of an existing store.
+
 ```json
-{}
+{"empty": true}
 ```
 
 Response mirrors CLI JSON:

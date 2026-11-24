@@ -58,6 +58,60 @@ private func storeTestCodec<Value: Codable & Sendable>(
     }
 }
 
+@Test func explicitInitializationSeedsAndPreservesTheAgentGuide() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        try fixture.createStoreDirectory()
+        let path = try DocumentPath("/AGENTS.md")
+        let store = try await MetaBrainStore.initialize(at: fixture.storeURL)
+        let original = try #require(try await store.getDocument(.path(path), trackingRead: false))
+
+        #expect(original.currentVersion == 1)
+        #expect(original.body.contains("--ref-id"))
+        #expect(try await store.listDirectory().map(\.path) == [path])
+        #expect(try await store.search(SearchQuery(text: "credentials")).map(\.path) == [path])
+
+        try await store.putDocument(DocumentInput(path: path, body: "Custom store guidance."))
+        await store.close()
+
+        let reopened = try await MetaBrainStore.initialize(at: fixture.storeURL)
+        let edited = try #require(try await reopened.getDocument(.path(path), trackingRead: false))
+        #expect(edited.id == original.id)
+        #expect(edited.body == "Custom store guidance.")
+        #expect(edited.currentVersion == 2)
+        let movedPath = try DocumentPath("/guide.md")
+        _ = try await reopened.moveDocument(.path(path), to: movedPath)
+        await reopened.close()
+
+        let moved = try await MetaBrainStore.initialize(at: fixture.storeURL, empty: true)
+        #expect(try await moved.listDirectory().map(\.path) == [movedPath])
+        #expect(try await moved.deleteDocument(.path(movedPath)))
+        await moved.close()
+
+        let deleted = try await MetaBrainStore.initialize(at: fixture.storeURL)
+        #expect(try await deleted.listDirectory().isEmpty)
+        await deleted.close()
+    }
+}
+
+@Test(arguments: [false, true]) func explicitInitializationPreservesExistingEmptyStore(
+    createdWithEmptyFlag: Bool
+) async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let original: MetaBrainStore
+        if createdWithEmptyFlag {
+            original = try await MetaBrainStore.initialize(at: fixture.storeURL, empty: true)
+        } else {
+            original = try MetaBrainStore(url: fixture.storeURL)
+        }
+        #expect(try await original.listDirectory().isEmpty)
+        await original.close()
+
+        let reopened = try await MetaBrainStore.initialize(at: fixture.storeURL)
+        #expect(try await reopened.listDirectory().isEmpty)
+        await reopened.close()
+    }
+}
+
 @Test func opensStoreFromStringPathAndPreservesCustomOptions() async throws {
     try await withTemporaryStoreFixture { fixture in
         let options = MetaBrainStoreOptions(

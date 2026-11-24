@@ -19,7 +19,7 @@ public actor MetaBrainStoreRegistry {
     }
 
     private struct Entry {
-        var storeServer: MetaBrainStoreServer
+        var opening: Task<MetaBrainStoreServer, Error>
         var activeRequestCount: Int
         var releaseGeneration: UInt64
     }
@@ -41,24 +41,49 @@ public actor MetaBrainStoreRegistry {
         createIfMissing: Bool = true,
         operation: @Sendable (MetaBrainStoreServer) async throws -> Result
     ) async throws -> Result {
+        try await withStore(
+            at: storePath,
+            createIfMissing: createIfMissing,
+            initializingEmpty: nil,
+            operation: operation
+        )
+    }
+
+    func withStore<Result: Sendable>(
+        at storePath: String,
+        createIfMissing: Bool,
+        initializingEmpty: Bool?,
+        operation: @Sendable (MetaBrainStoreServer) async throws -> Result
+    ) async throws -> Result {
         let key = Self.canonicalStorePath(storePath)
-        let storeServer = try acquireStore(at: key, createIfMissing: createIfMissing)
+        let opening = try acquireStore(
+            at: key,
+            createIfMissing: createIfMissing,
+            initializingEmpty: initializingEmpty
+        )
+        let storeServer: MetaBrainStoreServer
+        do {
+            storeServer = try await opening.value
+        } catch {
+            releaseStore(at: key, openFailed: true)
+            throw error
+        }
 
         do {
             let result = try await operation(storeServer)
-            await releaseStore(at: key)
+            releaseStore(at: key)
             return result
         } catch {
-            await releaseStore(at: key)
+            releaseStore(at: key)
             throw error
         }
     }
 
     public func closeAll() async {
-        let servers = entries.values.map(\.storeServer)
+        let pendingStores = entries.values.map(\.opening)
         entries.removeAll()
-        for server in servers {
-            await server.close()
+        for opening in pendingStores {
+            await (try? opening.value)?.close()
         }
     }
 
@@ -68,29 +93,46 @@ public actor MetaBrainStoreRegistry {
         }
     }
 
-    private func acquireStore(at key: String, createIfMissing: Bool) throws -> MetaBrainStoreServer {
+    private func acquireStore(
+        at key: String,
+        createIfMissing: Bool,
+        initializingEmpty: Bool?
+    ) throws -> Task<MetaBrainStoreServer, Error> {
         if var entry = entries[key] {
             entry.activeRequestCount += 1
             entry.releaseGeneration &+= 1
             entries[key] = entry
-            return entry.storeServer
+            return entry.opening
         }
 
-        let storeServer = try MetaBrainStoreServer(storePath: key, createIfMissing: createIfMissing)
+        let opening: Task<MetaBrainStoreServer, Error>
+        if let initializingEmpty {
+            // Publish the open task before awaiting it so all requests share initialization.
+            opening = Task {
+                try await MetaBrainStoreServer.openInitialized(storePath: key, empty: initializingEmpty)
+            }
+        } else {
+            let storeServer = try MetaBrainStoreServer(storePath: key, createIfMissing: createIfMissing)
+            opening = Task { storeServer }
+        }
         entries[key] = Entry(
-            storeServer: storeServer,
+            opening: opening,
             activeRequestCount: 1,
             releaseGeneration: 1
         )
-        return storeServer
+        return opening
     }
 
-    private func releaseStore(at key: String) async {
+    private func releaseStore(at key: String, openFailed: Bool = false) {
         guard var entry = entries[key] else {
             return
         }
 
         entry.activeRequestCount = max(0, entry.activeRequestCount - 1)
+        if openFailed && entry.activeRequestCount == 0 {
+            entries.removeValue(forKey: key)
+            return
+        }
         entry.releaseGeneration &+= 1
         let generation = entry.releaseGeneration
         entries[key] = entry
@@ -114,7 +156,7 @@ public actor MetaBrainStoreRegistry {
         }
 
         entries.removeValue(forKey: key)
-        await entry.storeServer.close()
+        await (try? entry.opening.value)?.close()
     }
 
     private nonisolated static func canonicalStorePath(_ storePath: String) -> String {

@@ -86,6 +86,7 @@ Create a store, write a note, browse it, search it, and read it back:
 
 ```bash
 mb init
+mb get /AGENTS.md
 mb put /notes/today "Remember the lexical store." --tag planning --meta source=agent
 mb list /notes --recursive --dates
 mb tree --max-depth 2
@@ -105,6 +106,11 @@ Store-backed commands use the first applicable location in this order:
 Relative paths are resolved from the current directory. `mb init` and `mb put`
 can create a store at the selected location. Other store-backed commands require
 an existing store and report the selected location when it is missing.
+
+`mb init` creates `/AGENTS.md` as the first document in a new store. Read it for
+guidance on writing, finding, and linking notes. Run `mb init --empty` to start
+with zero documents. Reopening a store preserves its contents. A command such
+as `mb put` that creates a store implicitly only writes the requested document.
 
 ## Agent Workflow
 
@@ -182,7 +188,7 @@ mb help dump
 
 - `version` prints the current release tag, probes the default local daemon, and
   checks GitHub for newer releases.
-- `init` creates or opens a store.
+- `init` creates a store with `/AGENTS.md` by default or opens an existing store.
 - `put` creates or updates a document at a path.
 - `patch` applies a single-file unified diff to an existing document body.
 - `move` relocates an existing document to a new path without changing its ID.

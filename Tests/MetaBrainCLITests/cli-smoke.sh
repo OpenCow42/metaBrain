@@ -363,7 +363,7 @@ if "${METABRAIN[@]}" init --unknown-option 2>"$TMP_DIR/init-invalid.err"; then
     echo "Expected invalid init option to fail" >&2
     exit 1
 fi
-rg -F -q 'Usage: mb init [--store <store>] [--server <server>] [--no-server] [--format <format>]' "$TMP_DIR/init-invalid.err"
+rg -F -q 'Usage: mb init [--store <store>] [--server <server>] [--no-server] [--format <format>] [--empty]' "$TMP_DIR/init-invalid.err"
 
 if "${METABRAIN[@]}" search query --limit 0 2>"$TMP_DIR/search-invalid.err"; then
     echo "Expected invalid search limit to fail" >&2
@@ -511,7 +511,21 @@ check_guarded_put() {
 
 check_guarded_put "$TMP_DIR/guarded-direct/store.leveldb" "${METABRAIN[@]}" --no-server
 
-INIT_DEFAULT_JSON="$("${METABRAIN[@]}" init --store "$STORE")"
+GUIDED_STORE="$TMP_DIR/guided.leveldb"
+"${METABRAIN[@]}" init --no-server --store "$GUIDED_STORE" >/dev/null
+GUIDED_LIST="$("${METABRAIN[@]}" list --no-server --store "$GUIDED_STORE")"
+assert_line_count "$GUIDED_LIST" 1
+printf '%s\n' "$GUIDED_LIST" | rg -F -q '"path":"/AGENTS.md"'
+"${METABRAIN[@]}" get --no-server --store "$GUIDED_STORE" /AGENTS.md --format text | rg -F -q 'Working with metaBrain'
+
+IMPLICIT_STORE="$TMP_DIR/implicit.leveldb"
+"${METABRAIN[@]}" put --no-server --store "$IMPLICIT_STORE" /first.md "First note" >/dev/null
+"${METABRAIN[@]}" init --no-server --store "$IMPLICIT_STORE" >/dev/null
+IMPLICIT_LIST="$("${METABRAIN[@]}" list --no-server --store "$IMPLICIT_STORE")"
+assert_line_count "$IMPLICIT_LIST" 1
+printf '%s\n' "$IMPLICIT_LIST" | rg -F -q '"path":"/first.md"'
+
+INIT_DEFAULT_JSON="$("${METABRAIN[@]}" init --store "$STORE" --empty)"
 EXPECTED_INIT_JSON="{\"operation\":\"init\",\"status\":\"initialized\",\"storePath\":\"$STORE\"}"
 if [[ "$INIT_DEFAULT_JSON" != "$EXPECTED_INIT_JSON" ]]; then
     echo "Expected init default JSON output, got: $INIT_DEFAULT_JSON" >&2
@@ -523,6 +537,7 @@ if [[ "$INIT_JSONL" != "$EXPECTED_INIT_JSON" ]]; then
     echo "Expected init JSONL output, got: $INIT_JSONL" >&2
     exit 1
 fi
+[[ "$("${METABRAIN[@]}" list --store "$STORE" --format json)" == '[]' ]]
 PUT_TODAY_JSON="$("${METABRAIN[@]}" put --store "$STORE" /notes/today 'alpha beta searchable memory' --title Today --tag search --tag daily --meta status=active --meta kind=daily)"
 assert_put_json "$PUT_TODAY_JSON" /notes/today created 1
 GET_TODAY_DEFAULT_JSON="$("${METABRAIN[@]}" get --store "$STORE" /notes/today)"
@@ -1217,7 +1232,7 @@ fi
 SERVER_FIRST_STORE="$TMP_DIR/server-first-store.leveldb"
 SERVER_SECOND_STORE="$TMP_DIR/server-second-store.leveldb"
 SERVER_FIRST_INIT_JSON="$("${METABRAIN[@]}" init --server "$SERVER_SOCKET" --store "$SERVER_FIRST_STORE")"
-SERVER_SECOND_INIT_JSON="$("${METABRAIN[@]}" init --server "$SERVER_SOCKET" --store "$SERVER_SECOND_STORE")"
+SERVER_SECOND_INIT_JSON="$("${METABRAIN[@]}" init --empty --server "$SERVER_SOCKET" --store "$SERVER_SECOND_STORE")"
 if [[ "$SERVER_FIRST_INIT_JSON" != "{\"operation\":\"init\",\"status\":\"initialized\",\"storePath\":\"$SERVER_FIRST_STORE\"}" ]]; then
     echo "Expected first daemon store init JSON output, got: $SERVER_FIRST_INIT_JSON" >&2
     exit 1
@@ -1226,6 +1241,9 @@ if [[ "$SERVER_SECOND_INIT_JSON" != "{\"operation\":\"init\",\"status\":\"initia
     echo "Expected second daemon store init JSON output, got: $SERVER_SECOND_INIT_JSON" >&2
     exit 1
 fi
+"${METABRAIN[@]}" get /AGENTS.md --server "$SERVER_SOCKET" --store "$SERVER_FIRST_STORE" --format text | rg -F -q 'Working with metaBrain'
+"${METABRAIN[@]}" init --server "$SERVER_SOCKET" --store "$SERVER_SECOND_STORE" >/dev/null
+[[ "$("${METABRAIN[@]}" list --server "$SERVER_SOCKET" --store "$SERVER_SECOND_STORE" --format json)" == '[]' ]]
 SERVER_FIRST_PUT_JSON="$("${METABRAIN[@]}" put /daemon/shared 'first daemon store' --server "$SERVER_SOCKET" --store "$SERVER_FIRST_STORE")"
 SERVER_SECOND_PUT_JSON="$("${METABRAIN[@]}" put /daemon/shared 'second daemon store' --server "$SERVER_SOCKET" --store "$SERVER_SECOND_STORE")"
 assert_put_json "$SERVER_FIRST_PUT_JSON" /daemon/shared created 1

@@ -80,7 +80,7 @@ and [LevelDB options](https://github.com/google/leveldb/blob/main/include/leveld
 | --- | --- | --- | --- |
 | `metabrain` / `help` | ArgumentParser help generation, `commandHelpMessage` | `O(1)` relative to store size | Does not open or scan the store. |
 | `version` | `MetaBrainVersion.currentSoftwareTag`, optional local daemon probe, optional GitHub latest release request | `O(1)` relative to store size | Does not open the store. By default it performs one short local daemon version probe; with the default release check, it also performs one bounded HTTP request to GitHub's latest release API. |
-| `init` | `StoreOptions.withOpenStore`, `MetaBrainStore.init` | `O(1)` relative to documents, plus LevelDB open/recovery work | Creates the parent directory and opens LevelDB. Recovery can replay logs and clean stale files. |
+| `init` | `MetaBrainStore.initialize`, `writeNewDocument` | `O(1)` relative to documents, plus LevelDB open/recovery work | Writes a fixed-size guide when creating a store, unless `--empty` is set. Existing stores require no document scan. |
 | `put` new document | `writeDocument`, `writeNewDocument`, `writeDocumentBatch` | `O(B + T + R + L * seek(S) + X_tree + D)` | Body chunking now advances indices incrementally. Tree maintenance touches only the new path branch instead of rebuilding the whole tree index. |
 | `put` existing document | `writeDocument`, `writeDocumentUpdate`, `writeDocumentBatch`, retention helpers | `O(B + B_old + T + T_old + R + R_old + V log V + H + L * seek(S) + X_tree + D)` | Changed writes update indexes and retained versions. Identical writes and version conflicts return after reading the current document and comparing any relevant fields. |
 | `patch` | `checkDocumentPatch`/`patchDocument`, unified diff parsing, `writeDocumentUpdate`, `writeDocumentBatch`, retention helpers | `O(P_patch + B_old + B + T + T_old + R + R_old + V log V + H + L * seek(S) + X_tree + D)` for writes; `O(P_patch + B_old)` for `--check` | Patch is partial at the CLI layer, but writes still store a full next document snapshot and rebuild current chunks/indexes. |
@@ -183,9 +183,9 @@ within one store but can proceed independently across unrelated stores. Idle
 stores close after the configured idle timeout and release their LevelDB locks.
 
 `GET /v1/version` reports local daemon version metadata and does not perform
-the GitHub release check. `POST /v1/init` returns the selected store path,
-opening that store through the registry if needed. Both are `O(1)` relative to
-store size.
+the GitHub release check. `POST /v1/init` opens the selected store through
+the registry and follows the same creation rules as CLI `init`. Both are
+`O(1)` relative to documents, plus any LevelDB open/recovery work for `init`.
 
 `POST /v1/put` delegates to `MetaBrainStore.putDocument(_:)`; its complexity
 matches the core write path for creating or replacing one document and its

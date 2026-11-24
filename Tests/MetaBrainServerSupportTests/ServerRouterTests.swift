@@ -120,6 +120,40 @@ import Testing
     #expect(try MetaBrainJSON.decoder().decode(GetOutput.self, from: get.body).title == "Today")
 }
 
+@Test func concurrentDaemonInitializationCreatesOneGuide() async throws {
+    let root = try temporaryServerDirectory(prefix: "mbd-router-init")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let registry = MetaBrainStoreRegistry()
+    defer { registry.closeAllBlocking() }
+    let router = ServerRouter(
+        storeRegistry: registry,
+        defaultStorePath: root.appendingPathComponent("store.leveldb").path
+    )
+    let invalid = await router.route(ServerHTTPRequest(
+        method: .post, path: "/v1/init", body: Data(#"{"empty":"yes"}"#.utf8)
+    ))
+    #expect(invalid.statusCode == 400)
+    #expect(await registry.openStoreCount == 0)
+
+    let initialize = ServerHTTPRequest(method: .post, path: "/v1/init")
+    await withTaskGroup(of: ServerHTTPResponse.self) { group in
+        for _ in 0..<8 {
+            group.addTask { await router.route(initialize) }
+        }
+        for await response in group {
+            #expect(response.statusCode == 200)
+        }
+    }
+
+    let list = await router.route(ServerHTTPRequest(method: .post, path: "/v1/list"))
+    #expect(try MetaBrainJSON.decoder().decode([ListOutput].self, from: list.body).map(\.path) == ["/AGENTS.md"])
+    let get = await router.route(ServerHTTPRequest(
+        method: .post, path: "/v1/get",
+        body: Data(#"{"reference":{"kind":"path","value":"/AGENTS.md"},"trackingRead":false}"#.utf8)
+    ))
+    #expect(try MetaBrainJSON.decoder().decode(GetOutput.self, from: get.body).version == 1)
+}
+
 @Test func routerRoutesStoreRequestsByStorePathHeader() async throws {
     let root = try temporaryServerDirectory(prefix: "mbd-router-registry")
     defer { try? FileManager.default.removeItem(at: root) }
@@ -207,7 +241,9 @@ import Testing
     #expect(!FileManager.default.fileExists(atPath: missingParent.path))
     #expect(try FileManager.default.contentsOfDirectory(atPath: emptyStore.path).isEmpty)
 
-    let initialized = await router.route(ServerHTTPRequest(method: .post, path: "/v1/init"))
+    let initialized = await router.route(ServerHTTPRequest(
+        method: .post, path: "/v1/init", body: Data(#"{"empty":true}"#.utf8)
+    ))
     #expect(initialized.statusCode == 200)
     await registry.closeAll()
     let list = await router.route(ServerHTTPRequest(method: .post, path: "/v1/list"))

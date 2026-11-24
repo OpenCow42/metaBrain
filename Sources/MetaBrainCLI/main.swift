@@ -32,6 +32,7 @@ struct MetaBrainCommand: AsyncParsableCommand {
         Common workflow:
           mb version
           mb init --store .metabrain/store.leveldb
+          mb get /AGENTS.md
           mb put /notes/today "Important context" --tag planning --meta source=agent
           mb patch /notes/today --patch-file change.diff
           mb move /notes/today /notes/archive/today
@@ -128,7 +129,7 @@ struct StoreOptions: ParsableArguments {
         )
     }
 
-    private var resolvedStoreURL: URL {
+    var resolvedStoreURL: URL {
         if let store {
             return URL.expandingShellPath(store, isDirectory: true).standardizedFileURL
         }
@@ -312,27 +313,26 @@ extension MetaBrainCommand {
     struct Initialize: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "init",
-            abstract: "Create or open a metaBrain store."
+            abstract: "Create or open a metaBrain store.",
+            discussion: "New stores start with /AGENTS.md unless you pass --empty. Existing stores keep their documents."
         )
 
         @OptionGroup var storeOptions: StoreOptions
         @OptionGroup var output: OutputFormatOptions
 
+        @Flag(help: "Create a new store with no initial documents.")
+        var empty = false
+
         func run() async throws {
             if let client = try storeOptions.serverClient(createIfMissing: true) {
-                let result: InitializeOutput = try client.post("/v1/init", response: InitializeOutput.self)
+                let result: InitializeOutput = try client.post("/v1/init", request: ServerInitializeRequest(empty: empty))
                 try printInitializeOutput(result, format: output.format)
                 return
             }
 
-            try await storeOptions.withOpenStore(createIfMissing: true) { store in
-                let result = InitializeOutput(
-                    operation: "init",
-                    status: "initialized",
-                    storePath: store.url.path
-                )
-                try printInitializeOutput(result, format: output.format)
-            }
+            let store = try await MetaBrainStore.initialize(at: storeOptions.resolvedStoreURL, empty: empty)
+            await store.close()
+            try printInitializeOutput(InitializeOutput(storePath: store.url.path), format: output.format)
         }
     }
 

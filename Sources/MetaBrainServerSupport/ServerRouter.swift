@@ -52,8 +52,13 @@ public struct ServerRouter: Sendable {
         case (_, "/v1/version"):
             return methodNotAllowed(request, allowedMethod: "GET")
         case (.post, "/v1/init"):
-            return await routeStoreOperation(request, createIfMissing: true) { storeServer in
-                await storeServer.initialize()
+            do {
+                let options = try decode(ServerInitializeRequest.self, from: request)
+                return await routeStoreOperation(request, createIfMissing: true, initializingEmpty: options.empty ?? false) { storeServer in
+                    await storeServer.initialize()
+                }
+            } catch {
+                return errorResponse(for: error)
             }
         case (_, "/v1/init"):
             return methodNotAllowed(request, allowedMethod: "POST")
@@ -190,6 +195,7 @@ public struct ServerRouter: Sendable {
     private func routeStoreOperation<T: Encodable & Sendable>(
         _ request: ServerHTTPRequest,
         createIfMissing: Bool = false,
+        initializingEmpty: Bool? = nil,
         _ operation: @escaping @Sendable (MetaBrainStoreServer) async throws -> T
     ) async -> ServerHTTPResponse {
         if let storeServer {
@@ -215,6 +221,7 @@ public struct ServerRouter: Sendable {
             let payload = try await storeRegistry.withStore(
                 at: try storePath(for: request),
                 createIfMissing: createIfMissing,
+                initializingEmpty: initializingEmpty,
                 operation: operation
             )
             return jsonResponse(statusCode: 200, payload: payload)

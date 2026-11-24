@@ -33,6 +33,14 @@ public enum ServerRequestDTOError: Error, Equatable, Sendable, CustomStringConve
     }
 }
 
+public struct ServerInitializeRequest: Codable, Equatable, Sendable {
+    public var empty: Bool?
+
+    public init(empty: Bool? = nil) {
+        self.empty = empty
+    }
+}
+
 public struct ServerPutRequest: Codable, Equatable, Sendable {
     public var path: String
     public var body: String

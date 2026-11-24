@@ -15,8 +15,18 @@ public actor MetaBrainStoreServer {
                 withIntermediateDirectories: true
             )
         }
-        self.storePath = url.path
-        self.store = try MetaBrainStore(url: url, options: MetaBrainStoreOptions(createIfMissing: createIfMissing))
+
+        self.init(store: try MetaBrainStore(url: url, options: MetaBrainStoreOptions(createIfMissing: createIfMissing)))
+    }
+
+    private init(store: MetaBrainStore) {
+        self.storePath = store.url.path
+        self.store = store
+    }
+
+    static func openInitialized(storePath: String, empty: Bool) async throws -> MetaBrainStoreServer {
+        let store = try await MetaBrainStore.initialize(at: storeURL(for: storePath), empty: empty)
+        return MetaBrainStoreServer(store: store)
     }
 
     public func initialize() -> InitializeOutput {

@@ -122,8 +122,12 @@ public final class MetaBrainStore: Sendable {
         }
     }
 
-    public init(url: URL, options: MetaBrainStoreOptions = .default) throws {
-        if !options.createIfMissing {
+    public convenience init(url: URL, options: MetaBrainStoreOptions = .default) throws {
+        try self.init(url: url, options: options, openOptions: options.levelDBOptions)
+    }
+
+    private init(url: URL, options: MetaBrainStoreOptions, openOptions: LevelDBStoreOptions) throws {
+        if !openOptions.createIfMissing {
             // LevelDB creates the database directory and lock before checking its manifest.
             try Self.requireExistingStore(at: url)
         }
@@ -135,11 +139,43 @@ public final class MetaBrainStore: Sendable {
                 path: url.path,
                 keyCodec: StringCodec(),
                 valueCodec: DataCodec(),
-                options: options.levelDBOptions
+                options: openOptions
             )
             records = MetaBrainStoreDatabase(openedRecords)
         } catch let error as LevelDBError {
             throw Self.storeError(from: error, path: url.path)
+        }
+    }
+
+    /// Opens a store, writing the agent guide only when creating a new database.
+    /// Pass `empty: true` to create a database with no initial documents.
+    public static func initialize(at url: URL, empty: Bool = false) async throws -> MetaBrainStore {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if empty {
+            return try MetaBrainStore(url: url)
+        }
+
+        // LevelDB checks for a database under its lock, including in an existing directory.
+        let options = MetaBrainStoreOptions.default
+        var openOptions = options.levelDBOptions
+        openOptions.errorIfExists = true
+        let store: MetaBrainStore
+        do {
+            store = try MetaBrainStore(url: url, options: options, openOptions: openOptions)
+        } catch MetaBrainStoreError.openFailed(_, let message)
+            where message.hasSuffix(": exists (error_if_exists is true)") {
+            // Require the existing database on the second open to avoid creating an unseeded store.
+            openOptions.errorIfExists = false
+            openOptions.createIfMissing = false
+            return try MetaBrainStore(url: url, options: options, openOptions: openOptions)
+        }
+
+        do {
+            try await store.writeNewDocument(MetaBrainAgentGuide.document, writeOptions: .init(sync: true))
+            return store
+        } catch {
+            await store.close()
+            throw error
         }
     }
 
@@ -677,7 +713,11 @@ public final class MetaBrainStore: Sendable {
         )
     }
 
-    private func writeNewDocument(_ input: DocumentInput) async throws -> StoredDocument {
+    @discardableResult
+    private func writeNewDocument(
+        _ input: DocumentInput,
+        writeOptions: Database.WriteOptions = .default
+    ) async throws -> StoredDocument {
         let now = Date()
         let id = DocumentID.generate()
         let document = StoredDocument(
@@ -712,7 +752,8 @@ public final class MetaBrainStore: Sendable {
             ),
             previousRecord: nil,
             removedPath: nil,
-            prunedVersions: []
+            prunedVersions: [],
+            writeOptions: writeOptions
         )
 
         return document
@@ -835,7 +876,8 @@ public final class MetaBrainStore: Sendable {
         entryMetadata: DocumentEntryMetadata,
         previousRecord: MetaBrainDocumentRecord?,
         removedPath: DocumentPath?,
-        prunedVersions: [DocumentVersion]
+        prunedVersions: [DocumentVersion],
+        writeOptions: Database.WriteOptions = .default
     ) async throws {
         let document = record.document
         let documentKey = MetaBrainKeyspace.document(id: document.id)
@@ -871,7 +913,7 @@ public final class MetaBrainStore: Sendable {
 
         try await Self.mapLevelDBErrors(path: url.path) {
             let records = try await currentRecords()
-            try await records.write { batch in
+            try await records.write(writeOptions: writeOptions) { batch in
                 for key in staleChunkKeys + staleIndexKeys + staleReferenceKeys {
                     try batch.deleteValue(forKey: key)
                 }
