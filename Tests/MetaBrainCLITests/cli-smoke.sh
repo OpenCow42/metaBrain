@@ -1506,3 +1506,8 @@ fi
 kill "$daemon_server_pid" 2>/dev/null || true
 wait "$daemon_server_pid" 2>/dev/null || true
 daemon_server_pid=""
+
+python3 Benchmarks/test_citation_performance.py \
+    --mb "${METABRAIN_BIN:-$ROOT_DIR/.build/debug/mb}" \
+    --mbd "${METABRAIN_DAEMON_BIN:-$ROOT_DIR/.build/debug/mbd}" \
+    --tmpdir "$TMP_DIR"
