@@ -98,6 +98,7 @@ and [LevelDB options](https://github.com/google/leveldb/blob/main/include/leveld
 | `tree` | `tree`, `flattenedTreeEntries`, `printTree` | `O(A * seek(S) + A log A)` typical for an unbounded tree | `--max-depth 0` is `O(1)`. Larger depths scan and materialize the requested subtree, then group and sort for printing. |
 | `dump` current | `dump`, `listDirectory`, `getDocument`, optional `DocumentDumpFileWriter.write` | `O(A * seek(S) + D_dump * B + H_dump)` for the requested subtree | Includes the exact path document plus descendant documents, emits JSONL, and optionally writes UTF-8 body copies. |
 | `dump --versions` | `dump`, `versionRecords`, optional `DocumentDumpFileWriter.write` | `O(A * seek(S) + D_dump * (seek(S) + V log V + H) + H_dump)` | Selects current documents by path, then scans retained full-snapshot versions for each selected document. |
+| `preview` | Untracked `getDocument`, wiki format parser, optional project `dump` | See [preview](#preview) | A project scan starts only after parsing a valid saved-view definition. |
 | `search` | `search`, filter and term postings, `searchChunks`, ranking, optional edge scans | `O((Q + G + D_match + D_limit) * seek(S) + Q log Q + F log F + P + B_match + C_match + M * (Q + K_limit) + E)` | Uses corpus IDF and saturated field-weighted frequencies. The limit bounds retained candidates and reference enrichment. |
 | `recall` | `recall`, ranked document traversal, passage drafting, JSON budget selection | `O((Q + G + D_match) * seek(S) + Q log Q + F log F + P + B_match + C_match + M * Q + M log M + D_match log D_match + J_recall)` | Selects distinct documents from the matched pool and fits their citations to a serialized byte budget. |
 | `versions` | `listVersions`, `versionRecords` | `O(seek(S) + V log V + H)` | Scans, decodes, sorts, and prints every full-snapshot version for the document. |
@@ -395,6 +396,17 @@ cost is dominated by tree traversal and emitted body bytes:
 and decodes retained full-snapshot versions for every selected document. This
 adds `O(D_dump * (seek(S) + V log V + H))`, and the final stdout/file output
 cost grows with all emitted version bodies.
+
+### `preview`
+
+The command verifies project scope before store access. A stored definition uses
+one untracked point lookup and current record decode, `O(seek(S) + B)`. A draft
+reads one local file. Canvas preview parses and encodes the board with no
+project traversal. A valid saved view loads current documents with the project
+subtree dump, sorts the scoped candidates by path once, and projects their
+properties. Each view can test up to `D_dump` candidates, and JSON output
+grows with the projected cells. Both modes use the existing read paths in
+direct and daemon connections.
 
 ### `search`
 

@@ -135,10 +135,135 @@ class SkillsTest(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(recovered.read_bytes(), (self.work / "adopt/originals/opaque.bin").read_bytes())
 
+    def project_format_previews(self, info, cli):
+        root = info["project"]
+        board = self.mb(cli, "preview", root + "/storage.canvas", "--project", root)
+        self.assertEqual([node["id"] for node in board["nodes"]], ["decision", "field"])
+        self.assertEqual(board["nodes"][0]["filePath"]["rawValue"], root + "/decision.md")
+        self.assertEqual([edge["id"] for edge in board["edges"]], ["evidence"])
+        tables = self.mb(cli, "preview", root + "/decisions.base", "--project", root)
+        self.assertEqual(tables, [{
+            "name": "Decisions", "columns": ["file.name", "status"],
+            "rows": [{"path": {"rawValue": root + "/decision.md"}, "cells": ["decision.md", "contested"]}],
+        }])
+        return board, tables
+
+    def test_canvas_draft_append_preserves_source(self):
+        info, common = self.fixture()
+        cli = [*common, "--no-server"]
+        root = info["project"]
+        path = root + "/storage.canvas"
+        self.project_format_previews(info, cli)
+        saved = self.mb(cli, "get", path)
+        board = json.loads(saved["body"])
+        board["custom"] = {"theme": "night", "layers": [1, 2]}
+        board["nodes"][0]["customNode"] = {"lock": True}
+        board["edges"][0]["customEdge"] = "curved"
+        self.mb(cli, "put", "--body-only", "--if-version", saved["version"], path, json.dumps(board))
+        original = self.mb(cli, "get", path)
+        edited = json.loads(original["body"])
+        edited["nodes"].append({
+            "id": "review", "type": "file", "file": "reviews/security-review.md",
+            "subpath": "#^result", "x": 300, "y": 0, "width": 240, "height": 140,
+        })
+        draft = self.work / "draft.canvas"
+        draft.write_text(json.dumps(edited), encoding="utf-8")
+        preview = self.mb(cli, "preview", path, "--project", root, "--body-file", draft)
+        self.assertEqual([node["id"] for node in preview["nodes"]], ["decision", "field", "review"])
+        self.assertEqual(preview["nodes"][-1]["subpath"], "#^result")
+        self.assertEqual(self.mb(cli, "get", path), original)
+        reviewed = self.inspect_operation(cli, root, str(uuid.uuid4()), [
+            self.proposed_note(path, draft.read_text(encoding="utf-8"), original),
+        ])
+        self.assert_observed_targets(reviewed, {path: original})
+        self.apply_preview(cli, reviewed)
+        after = json.loads(self.mb(cli, "get", path)["body"])
+        self.assertEqual(after["nodes"][:-1], board["nodes"])
+        self.assertEqual(after["edges"], board["edges"])
+        self.assertEqual(after["custom"], board["custom"])
+        self.assertEqual(after, edited)
+
+    def test_saved_views_are_scoped_and_unsupported_source_survives_edits(self):
+        info, common = self.fixture()
+        cli = [*common, "--no-server"]
+        root = info["project"]
+        path = root + "/decisions.base"
+        self.mb(cli, "put", info["decoy"] + "/decision.md", "# Outside", "--tag", "decision")
+        _, tables = self.project_format_previews(info, cli)
+        saved = self.mb(cli, "get", path)
+        draft = self.work / "draft.base"
+        draft.write_text(saved["body"].replace("name: Decisions", "name: Storage decisions"), encoding="utf-8")
+        self.assertEqual(self.mb(cli, "preview", path, "--project", root, "--body-file", draft),
+                         [{**tables[0], "name": "Storage decisions"}])
+        self.assertEqual(self.mb(cli, "get", path), saved)
+
+        unsupported = saved["body"] + (
+            "  - type: table\n"
+            "    name: Links\n"
+            "    filters: 'file.hasLink(\"decision\")'\n"
+        )
+        self.mb(cli, "put", "--body-only", "--if-version", saved["version"], path, unsupported)
+        stored = self.mb(cli, "get", path)
+        edited = unsupported.replace("name: Decisions", "name: Storage decisions")
+        draft.write_text(edited, encoding="utf-8")
+        missing_store = self.work / "missing.leveldb"
+        for command, extra in (
+            (cli, ()),
+            ([str(MB), "--store", missing_store, "--no-server"], ("--body-file", draft)),
+        ):
+            result = self.mb(command, "preview", path, "--project", root, *extra, check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Unsupported saved view filter", result.stderr)
+            self.assertIn('file.hasLink("decision")', result.stderr)
+            self.assertEqual(result.stdout, "")
+        self.assertFalse(missing_store.exists())
+        for target, project in ((path, "/"), (root + "/./decisions.base", root),
+                                (root + "2/decisions.base", root), (root + ".base", root + ".base")):
+            with self.subTest(target=target, project=project):
+                result = self.mb([str(MB), "--store", missing_store, "--no-server"], "preview",
+                                 target, "--project", project, "--body-file", draft, check=False)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, "")
+                self.assertIn("strictly inside an explicit non-root --project", result.stderr)
+        self.assertEqual(self.mb(cli, "get", path), stored)
+        reviewed = self.inspect_operation(cli, root, str(uuid.uuid4()), [
+            self.proposed_note(path, edited, stored),
+        ])
+        self.assert_observed_targets(reviewed, {path: stored})
+        self.apply_preview(cli, reviewed)
+        self.assertEqual(self.mb(cli, "get", path)["body"], edited)
+
+    def test_markdown_properties_anchors_embeds_and_comments(self):
+        info, common = self.fixture()
+        cli = [*common, "--no-server"]
+        root = info["project"]
+        path = root + "/acceptance.md"
+        target = root + "/reviews/field-review.md"
+        body = (
+            "---\nstatus: verified\ntags: [acceptance]\n---\n\n"
+            "# Acceptance\n\nVerified evidence. ^accepted\n\n"
+            f"![[{target}#^result]]\n\n"
+            "%% [[ignored.md]] ^ignored %%\n"
+        )
+        self.mb(cli, "put", "--", path, body)
+        self.assertEqual(self.mb(cli, "get", path)["body"], body)
+        passage = self.mb(cli, "get", path, "--block", "accepted")
+        self.assertIn("Verified evidence.", json.dumps(passage))
+        self.assertNotEqual(self.mb(cli, "get", path, "--block", "ignored", check=False).returncode, 0)
+        links = self.mb(cli, "links", path)
+        self.assertEqual(len(links), 1)
+        self.assertEqual(links[0]["destination"], target + "#^result")
+        self.assertEqual(links[0]["status"], "resolved")
+        self.assertTrue(links[0]["isEmbed"])
+        matches = self.mb(cli, "search", "--path-prefix", root + "/", "--tag", "acceptance",
+                          "--meta", "status=verified", "--view", "refs")
+        self.assertEqual([item["path"] for item in matches["items"]], [path])
+
     @unittest.skipUnless(os.environ.get("MB_TEST_SOCKET") == "1", "Set MB_TEST_SOCKET=1 where Unix sockets are allowed")
     def test_equivalent_reads_via_explicit_daemon(self):
         info, common = self.fixture()
         direct = self.project_reads(info, [*common, "--no-server"])
+        direct_formats = self.project_format_previews(info, [*common, "--no-server"])
         endpoint = self.work / "mb.sock"
         config = self.work / "mbd.json"
         config.write_text("{}", encoding="utf-8")
@@ -155,6 +280,7 @@ class SkillsTest(unittest.TestCase):
                 daemon.terminate()
                 self.fail(daemon.communicate(timeout=5)[0])
             self.assertEqual(self.project_reads(info, [*common, "--server", str(endpoint)]), direct)
+            self.assertEqual(self.project_format_previews(info, [*common, "--server", str(endpoint)]), direct_formats)
             self.assert_missing_store_stays_missing("--server", str(endpoint))
         finally:
             daemon.terminate()

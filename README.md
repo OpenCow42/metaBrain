@@ -207,6 +207,7 @@ mb version
 mb --help
 mb help search
 mb help dump
+mb help preview
 ```
 
 ## Commands
@@ -254,6 +255,15 @@ cmp review.pdf recovered.pdf
 Staging saves the original under its SHA-256 digest. Applying the operation attaches the original and its provenance to the note revision. A second note can cite the same file under a different origin while sharing the stored bytes. A move preserves the attachment. Export accepts a current path or `--id ID` and an optional retained `--version N`. The destination is replaced after the complete file passes verification. The same commands work with a directly opened store or a daemon.
 
 
+### Preview a wiki board or saved view
+
+```sh
+mb preview /projects/atlas/review.canvas --project /projects/atlas
+mb preview /projects/atlas/reviews.base --project /projects/atlas --body-file reviews.base
+```
+
+Pass the exact virtual path strictly below an explicit project root. The command reads the current saved body, or uses a local UTF-8 draft with `--body-file`. It prints one JSON board object for `.canvas` or an array of table views for `.base`. A saved-view definition must pass validation before the command loads the project's current rows. Preview leaves stored content and read counts unchanged. [Wiki formats and workflows](docs/skills.md)
+
 ### Command list
 
 - `version` prints the current release tag, probes the default local daemon, and
@@ -274,6 +284,7 @@ Staging saves the original under its SHA-256 digest. Applying the operation atta
   versioned references or passages.
 - `recall` returns relevant passages with versioned citations in a byte-budgeted JSON array.
 - `dump` exports documents as JSONL and optional body files.
+- `preview` validates and previews a project board or saved table view as JSON.
 - `versions` lists retained snapshots for a document.
 - `prune` applies a retention policy to document versions.
 - `delete` removes a current document and all retained versions.

@@ -14,6 +14,9 @@
 | `metabrain-wiki-mode` | Suggest a destination or change the filing mode for future notes. |
 | `metabrain-wiki-fold` | Summarize a bounded range of past operations with versioned sources. |
 | `metabrain-save` | Preserve the selected answer or insight with its evidence. |
+| `metabrain-canvas` | Inspect a JSON Canvas board or preview adding one node. |
+| `metabrain-markdown` | Verify or edit Markdown properties, links, headings, blocks, embeds, and comments. |
+| `metabrain-bases` | Inspect or edit a saved YAML table and check its filters against project properties. |
 
 See the [delivery plan](second-brain-plan.md) for the remaining workflow.
 
@@ -64,6 +67,24 @@ For read-only evidence, invoke the CLI skill and specify the same store and proj
 - **Mode** suggests paths under Generic, LYT, PARA, or Zettelkasten. Generic is the default when config is absent. Review the old and new config and activity entries to change the mode. Existing notes keep their paths. [Mode skill](../skills/metabrain-wiki-mode/SKILL.md)
 - **Fold** defaults to the latest 16 raw operation entries. If fewer are available, it reports the shortfall without drafting a fold. You can specify a shorter inclusive range. The summary cites each source revision and gets a path derived from those revisions. Repeating a completed fold leaves it as-is. The index, recent activity, and a single new log entry accompany the summary in the reviewed operation. [Fold skill](../skills/metabrain-wiki-fold/SKILL.md)
 
+## Inspect or edit project formats
+
+Use the same pinned store and connection you use for the wiki, with an explicit virtual project root. The following Bash commands preview the fixture's board and saved table and check the decision note's links. Set `store` to the fixture's printed store path. For a daemon-backed store, replace `--no-server` with `--server "$endpoint"` in the common options.
+
+```bash
+MB=(mb --store "$store" --no-server)
+root=/projects/storage-review
+"${MB[@]}" preview "$root/storage.canvas" --project "$root"
+"${MB[@]}" preview "$root/decisions.base" --project "$root"
+"${MB[@]}" links "$root/decision.md"
+```
+
+- **Canvas** validates portable JSON Canvas 1.0 boards and resolves project-relative file targets. A focused edit adds one node while preserving the stacking order and existing unknown fields. [Canvas skill](../skills/metabrain-canvas/SKILL.md)
+- **Markdown** uses native properties and citation indexing to check links and open headings or blocks. Embedded targets can be indexed, and percent comments are excluded from citation extraction. Use `mb get` for the original source or an exact passage. Review a draft's exact diff and verify changed targets before inspecting the operation, then use `mb links` and `mb lint` after apply. [Markdown skill](../skills/metabrain-markdown/SKILL.md) · [Markdown citations and properties](../README.md#markdown-citations)
+- **Bases** previews table columns and row limits with global and view filters applied together. An unsupported filter anywhere in the definition stops the preview before any rows are returned. Report its source expression and preserve it byte-for-byte when editing another field. [Bases skill](../skills/metabrain-bases/SKILL.md)
+
+For Canvas or Bases drafts, add `--body-file DRAFT` to preview the proposed body before inspecting the reviewed operation. Use the original source when a preview is unavailable. Version history is available through `mb versions PATH`. These commands work in the CLI with direct and daemon connections. Native Explorer board and table previews are a later step. [Reviewed project operations](../README.md#commit-related-notes-together) · [Delivery plan](second-brain-plan.md)
+
 ## Try the disposable fixture
 
 From a source checkout with `swift build` completed:
@@ -79,6 +100,8 @@ The builder prints JSON with the selected store and project. Open the new direct
 To exercise the evidence workflow, build a separate fixture with `--state empty` and authorize wiki setup first. Ask ingest to preview the two review files from `originals/` and explain the disagreement in one decision. Authorize original staging and then the reviewed note operation. In a fresh session, ask each query depth whether the client should store an offline copy. Ask retrieve for `offline storage` with a small budget, then reopen a returned reference with a larger budget. Select one conclusion with its citations and preview saving it.
 
 The default fixture state, `adopt`, contains two opposing design reviews, a contested decision, the original source files including an opaque binary, a JSON Canvas board, a saved `.base` definition, and a similarly named sibling project. `--state empty` leaves the selected subtree empty and keeps the originals, global guide, and sibling project. `--state initialized` also seeds the configuration, recent summary, and an operation note. The fixture builder requires a new output directory.
+
+With the default or initialized fixture, ask canvas to preview adding a file node linked to `reviews/security-review.md` with subpath `#^result`. Ask Markdown to verify the existing links in `decision.md`. Ask bases to preview `decisions.base` and a draft that changes its table limit to 1. In a separate draft, add an unsupported filter and check that the preview reports it before returning rows.
 
 With the initialized fixture, ask autoresearch for a local-only dossier on offline storage with a two-source budget. Ask think whether to deploy offline storage and look for both reviews and a verification step. For defuddle, preview `https://example.invalid/field-review`, then supply `originals/field-review.md` as the original and review its proposed capture.
 

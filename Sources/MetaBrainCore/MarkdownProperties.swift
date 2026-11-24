@@ -5,31 +5,38 @@ import Yams
 /// source body and explicit document fields separate for lossless edits.
 enum MarkdownProperties {
     static func filterKeys(for document: StoredDocument) -> Set<String> {
-        var keys = Set(document.tags.map { MetaBrainKeyspace.tag($0, id: document.id) })
-        for (key, value) in document.metadata {
+        let properties = project(
+            document.body, isMarkdown: document.isMarkdown, tags: document.tags, metadata: document.metadata
+        )
+        var keys = Set(properties.tags.map { MetaBrainKeyspace.tag($0, id: document.id) })
+        for (key, value) in properties.values {
             keys.insert(MetaBrainKeyspace.metadata(key: key, value: value, id: document.id))
         }
-        guard document.isMarkdown, let yaml = frontmatter(in: document.body),
+        return keys
+    }
+
+    static func project(
+        _ body: String, isMarkdown: Bool, tags: [String], metadata: [String: String]
+    ) -> (tags: [String], values: [(key: String, value: String)]) {
+        var allTags = tags
+        var properties = metadata.map { (key: $0.key, value: $0.value) }
+        guard isMarkdown, let yaml = frontmatter(in: body),
               let mapping = (try? compose(yaml: String(yaml)))?.mapping else {
-            return keys
+            return (allTags, properties)
         }
 
-        let explicitKeys = Set(document.metadata.keys.map { $0.lowercased() })
+        let explicitKeys = Set(metadata.keys.map { $0.lowercased() })
         for (key, node) in mapping {
             guard let name = key.scalar?.string, !name.isEmpty else { continue }
             let property = name.lowercased()
             let values = node.sequence?.compactMap { $0.scalar?.string } ?? [node.scalar?.string].compactMap { $0 }
             if property == "tags" {
-                for tag in values where !tag.isEmpty {
-                    keys.insert(MetaBrainKeyspace.tag(tag, id: document.id))
-                }
+                allTags.append(contentsOf: values.filter { !$0.isEmpty })
             } else if !explicitKeys.contains(property) {
-                for value in values {
-                    keys.insert(MetaBrainKeyspace.metadata(key: name, value: value, id: document.id))
-                }
+                properties.append(contentsOf: values.map { (key: name, value: $0) })
             }
         }
-        return keys
+        return (allTags, properties)
     }
 
     private static func frontmatter(in body: String) -> Substring? {

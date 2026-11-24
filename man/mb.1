@@ -73,6 +73,22 @@ Review the preview, then pass that file to
 The operation commits all proposed notes in one batch.
 On a conflict, inspect the changed notes and generate a new preview.
 After a lost response, submit the original preview again to retrieve its receipt.
+.Sh WIKI FORMAT PREVIEW
+.Nm
+.Cm preview
+.Ar path
+.Fl Fl project Ar root
+.Op Fl Fl body-file Ar draft
+validates the current
+.Pa .canvas
+or
+.Pa .base
+body at an exact virtual path strictly below a non-root project path.
+The optional local UTF-8 draft supplies the body for preview.
+Canvas output is one JSON board object.
+Saved-view output is a JSON array of tables.
+The command validates each saved view before loading current project rows.
+Preview leaves stored content and read counts unchanged.
 .Sh CLAIMS
 Project inspection reports the document IDs it will assign to new paths.
 Use those IDs in versioned evidence references on the decision's claims, then inspect and apply the completed operation.
@@ -118,5 +134,6 @@ mb get --ref "$ref" --context section --max-tokens 1024
 mb links /decisions/backups.md
 mb links /policies/Retention.md --incoming --block keep-last
 mb lint /decisions --strict
+mb preview /projects/atlas/reviews.base --project /projects/atlas --body-file reviews.base
 mb get /policies/Retention.md --block keep-last
 .Ed

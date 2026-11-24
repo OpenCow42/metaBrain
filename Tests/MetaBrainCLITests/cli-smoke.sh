@@ -230,6 +230,7 @@ assert_remove_version_json() {
 "${METABRAIN[@]}" help | rg -q 'mb help list'
 "${METABRAIN[@]}" help | rg -q 'mb help tree'
 "${METABRAIN[@]}" help | rg -q 'mb help dump'
+"${METABRAIN[@]}" help | rg -q 'mb help preview'
 "${METABRAIN[@]}" help | rg -q 'mb help move'
 "${METABRAIN[@]}" help | rg -q 'mb help version'
 "${METABRAIN[@]}" help init | rg -q 'Create or open a metaBrain store'
@@ -246,6 +247,7 @@ assert_remove_version_json() {
 "${METABRAIN[@]}" help search | rg -q 'Search current document content'
 "${METABRAIN[@]}" help recall | rg -q 'byte-budgeted JSON array'
 "${METABRAIN[@]}" help dump | rg -q 'Dump stored documents as JSONL'
+"${METABRAIN[@]}" help preview | rg -q 'Validate and preview a project'
 "${METABRAIN[@]}" help versions | rg -q 'List stored versions for a document'
 "${METABRAIN[@]}" help prune | rg -q 'Prune document versions using a retention policy'
 "${METABRAIN[@]}" help delete | rg -q 'Delete a document and all retained versions'
@@ -604,6 +606,63 @@ PYOPERATION
 }
 
 check_project_operation "$TMP_DIR/operations-direct/store.leveldb" "${METABRAIN[@]}" --no-server
+
+check_wiki_preview() {
+    local store="$1"
+    shift
+    local -a command=("$@" --store "$store")
+    local board='{"nodes":[{"id":"item","type":"file","file":"item.md","x":0,"y":0,"width":10,"height":10}],"edges":[]}'
+    local base=$'filters: \'file.hasTag("decision")\'\nviews:\n  - type: table\n    name: Decisions\n    order: [file.name, status]'
+    local draft="$TMP_DIR/wiki-draft"
+    local output="$TMP_DIR/wiki-preview.json"
+    local errors="$TMP_DIR/wiki-preview.err"
+
+    "${command[@]}" put /wiki/item.md '# Decision' --tag decision --meta status=accepted >/dev/null
+    "${command[@]}" put /wiki-decoy/item.md '# Outside' --tag decision --meta status=decoy >/dev/null
+    "${command[@]}" put /wiki/board.canvas "$board" >/dev/null
+    "${command[@]}" put /wiki/view.base "$base" >/dev/null
+    "${command[@]}" preview /wiki/board.canvas --project /wiki >"$output"
+    python3 -c 'import json,sys; assert json.load(sys.stdin)["nodes"][0]["filePath"]["rawValue"] == "/wiki/item.md"' <"$output"
+    "${command[@]}" preview /wiki/view.base --project /wiki >"$output"
+    python3 -c 'import json,sys; assert json.load(sys.stdin)[0]["rows"] == [{"path":{"rawValue":"/wiki/item.md"},"cells":["item.md","accepted"]}]' <"$output"
+
+    printf '%s\n' "$board" >"$draft"
+    "${command[@]}" preview /wiki/draft.canvas --project /wiki --body-file "$draft" >"$output"
+    "${command[@]}" put /wiki/draft.canvas/child.md '# A child is not the board' >/dev/null
+    if "${command[@]}" preview /wiki/draft.canvas --project /wiki >"$output" 2>"$errors"; then
+        echo "Preview accepted an unsaved draft with a descendant at its path" >&2
+        exit 1
+    fi
+    rg -qi 'document.*not found' "$errors"
+
+    if "${command[@]}" preview /wiki-decoy/board.canvas --project /wiki >"$output" 2>"$errors"; then
+        echo "Preview accepted an out-of-project path" >&2
+        exit 1
+    fi
+    rg -F -q 'strictly inside an explicit non-root --project' "$errors"
+    if "${command[@]}" preview /wiki/item.md --project /wiki >"$output" 2>"$errors"; then
+        echo "Preview accepted an unsupported extension" >&2
+        exit 1
+    fi
+    rg -F -q 'requires a .canvas or .base document path' "$errors"
+    printf '\377' >"$draft"
+    if "${command[@]}" preview /wiki/board.canvas --project /wiki --body-file "$draft" >"$output" 2>"$errors"; then
+        echo "Preview accepted an invalid UTF-8 draft" >&2
+        exit 1
+    fi
+    rg -F -q 'Cannot read UTF-8 preview draft' "$errors"
+    [[ ! -s "$output" ]]
+
+    printf '%s\n' '{"nodes": [}' >"$draft"
+    if "${command[@]}" preview /wiki/board.canvas --project /wiki --body-file "$draft" >"$output" 2>"$errors"; then
+        echo "Preview accepted malformed Canvas JSON" >&2
+        exit 1
+    fi
+    rg -F -q "Invalid Canvas JSON at '/wiki/board.canvas'" "$errors"
+    [[ ! -s "$output" ]]
+}
+
+check_wiki_preview "$TMP_DIR/wiki-preview-direct/store.leveldb" "${METABRAIN[@]}" --no-server
 python3 Tests/MetaBrainCLITests/source-capture.py "$TMP_DIR/capture-direct/store.leveldb" "${METABRAIN[@]}" --no-server
 python3 Tests/MetaBrainCLITests/claim-evidence.py "$TMP_DIR/claims-direct/store.leveldb" "${METABRAIN[@]}" --no-server
 
@@ -1422,6 +1481,7 @@ server_mb() {
 
 check_guarded_put "$TMP_DIR/guarded-daemon/store.leveldb" "${METABRAIN[@]}" --server "$SERVER_SOCKET"
 check_project_operation "$TMP_DIR/operations-daemon/store.leveldb" "${METABRAIN[@]}" --server "$SERVER_SOCKET"
+check_wiki_preview "$TMP_DIR/wiki-preview-daemon/store.leveldb" "${METABRAIN[@]}" --server "$SERVER_SOCKET"
 python3 Tests/MetaBrainCLITests/source-capture.py "$TMP_DIR/capture-daemon/store.leveldb" "${METABRAIN[@]}" --server "$SERVER_SOCKET"
 python3 Tests/MetaBrainCLITests/claim-evidence.py "$TMP_DIR/claims-daemon/store.leveldb" "${METABRAIN[@]}" --server "$SERVER_SOCKET"
 

@@ -33,5 +33,8 @@ Use this skill for setup. Check the active host's available skills before handin
 - `metabrain-wiki-mode` for a filing suggestion or a reviewed change to the filing mode.
 - `metabrain-wiki-fold` for a summary of raw operation-log entries.
 - `metabrain-save` for preserving the user's selected answer or insight.
+- `metabrain-canvas` for inspecting a JSON Canvas board or previewing an added node.
+- `metabrain-markdown` for working with Markdown properties, links, passages, and embeds.
+- `metabrain-bases` for inspecting or editing a saved table.
 
 If the requested skill is unavailable, say so and identify any supported local read that matches the request.

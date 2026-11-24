@@ -1,10 +1,10 @@
 # Project memory in metaBrain
 
-**Proposed release.** Ship 15 independently callable skills for Codex and Claude Code. An agent uses the skills to turn sources into project knowledge, answer questions from that knowledge, and preserve selected conclusions. MetaBrainExplorer is the first optional viewer. A person can open the same store and inspect the evidence behind a decision. The complete workflow also runs through `mb` with Explorer closed.
+The project memory workflow includes 15 independently callable skills for Codex and Claude Code. An agent uses the skills to turn sources into project knowledge, answer questions from that knowledge, and preserve selected conclusions. MetaBrainExplorer is the first optional viewer. A person can open the same store and inspect the evidence behind a decision. The complete workflow also runs through `mb` with Explorer closed.
 
 ## Engineering status
 
-The core, CLI, and daemon support reviewed atomic writes, recovery of original file bytes, and claims with evidence pinned to retained revisions. MetaBrainExplorer can show the cited passage, open the source at its current path, and export the captured original. The dual-host installer ships 12 skills for wiki setup, navigation, evidence, maintenance, research, URL capture planning, and decision review. Canvas, Markdown, and saved-view skills and their native previews remain planned. [Project wiki skills](skills.md) · [CLI workflows](../README.md#capture-and-recover-an-original-file) · [Worked decision example](claim-evidence.md)
+The core, CLI, and daemon support reviewed atomic writes, recovery of original file bytes, and claims with evidence pinned to retained revisions. The installer includes all 15 skills for both hosts. Use `mb preview` to inspect portable Canvas boards and saved tables without applying a change. MetaBrainExplorer can show the cited passage, open the source at its current path, and export the captured original. Native board and saved-table views are the next verification step. [Project wiki skills](skills.md) · [CLI workflows](../README.md#capture-and-recover-an-original-file) · [Worked decision example](claim-evidence.md)
 
 ## The first release scenario
 

@@ -68,8 +68,12 @@ enum MetaBrainAgentGuide {
 
         Use the same store, daemon endpoint or direct connection, and project root for the rest of the task. Keep the wiki's operation entry with the changes it describes in the reviewed operation.
 
+        For example, ask `metabrain-wiki-ingest` to capture two design reviews and prepare a decision that cites both. Review their source captures and the single operation before applying it. In a fresh session, ask `metabrain-wiki-query` for a Deep answer using the same project root. It can reopen both retained passages, connect related notes, and identify unresolved disagreement. Ask `metabrain-save` separately if you want to preserve a specific conclusion.
+
+        Use `mb preview /projects/atlas/decisions.base --project /projects/atlas` to preview a saved table. Pass `--body-file` to inspect a local draft before proposing any store changes. The same command checks JSON Canvas boards.
+
         Use `mb man search` for CLI options. Use `mb ensure-guide` to install this guide in an existing store that lacks it.
         """ + "\n",
-        metadata: ["guide-revision": "8"]
+        metadata: ["guide-revision": "9"]
     )
 }

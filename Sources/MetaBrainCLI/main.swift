@@ -31,6 +31,7 @@ struct MetaBrainCommand: AsyncParsableCommand {
           mb help lint
           mb help recall
           mb help dump
+          mb help preview
           mb help move
           mb help delete
           mb help remove-version
@@ -79,6 +80,7 @@ struct MetaBrainCommand: AsyncParsableCommand {
             Search.self,
             Recall.self,
             Dump.self,
+            Preview.self,
             Versions.self,
             Prune.self,
             Delete.self,
@@ -1420,6 +1422,103 @@ extension MetaBrainCommand {
         }
     }
 
+    struct Preview: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "preview",
+            abstract: "Validate and preview a project .canvas or .base document as JSON."
+        )
+
+        @OptionGroup var storeOptions: StoreOptions
+
+        @Argument(help: "Exact virtual path of the .canvas or .base document.")
+        var path: String
+
+        @Option(help: "Explicit virtual project root.")
+        var project: String
+
+        @Option(help: "Preview the UTF-8 contents of this local draft file.")
+        var bodyFile: String?
+
+        func run() async throws {
+            let target = try DocumentPath(path)
+            let root = try DocumentPath(project)
+            guard path.utf8.elementsEqual(target.rawValue.utf8),
+                  project.utf8.elementsEqual(root.rawValue.utf8),
+                  root.rawValue != "/",
+                  target.rawValue.utf8.starts(with: (root.rawValue + "/").utf8) else {
+                throw ValidationError("Use an exact virtual path strictly inside an explicit non-root --project.")
+            }
+            let isCanvas = target.name.hasSuffix(".canvas")
+            guard isCanvas || target.name.hasSuffix(".base") else {
+                throw ValidationError("Preview requires a .canvas or .base document path.")
+            }
+
+            let body: String
+            if let bodyFile {
+                do {
+                    body = try readBody(argument: nil, filePath: bodyFile)
+                } catch {
+                    throw ValidationError("Cannot read UTF-8 preview draft at '\(bodyFile)': \(error.localizedDescription)")
+                }
+            } else {
+                body = try await storedBody(at: target)
+            }
+
+            if isCanvas {
+                let canvas: WikiCanvas
+                do {
+                    canvas = try WikiPreview.canvas(body: body, project: root)
+                } catch let error as DecodingError {
+                    throw ValidationError("Invalid Canvas JSON at '\(target)': \(error)")
+                }
+                try printJSON(canvas)
+                return
+            }
+
+            let views = try WikiPreview.base(body: body, project: root)
+            let documents = try await projectDocuments(root)
+            try printJSON(views.preview(documents: documents))
+        }
+
+        private func storedBody(at path: DocumentPath) async throws -> String {
+            let reference = DocumentReference.path(path)
+            if let client = try storeOptions.serverClient() {
+                let result: GetOutput = try client.post(
+                    "/v1/get",
+                    request: ServerGetRequest(reference: DocumentReferenceDTO(reference), trackingRead: false)
+                )
+                return result.body
+            }
+            return try await storeOptions.withOpenStore { store in
+                guard let document = try await store.getDocument(reference, trackingRead: false) else {
+                    throw MetaBrainStoreError.documentNotFound(path.rawValue)
+                }
+                return document.body
+            }
+        }
+
+        private func projectDocuments(_ project: DocumentPath) async throws -> [WikiPreviewDocument] {
+            let entries: [DumpOutput]
+            if let client = try storeOptions.serverClient() {
+                entries = try client.post("/v1/dump", request: ServerDumpRequest(path: project.rawValue))
+            } else {
+                entries = try await storeOptions.withOpenStore { store in
+                    try await store.dump(DocumentDumpQuery(path: project)).map(DumpOutput.init)
+                }
+            }
+            return try entries.map { entry in
+                try WikiPreviewDocument(
+                    path: DocumentPath(entry.path),
+                    title: entry.title,
+                    body: entry.body,
+                    tags: entry.tags,
+                    metadata: entry.metadata,
+                    markdown: entry.markdown
+                )
+            }
+        }
+    }
+
     struct Versions: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "versions",
@@ -2212,6 +2311,7 @@ private let daemonBackedCommands: Set<String> = [
     "search",
     "recall",
     "dump",
+    "preview",
     "versions",
     "prune",
     "delete",
