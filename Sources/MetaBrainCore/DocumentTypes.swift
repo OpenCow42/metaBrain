@@ -170,6 +170,17 @@ public struct StoredDocument: Codable, Equatable, Sendable, Identifiable {
     }
 }
 
+public enum DocumentWriteStatus: String, Sendable {
+    case created
+    case updated
+    case unchanged
+}
+
+public struct DocumentWriteResult: Equatable, Sendable {
+    public let document: StoredDocument
+    public let status: DocumentWriteStatus
+}
+
 public struct DocumentMoveResult: Codable, Equatable, Sendable {
     public var document: StoredDocument
     public var sourcePath: DocumentPath

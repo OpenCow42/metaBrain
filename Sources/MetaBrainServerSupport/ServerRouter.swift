@@ -64,6 +64,18 @@ public struct ServerRouter: Sendable {
             }
         case (_, "/v1/put"):
             return methodNotAllowed(request, allowedMethod: "POST")
+        case (.post, "/v1/put-conditional"):
+            do {
+                let decoded = try decode(ServerConditionalPutRequest.self, from: request)
+                let input = try decoded.documentInput()
+                return await routeStoreOperation(request, createIfMissing: decoded.ifVersion == 0) { storeServer in
+                    try await storeServer.put(input, ifVersion: decoded.ifVersion, bodyOnly: decoded.bodyOnly)
+                }
+            } catch {
+                return errorResponse(for: error)
+            }
+        case (_, "/v1/put-conditional"):
+            return methodNotAllowed(request, allowedMethod: "POST")
         case (.post, "/v1/patch"):
             return await routeStoreOperation(request) { storeServer in
                 let decoded = try decode(ServerPatchRequest.self, from: request)
@@ -276,7 +288,7 @@ public struct ServerRouter: Sendable {
                     message: error.description
                 )
             )
-        case .pathAlreadyExists, .currentVersionCannotBeRemoved:
+        case .documentVersionConflict, .documentVersionExhausted, .pathAlreadyExists, .currentVersionCannotBeRemoved:
             return jsonResponse(
                 statusCode: 409,
                 payload: ServerErrorPayload(

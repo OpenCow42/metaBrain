@@ -31,13 +31,11 @@ public actor MetaBrainStoreServer {
     }
 
     public func put(_ request: ServerPutRequest) async throws -> PutOutput {
-        let document = try await store.putDocument(request.documentInput())
-        return PutOutput(
-            documentID: document.id.rawValue,
-            path: document.path.rawValue,
-            status: document.currentVersion == 1 ? "created" : "updated",
-            version: document.currentVersion
-        )
+        try await put(request.documentInput())
+    }
+
+    func put(_ input: DocumentInput, ifVersion: UInt64? = nil, bodyOnly: Bool = false) async throws -> PutOutput {
+        PutOutput(try await store.writeDocument(input, ifVersion: ifVersion, bodyOnly: bodyOnly))
     }
 
     public func get(_ request: ServerGetRequest) async throws -> GetOutput {

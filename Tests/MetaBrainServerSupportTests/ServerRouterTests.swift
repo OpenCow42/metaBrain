@@ -423,6 +423,69 @@ import Testing
     #expect(try MetaBrainJSON.decoder().decode(ServerErrorPayload.self, from: invalidRemoveVersion.body).error == "invalid_request")
 }
 
+@Test func conditionalPutRouteGuardsVersionsAndUpdatesOnlyTheBody() async throws {
+    let root = try temporaryServerDirectory(prefix: "mbd-router-conditional-put")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let path = root.appendingPathComponent("missing-parent/store.leveldb")
+    let registry = MetaBrainStoreRegistry()
+    defer { registry.closeAllBlocking() }
+    let router = ServerRouter(storeRegistry: registry, defaultStorePath: path.path)
+    let decoder = MetaBrainJSON.decoder()
+
+    func put(_ json: String, route: String = "/v1/put-conditional") async -> ServerHTTPResponse {
+        await router.route(ServerHTTPRequest(method: .post, path: route, body: Data(json.utf8)))
+    }
+
+    let missingStore = await put(#"{"document":{"path":"/guarded","body":"new"},"ifVersion":1}"#)
+    let invalidCreate = await put(#"{"document":{"path":"/guarded","body":"new"},"ifVersion":0,"bodyOnly":true}"#)
+    #expect(missingStore.statusCode == 404)
+    #expect(try decoder.decode(ServerErrorPayload.self, from: missingStore.body).error == "store_not_found")
+    #expect(invalidCreate.statusCode == 400)
+    #expect(!FileManager.default.fileExists(atPath: path.deletingLastPathComponent().path))
+
+    let createJSON = #"{"document":{"path":"/guarded","body":"before","title":"Retained","tags":["test"]},"ifVersion":0}"#
+    let create = await put(createJSON)
+    #expect(create.statusCode == 200)
+    let created = try decoder.decode(PutOutput.self, from: create.body)
+    #expect(created.status == "created")
+    #expect(created.version == 1)
+
+    let retry = await put(createJSON)
+    #expect(retry.statusCode == 200)
+    #expect(try decoder.decode(PutOutput.self, from: retry.body).status == "unchanged")
+
+    let ordinaryRetry = await put(
+        #"{"path":"/guarded","body":"before","title":"Retained","tags":["test"]}"#,
+        route: "/v1/put"
+    )
+    #expect(ordinaryRetry.statusCode == 200)
+    #expect(try decoder.decode(PutOutput.self, from: ordinaryRetry.body).status == "unchanged")
+
+    let update = await put(#"{"document":{"path":"/guarded","body":"after"},"ifVersion":1,"bodyOnly":true}"#)
+    #expect(update.statusCode == 200)
+    let updated = try decoder.decode(PutOutput.self, from: update.body)
+    #expect(updated.documentID == created.documentID)
+    #expect(updated.status == "updated")
+    #expect(updated.version == 2)
+
+    let conflict = await put(#"{"document":{"path":"/guarded","body":"stale"},"ifVersion":1}"#)
+    #expect(conflict.statusCode == 409)
+    let error = try decoder.decode(ServerErrorPayload.self, from: conflict.body)
+    #expect(error.error == "conflict")
+    #expect(error.message.contains("expected version 1, found version 2"))
+
+    let get = await router.route(ServerHTTPRequest(
+        method: .post,
+        path: "/v1/get",
+        body: Data(#"{"reference":{"kind":"path","value":"/guarded"}}"#.utf8)
+    ))
+    let document = try decoder.decode(GetOutput.self, from: get.body)
+    #expect(document.body == "after")
+    #expect(document.title == "Retained")
+    #expect(document.tags == ["test"])
+    #expect(document.version == 2)
+}
+
 @Test func routerMapsPatchAndConflictErrors() async throws {
     let root = try temporaryServerDirectory(prefix: "mbd-router-mutation-errors")
     defer { try? FileManager.default.removeItem(at: root) }

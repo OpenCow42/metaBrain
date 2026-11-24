@@ -34,6 +34,10 @@ public struct PutOutput: Codable, Equatable, Sendable {
         self.version = version
     }
 
+    public init(_ result: DocumentWriteResult) {
+        self.init(result.document, status: result.status.rawValue)
+    }
+
     public init(_ document: StoredDocument, status: String) {
         self.init(
             documentID: document.id.rawValue,

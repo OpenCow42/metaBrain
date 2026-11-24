@@ -81,8 +81,8 @@ and [LevelDB options](https://github.com/google/leveldb/blob/main/include/leveld
 | `metabrain` / `help` | ArgumentParser help generation, `commandHelpMessage` | `O(1)` relative to store size | Does not open or scan the store. |
 | `version` | `MetaBrainVersion.currentSoftwareTag`, optional local daemon probe, optional GitHub latest release request | `O(1)` relative to store size | Does not open the store. By default it performs one short local daemon version probe; with the default release check, it also performs one bounded HTTP request to GitHub's latest release API. |
 | `init` | `StoreOptions.withOpenStore`, `MetaBrainStore.init` | `O(1)` relative to documents, plus LevelDB open/recovery work | Creates the parent directory and opens LevelDB. Recovery can replay logs and clean stale files. |
-| `put` new document | `putDocument`, `writeNewDocument`, `writeDocumentBatch` | `O(B + T + R + L * seek(S) + X_tree + D)` | Body chunking now advances indices incrementally. Tree maintenance touches only the new path branch instead of rebuilding the whole tree index. |
-| `put` existing document | `putDocument`, `writeDocumentUpdate`, `writeDocumentBatch`, retention helpers | `O(B + B_old + T + T_old + R + R_old + V log V + H + L * seek(S) + X_tree + D)` | Updates delete stale chunks/indexes/references, may scan all versions for retention, and update only old/new tree branches. |
+| `put` new document | `writeDocument`, `writeNewDocument`, `writeDocumentBatch` | `O(B + T + R + L * seek(S) + X_tree + D)` | Body chunking now advances indices incrementally. Tree maintenance touches only the new path branch instead of rebuilding the whole tree index. |
+| `put` existing document | `writeDocument`, `writeDocumentUpdate`, `writeDocumentBatch`, retention helpers | `O(B + B_old + T + T_old + R + R_old + V log V + H + L * seek(S) + X_tree + D)` | Changed writes update indexes and retained versions. Identical writes and version conflicts return after reading the current document and comparing any relevant fields. |
 | `patch` | `checkDocumentPatch`/`patchDocument`, unified diff parsing, `writeDocumentUpdate`, `writeDocumentBatch`, retention helpers | `O(P_patch + B_old + B + T + T_old + R + R_old + V log V + H + L * seek(S) + X_tree + D)` for writes; `O(P_patch + B_old)` for `--check` | Patch is partial at the CLI layer, but writes still store a full next document snapshot and rebuild current chunks/indexes. |
 | `move` | `moveDocument`, `writeDocumentUpdate`, `writeDocumentBatch`, retention helpers | `O(B + B_old + T + T_old + R + R_old + V log V + H + L * seek(S) + X_tree + D)` | Resolves an existing document, preserves its stable ID and content fields, writes a new path alias, removes the old path alias, and updates affected tree branches. |
 | `get` | `getDocument`, `documentID(for:)`, `documentRecord(id:)`, `printDocument` | `O(seek(S) + B)` | Decoding and printing the stored document body dominate once the point lookup succeeds. |
@@ -243,7 +243,20 @@ database.
 ### `put`
 
 `put` validates and parses CLI input, reads a body argument or UTF-8 body file,
-then calls `MetaBrainStore.putDocument(_:)`.
+then calls `MetaBrainStore.writeDocument(_:ifVersion:bodyOnly:)`. A conditional
+write checks the current revision and applies any change in one serialized
+operation. `--body-only` reads the existing document and preserves its title,
+tags, metadata, references, and retention policy.
+
+Matching writes return after comparing the effective input with the decoded
+current record. They skip chunking, version scans, and access-counter
+updates. This costs `O(seek(S) + B_old + B)` for the record and body comparison,
+plus comparisons of the other supplied fields. A version conflict that cannot
+be an immediate retry skips the input comparison.
+When a matching write includes path references, it also resolves their current
+targets and scans existing outbound edges. The lookup and scan add
+`O((R + 1) * seek(S) + E log E)`. Any changed forward and backlink keys are
+updated together in a batch.
 
 For a new document, the main work is:
 

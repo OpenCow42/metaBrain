@@ -123,6 +123,29 @@ Use `--body-file` for larger notes:
 mb put /research/leveldb-notes --body-file notes.md --tag research
 ```
 
+Use `--if-version` when another writer may change the document between a read
+and a write. Version 0 creates the document only if the path is free.
+`--body-only` replaces just the body of an existing document and preserves its
+title, tags, metadata, references, and retention policy. Omit those options
+when using `--body-only`. Ordinary `put` replaces the document's title, tags,
+metadata, and references with the values supplied in the request.
+
+```bash
+mb put /notes/today "First draft" --if-version 0 --tag planning
+mb get /notes/today
+mb put /notes/today --body-file revision.md --body-only --if-version 1
+# After that update, this different write expects version 1 and finds version 2.
+mb put /notes/today "Stale edit" --body-only --if-version 1
+```
+
+The JSON and JSONL outputs report `created`, `updated`, or `unchanged` and the
+current version. An identical write returns `unchanged` without adding a
+version when the version check matches, or on an exact retry when the current
+version is one higher than `--if-version`. Other version mismatches fail and
+report the expected and current versions. Read the current document and
+reapply your change using its current version. Guarded and body-only writes require a
+daemon that supports them, or direct access with `mb --no-server`.
+
 Use `patch` when an agent has a focused unified diff:
 
 ```bash

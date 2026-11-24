@@ -46,6 +46,43 @@ import Testing
     #expect(initOutput == initializeResponse)
 }
 
+@Test func serverClientNeverFallsBackToAnUnguardedPut() throws {
+    let codec = ServerHTTPCodec()
+    let expected = ServerConditionalPutRequest(
+        document: ServerPutRequest(path: "/notes/today", body: "hello"),
+        ifVersion: 2,
+        bodyOnly: true
+    )
+    let client = MetaBrainServerClient { data in
+        let request = try codec.parseRequest(data)
+        #expect(request.method == .post)
+        #expect(request.path == "/v1/put-conditional")
+        #expect(try MetaBrainJSON.decoder().decode(ServerConditionalPutRequest.self, from: request.body) == expected)
+        let body = try MetaBrainJSON.encoder().encode(ServerErrorPayload(error: "not_found", message: "Unknown route."))
+        return codec.serializeResponse(ServerHTTPResponse(statusCode: 404, body: body))
+    }
+
+    #expect(throws: ServerClientError.conditionalPutUnsupported) {
+        try client.putConditional(expected)
+    }
+}
+
+@Test func serverClientDistinguishesMissingDocumentsFromAnUnsupportedConditionalPut() throws {
+    let codec = ServerHTTPCodec()
+    let request = ServerConditionalPutRequest(
+        document: ServerPutRequest(path: "/notes/missing", body: "hello"),
+        bodyOnly: true
+    )
+    let client = MetaBrainServerClient { _ in
+        let body = try MetaBrainJSON.encoder().encode(ServerErrorPayload(error: "document_not_found", message: "Missing."))
+        return codec.serializeResponse(ServerHTTPResponse(statusCode: 404, body: body))
+    }
+
+    #expect(throws: ServerClientError.serverError(statusCode: 404, error: "document_not_found", message: "Missing.")) {
+        try client.putConditional(request)
+    }
+}
+
 @Test func serverClientSendsCanonicalStorePathHeaderWhenConfigured() throws {
     let codec = ServerHTTPCodec()
     let root = try temporaryServerDirectory(prefix: "mbd-client-store-header")

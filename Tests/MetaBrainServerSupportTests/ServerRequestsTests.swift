@@ -45,6 +45,33 @@ import Testing
     #expect(input.retention == .keepMostRecent(2))
 }
 
+@Test func conditionalPutRequestDecodesAndValidatesWriteOptions() throws {
+    let decoder = MetaBrainJSON.decoder()
+    let create = try decoder.decode(
+        ServerConditionalPutRequest.self,
+        from: Data(#"{"document":{"path":"/notes/today","body":"hello"},"ifVersion":0}"#.utf8)
+    )
+    #expect(create.ifVersion == 0)
+    #expect(!create.bodyOnly)
+    #expect(try create.documentInput().body == "hello")
+
+    let update = ServerConditionalPutRequest(document: create.document, ifVersion: 3, bodyOnly: true)
+    let encoded = try MetaBrainJSON.encoder().encode(update)
+    #expect(try decoder.decode(ServerConditionalPutRequest.self, from: encoded) == update)
+    #expect(try update.documentInput().path == DocumentPath("/notes/today"))
+
+    #expect(throws: ServerRequestDTOError.missingPutCondition) {
+        try ServerConditionalPutRequest(document: create.document).documentInput()
+    }
+    #expect(throws: ServerRequestDTOError.incompatibleBodyOnlyCreate) {
+        try ServerConditionalPutRequest(document: create.document, ifVersion: 0, bodyOnly: true).documentInput()
+    }
+    let withTitle = ServerPutRequest(path: "/notes/today", body: "hello", title: "New title")
+    #expect(throws: ServerRequestDTOError.incompatibleBodyOnlyFields) {
+        try ServerConditionalPutRequest(document: withTitle, bodyOnly: true).documentInput()
+    }
+}
+
 @Test func serverGetRequestDefaultsTrackingRead() throws {
     let decoded = try MetaBrainJSON.decoder().decode(
         ServerGetRequest.self,

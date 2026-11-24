@@ -50,6 +50,9 @@ public enum MetaBrainStoreError: Error, Equatable, Sendable, CustomStringConvert
     case operationFailed(message: String)
     case documentNotFound(String)
     case pathAlreadyExists(DocumentPath, existingID: DocumentID)
+    case documentVersionConflict(DocumentPath, expected: UInt64, actual: UInt64?)
+    case documentVersionExhausted(DocumentPath)
+    case bodyOnlyCannotCreate
     case currentVersionCannotBeRemoved(DocumentID, sequence: UInt64)
     case unsupportedRecordSchemaVersion(UInt8)
     case newerRecordSchemaVersion(UInt8, operation: String)
@@ -66,6 +69,16 @@ public enum MetaBrainStoreError: Error, Equatable, Sendable, CustomStringConvert
             "Document not found: \(reference)."
         case .pathAlreadyExists(let path, let existingID):
             "Document path \(path.rawValue) already points to document \(existingID.rawValue)."
+        case .documentVersionConflict(let path, let expected, let actual):
+            if let actual {
+                "Version conflict at \(path.rawValue): expected version \(expected), found version \(actual)."
+            } else {
+                "Version conflict at \(path.rawValue): expected version \(expected), document does not exist."
+            }
+        case .documentVersionExhausted(let path):
+            "Document \(path.rawValue) has reached the maximum version number."
+        case .bodyOnlyCannotCreate:
+            "A body-only write cannot be combined with create-only version 0."
         case .currentVersionCannotBeRemoved(let id, let sequence):
             "Cannot remove current version \(sequence) of document \(id.rawValue)."
         case .unsupportedRecordSchemaVersion(let version):
@@ -140,12 +153,56 @@ public final class MetaBrainStore: Sendable {
 
     @discardableResult
     public func putDocument(_ input: DocumentInput) async throws -> StoredDocument {
-        try await writes.run {
-            if let id = try await self.documentID(forPath: input.path) {
-                return try await self.writeDocumentUpdate(id: id, input: input)
+        try await writeDocument(input).document
+    }
+
+    /// Writes a full replacement or updates only the body of an existing document.
+    /// Version zero allows creation. A matching write at the current version or its immediate
+    /// predecessor returns `.unchanged` without creating a version.
+    @discardableResult
+    public func writeDocument(
+        _ input: DocumentInput,
+        ifVersion: UInt64? = nil,
+        bodyOnly: Bool = false
+    ) async throws -> DocumentWriteResult {
+        if bodyOnly, ifVersion == 0 {
+            throw MetaBrainStoreError.bodyOnlyCannotCreate
+        }
+
+        return try await writes.run {
+            guard let id = try await self.documentID(forPath: input.path),
+                  let record = try await self.currentDocumentRecord(id: id, operation: "update document") else {
+                if let ifVersion, ifVersion != 0 {
+                    throw MetaBrainStoreError.documentVersionConflict(input.path, expected: ifVersion, actual: nil)
+                }
+                if bodyOnly {
+                    throw MetaBrainStoreError.documentNotFound(input.path.rawValue)
+                }
+
+                let document = try await self.writeNewDocument(input)
+                return DocumentWriteResult(document: document, status: .created)
             }
 
-            return try await self.writeNewDocument(input)
+            let current = record.document
+            let version = current.currentVersion
+            let effectiveInput = bodyOnly ? record.bodyReplacement(input.body) : input
+
+            let unchanged: Bool
+            if let ifVersion, ifVersion != version {
+                guard version > ifVersion, version - ifVersion == 1, record.matches(effectiveInput) else {
+                    throw MetaBrainStoreError.documentVersionConflict(input.path, expected: ifVersion, actual: version)
+                }
+                unchanged = true
+            } else {
+                unchanged = record.matches(effectiveInput)
+            }
+            if unchanged {
+                try await self.refreshPathReferenceIndexes(for: current)
+                return DocumentWriteResult(document: current, status: .unchanged)
+            }
+
+            let document = try await self.writeDocumentUpdate(id: id, existingRecord: record, input: effectiveInput)
+            return DocumentWriteResult(document: document, status: .updated)
         }
     }
 
@@ -635,15 +692,9 @@ public final class MetaBrainStore: Sendable {
             createdAt: now,
             updatedAt: now
         )
-        let retentionPolicy: VersionRetentionPolicy
-        if let inputRetention = input.retention {
-            retentionPolicy = inputRetention
-        } else {
-            retentionPolicy = .keepAll
-        }
         let record = MetaBrainDocumentRecord(
             document: document,
-            retention: retentionPolicy
+            retention: input.retention ?? .keepAll
         )
         let version = DocumentVersion(
             documentID: id,
@@ -679,13 +730,32 @@ public final class MetaBrainStore: Sendable {
             return try await writeNewDocument(input)
         }
 
+        return try await writeDocumentUpdate(
+            id: id,
+            existingRecord: existingRecord,
+            input: input,
+            accessMutation: accessMutation
+        )
+    }
+
+    private func writeDocumentUpdate(
+        id: DocumentID,
+        existingRecord: MetaBrainDocumentRecord,
+        input: DocumentInput,
+        accessMutation: EntryAccessMutation = .fullWrite
+    ) async throws -> StoredDocument {
         if let existingPathID = try await documentID(forPath: input.path),
            existingPathID != id {
             throw MetaBrainStoreError.pathAlreadyExists(input.path, existingID: existingPathID)
         }
 
-        let now = Date()
         let existing = existingRecord.document
+        let (nextVersion, overflow) = existing.currentVersion.addingReportingOverflow(1)
+        guard !overflow else {
+            throw MetaBrainStoreError.documentVersionExhausted(existing.path)
+        }
+
+        let now = Date()
         let document = StoredDocument(
             id: id,
             path: input.path,
@@ -694,19 +764,13 @@ public final class MetaBrainStore: Sendable {
             tags: input.tags,
             metadata: input.metadata,
             references: input.references,
-            currentVersion: existing.currentVersion + 1,
+            currentVersion: nextVersion,
             createdAt: existing.createdAt,
             updatedAt: now
         )
-        let retentionPolicy: VersionRetentionPolicy
-        if let inputRetention = input.retention {
-            retentionPolicy = inputRetention
-        } else {
-            retentionPolicy = existingRecord.retention
-        }
         let record = MetaBrainDocumentRecord(
             document: document,
-            retention: retentionPolicy
+            retention: input.retention ?? existingRecord.retention
         )
         let version = DocumentVersion(
             documentID: id,
@@ -1467,6 +1531,37 @@ public final class MetaBrainStore: Sendable {
         return keys.sorted()
     }
 
+    private func refreshPathReferenceIndexes(for document: StoredDocument) async throws {
+        guard document.references.contains(where: { reference in
+            if case .path = reference { true } else { false }
+        }) else {
+            return
+        }
+
+        let sourceID = document.id
+        let resolvedIDs = try await resolvedReferenceIDs(from: document.references)
+        let indexedIDs = try await Set(outboundReferences(from: sourceID))
+        guard resolvedIDs != indexedIDs else {
+            return
+        }
+
+        let removedIDs = indexedIDs.subtracting(resolvedIDs)
+        let addedIDs = resolvedIDs.subtracting(indexedIDs)
+        try await Self.mapLevelDBErrors(path: url.path) {
+            let records = try await currentRecords()
+            try await records.write { batch in
+                for targetID in removedIDs {
+                    try batch.deleteValue(forKey: MetaBrainKeyspace.outboundReference(sourceID: sourceID, targetID: targetID))
+                    try batch.deleteValue(forKey: MetaBrainKeyspace.inboundReference(targetID: targetID, sourceID: sourceID))
+                }
+                for targetID in addedIDs {
+                    try batch.put(Self.emptyIndexValue, forKey: MetaBrainKeyspace.outboundReference(sourceID: sourceID, targetID: targetID))
+                    try batch.put(Self.emptyIndexValue, forKey: MetaBrainKeyspace.inboundReference(targetID: targetID, sourceID: sourceID))
+                }
+            }
+        }
+    }
+
     private func staleBacklinkKeys(targetID: DocumentID) async throws -> [String] {
         let inboundPrefix = MetaBrainKeyspace.inboundReferencePrefix(targetID: targetID)
         let inboundKeys = try await scanKeys(withPrefix: inboundPrefix)
@@ -2096,8 +2191,26 @@ struct MetaBrainRecordEnvelope<Payload: Codable & Sendable>: Codable, Sendable {
 }
 
 private actor MetaBrainWriteCoordinator {
+    private var active = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
     func run<T: Sendable>(_ operation: @Sendable () async throws -> T) async throws -> T {
-        try await operation()
+        if active {
+            await withCheckedContinuation { waiters.append($0) }
+        } else {
+            active = true
+        }
+
+        defer {
+            if waiters.isEmpty {
+                active = false
+            } else {
+                // Keep writes reserved as ownership passes to the next waiter.
+                waiters.removeFirst().resume()
+            }
+        }
+        try Task.checkCancellation()
+        return try await operation()
     }
 }
 
@@ -2130,6 +2243,24 @@ private enum EntryAccessMutation: Sendable {
 private struct MetaBrainDocumentRecord: Codable, Equatable, Sendable {
     var document: StoredDocument
     var retention: VersionRetentionPolicy
+
+    func bodyReplacement(_ body: String) -> DocumentInput {
+        DocumentInput(
+            path: document.path,
+            title: document.title,
+            body: body,
+            tags: document.tags,
+            metadata: document.metadata,
+            references: document.references,
+            retention: retention
+        )
+    }
+
+    func matches(_ input: DocumentInput) -> Bool {
+        document.path == input.path && document.title == input.title && document.tags == input.tags
+            && document.metadata == input.metadata && document.references == input.references
+            && retention == (input.retention ?? retention) && document.body.utf8.elementsEqual(input.body.utf8)
+    }
 }
 
 private struct MetaBrainTreeRecord: Codable, Equatable, Sendable {

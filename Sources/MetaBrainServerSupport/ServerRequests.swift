@@ -7,6 +7,9 @@ public enum ServerRequestDTOError: Error, Equatable, Sendable, CustomStringConve
     case missingRetention
     case invalidRemoveVersionSequence(UInt64)
     case unsupportedDumpWithoutBodies
+    case missingPutCondition
+    case incompatibleBodyOnlyCreate
+    case incompatibleBodyOnlyFields
 
     public var description: String {
         switch self {
@@ -20,6 +23,12 @@ public enum ServerRequestDTOError: Error, Equatable, Sendable, CustomStringConve
             return "sequence must be greater than zero, got \(sequence)"
         case .unsupportedDumpWithoutBodies:
             return "includeBodies=false is not supported; dump responses use DumpOutput"
+        case .missingPutCondition:
+            return "Conditional put requires ifVersion or bodyOnly."
+        case .incompatibleBodyOnlyCreate:
+            return "bodyOnly requires an existing document and cannot be combined with ifVersion=0."
+        case .incompatibleBodyOnlyFields:
+            return "bodyOnly preserves title, tags, metadata, references, and retention. Omit those fields."
         }
     }
 }
@@ -82,6 +91,48 @@ public struct ServerPutRequest: Codable, Equatable, Sendable {
             references: references.map { try $0.documentReference() },
             retention: retention.map { try $0.retentionPolicy() }
         )
+    }
+}
+
+/// Request for the version-aware write endpoint.
+public struct ServerConditionalPutRequest: Codable, Equatable, Sendable {
+    public var document: ServerPutRequest
+    public var ifVersion: UInt64?
+    public var bodyOnly: Bool
+
+    public init(document: ServerPutRequest, ifVersion: UInt64? = nil, bodyOnly: Bool = false) {
+        self.document = document
+        self.ifVersion = ifVersion
+        self.bodyOnly = bodyOnly
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case document
+        case ifVersion
+        case bodyOnly
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        document = try container.decode(ServerPutRequest.self, forKey: .document)
+        ifVersion = try container.decodeIfPresent(UInt64.self, forKey: .ifVersion)
+        bodyOnly = try container.decodeIfPresent(Bool.self, forKey: .bodyOnly) ?? false
+    }
+
+    public func documentInput() throws -> DocumentInput {
+        guard ifVersion != nil || bodyOnly else {
+            throw ServerRequestDTOError.missingPutCondition
+        }
+        if bodyOnly {
+            guard ifVersion != 0 else {
+                throw ServerRequestDTOError.incompatibleBodyOnlyCreate
+            }
+            guard document.title == nil, document.tags.isEmpty, document.metadata.isEmpty,
+                  document.references.isEmpty, document.retention == nil else {
+                throw ServerRequestDTOError.incompatibleBodyOnlyFields
+            }
+        }
+        return try document.documentInput()
     }
 }
 

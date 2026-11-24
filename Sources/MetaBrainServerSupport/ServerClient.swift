@@ -13,6 +13,7 @@ public enum ServerClientError: Error, Equatable, Sendable, CustomStringConvertib
     case socketOperationFailed(String)
     case serverError(statusCode: Int, error: String, message: String)
     case unexpectedStatusCode(Int)
+    case conditionalPutUnsupported
 
     public var description: String {
         switch self {
@@ -24,6 +25,8 @@ public enum ServerClientError: Error, Equatable, Sendable, CustomStringConvertib
             return "server returned HTTP \(statusCode) \(error): \(message)"
         case .unexpectedStatusCode(let statusCode):
             return "server returned unexpected HTTP \(statusCode)"
+        case .conditionalPutUnsupported:
+            return "The daemon does not support --if-version or --body-only. Upgrade mbd or use mb --no-server."
         }
     }
 }
@@ -85,6 +88,16 @@ public struct MetaBrainServerClient: Sendable {
             body: MetaBrainJSON.encoder().encode(request),
             response: response
         )
+    }
+
+    public func putConditional(_ request: ServerConditionalPutRequest) throws -> PutOutput {
+        do {
+            return try post("/v1/put-conditional", request: request)
+        } catch ServerClientError.serverError(statusCode: 404, error: "not_found", message: _) {
+            throw ServerClientError.conditionalPutUnsupported
+        } catch ServerClientError.unexpectedStatusCode(404) {
+            throw ServerClientError.conditionalPutUnsupported
+        }
     }
 
     public func health() throws -> ServerHealthPayload {

@@ -373,9 +373,24 @@ extension MetaBrainCommand {
         @Option(name: .customLong("ref-url"), help: "Reference an external URL. Repeat for multiple references.")
         var referenceURLs: [String] = []
 
+        @Option(name: .customLong("if-version"), help: "Write only at this current version. Use 0 to create only.")
+        var ifVersion: UInt64?
+
+        @Flag(name: .customLong("body-only"), help: "Replace only the body of an existing document.")
+        var bodyOnly = false
+
         func validate() throws {
             try validateBodyInputs(argument: body, filePath: bodyFile)
-            _ = try retention.optionalPolicy()
+            let retentionPolicy = try retention.optionalPolicy()
+            if bodyOnly {
+                guard ifVersion != 0 else {
+                    throw ValidationError("--body-only requires an existing document and cannot be combined with --if-version 0.")
+                }
+                guard title == nil, tags.isEmpty, metadataPairs.isEmpty, referenceIDs.isEmpty,
+                      referencePaths.isEmpty, referenceURLs.isEmpty, retentionPolicy == nil else {
+                    throw ValidationError("--body-only preserves title, tags, metadata, references, and retention. Omit those flags.")
+                }
+            }
             _ = try parseMetadata(metadataPairs)
             _ = try parseReferences(
                 ids: referenceIDs,
@@ -394,45 +409,42 @@ extension MetaBrainCommand {
             let retentionPolicy = try retention.optionalPolicy()
             let metadata = try parseMetadata(metadataPairs)
 
-            if let client = try storeOptions.serverClient(createIfMissing: true) {
-                let result: PutOutput = try client.post(
-                    "/v1/put",
-                    request: ServerPutRequest(
-                        path: path,
-                        body: documentBody,
-                        title: title,
-                        tags: tags,
-                        metadata: metadata,
-                        references: documentReferences.map(DocumentReferenceDTO.init),
-                        retention: retentionPolicy.map(DocumentRetentionPolicyDTO.init)
-                    ),
-                    response: PutOutput.self
+            let createIfMissing = !bodyOnly && (ifVersion == nil || ifVersion == 0)
+            let result: PutOutput
+            if let client = try storeOptions.serverClient(createIfMissing: createIfMissing) {
+                let request = ServerPutRequest(
+                    path: path,
+                    body: documentBody,
+                    title: title,
+                    tags: tags,
+                    metadata: metadata,
+                    references: documentReferences.map(DocumentReferenceDTO.init),
+                    retention: retentionPolicy.map(DocumentRetentionPolicyDTO.init)
                 )
-                try printPutOutput(result, format: output.format)
-                return
+                if ifVersion != nil || bodyOnly {
+                    result = try client.putConditional(ServerConditionalPutRequest(
+                        document: request,
+                        ifVersion: ifVersion,
+                        bodyOnly: bodyOnly
+                    ))
+                } else {
+                    result = try client.post("/v1/put", request: request)
+                }
+            } else {
+                let input = DocumentInput(
+                    path: try DocumentPath(path),
+                    title: title,
+                    body: documentBody,
+                    tags: tags,
+                    metadata: metadata,
+                    references: documentReferences,
+                    retention: retentionPolicy
+                )
+                result = try await storeOptions.withOpenStore(createIfMissing: createIfMissing) { store in
+                    PutOutput(try await store.writeDocument(input, ifVersion: ifVersion, bodyOnly: bodyOnly))
+                }
             }
-
-            let input = DocumentInput(
-                path: try DocumentPath(path),
-                title: title,
-                body: documentBody,
-                tags: tags,
-                metadata: metadata,
-                references: documentReferences,
-                retention: retentionPolicy
-            )
-            let document = try await storeOptions.withOpenStore(createIfMissing: true) { store in
-                try await store.putDocument(input)
-            }
-            try printPutOutput(
-                PutOutput(
-                    documentID: document.id.rawValue,
-                    path: document.path.rawValue,
-                    status: document.currentVersion == 1 ? "created" : "updated",
-                    version: document.currentVersion
-                ),
-                format: output.format
-            )
+            try printPutOutput(result, format: output.format)
         }
     }
 
@@ -1234,6 +1246,9 @@ private func printPutOutput(_ result: PutOutput, format: CLIOutputFormat) throws
         print("id: \(result.documentID)")
         print("path: \(result.path)")
         print("version: \(result.version)")
+        if result.status == "unchanged" {
+            print("status: unchanged")
+        }
     case .json:
         try printJSON(result)
     case .jsonl:

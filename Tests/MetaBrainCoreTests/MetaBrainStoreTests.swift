@@ -458,6 +458,9 @@ private func storeTestCodec<Value: Codable & Sendable>(
         await #expect(throws: MetaBrainStoreError.newerRecordSchemaVersion(2, operation: "update document")) {
             try await store.putDocument(DocumentInput(path: path, body: "cannot downgrade"))
         }
+        await #expect(throws: MetaBrainStoreError.newerRecordSchemaVersion(2, operation: "update document")) {
+            try await store.writeDocument(DocumentInput(path: path, body: created.body), ifVersion: 1)
+        }
         await #expect(throws: MetaBrainStoreError.newerRecordSchemaVersion(2, operation: "delete document")) {
             try await store.deleteDocument(.documentID(created.id))
         }
@@ -858,6 +861,182 @@ private func storeTestCodec<Value: Codable & Sendable>(
     }
 }
 
+@Test func conditionalDocumentWritesCreateAndRetryWithoutSideEffects() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let path = try DocumentPath("/notes/conditional")
+        let initial = DocumentInput(path: path, title: "Draft", body: "first")
+        let edited = DocumentInput(path: path, title: "Published", body: "second")
+
+        await #expect(throws: MetaBrainStoreError.documentVersionConflict(path, expected: 1, actual: nil)) {
+            try await store.writeDocument(initial, ifVersion: 1)
+        }
+        let created = try await store.writeDocument(initial, ifVersion: 0)
+        #expect(created.status == .created)
+        #expect(created.document.currentVersion == 1)
+        let createRetry = try await store.writeDocument(initial, ifVersion: 0)
+        #expect(createRetry.status == .unchanged)
+        #expect(createRetry.document == created.document)
+        #expect(try await store.putDocument(initial) == created.document)
+
+        await #expect(throws: MetaBrainStoreError.documentVersionConflict(path, expected: 0, actual: 1)) {
+            try await store.writeDocument(edited, ifVersion: 0)
+        }
+        let updated = try await store.writeDocument(edited, ifVersion: 1)
+        #expect(updated.status == .updated)
+        #expect(updated.document.id == created.document.id)
+        #expect(updated.document.currentVersion == 2)
+        let retry = try await store.writeDocument(edited, ifVersion: 1)
+        #expect(retry.status == .unchanged)
+        #expect(retry.document == updated.document)
+        let sameVersion = try await store.writeDocument(edited, ifVersion: 2)
+        #expect(sameVersion.status == .unchanged)
+        #expect(sameVersion.document == updated.document)
+
+        await #expect(throws: MetaBrainStoreError.documentVersionConflict(path, expected: 1, actual: 2)) {
+            try await store.writeDocument(initial, ifVersion: 1)
+        }
+        await #expect(throws: MetaBrainStoreError.documentVersionConflict(path, expected: 0, actual: 2)) {
+            try await store.writeDocument(edited, ifVersion: 0)
+        }
+        let versions = try await store.listVersions(of: .path(path))
+        #expect(versions.map(\.sequence) == [1, 2])
+        #expect(versions.map(\.snapshot) == [initial, edited])
+        #expect(try await store.entryMetadata(for: .path(path))?.access == DocumentAccessCounts(fullWriteCount: 2))
+    }
+}
+
+@Test func bodyOnlyDocumentWritesPreserveFieldsAndRetention() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let path = try DocumentPath("/notes/body-only")
+        var bodyEdit = DocumentInput(path: path, body: "replacement")
+        await #expect(throws: MetaBrainStoreError.documentNotFound(path.rawValue)) {
+            try await store.writeDocument(bodyEdit, bodyOnly: true)
+        }
+        await #expect(throws: MetaBrainStoreError.bodyOnlyCannotCreate) {
+            try await store.writeDocument(bodyEdit, ifVersion: 0, bodyOnly: true)
+        }
+        #expect(try await store.getDocument(.path(path), trackingRead: false) == nil)
+
+        let target = try await store.putDocument(DocumentInput(path: try DocumentPath("/target"), body: "target"))
+        let original = try await store.putDocument(DocumentInput(
+            path: path,
+            title: "Preserved",
+            body: "original",
+            tags: ["preserved"],
+            metadata: ["source": "original"],
+            references: [.documentID(target.id)],
+            retention: .keepMostRecent(2)
+        ))
+        bodyEdit.retention = .keepAll
+        let first = try await store.writeDocument(bodyEdit, ifVersion: 1, bodyOnly: true)
+        bodyEdit.body = "third body"
+        let second = try await store.writeDocument(bodyEdit, ifVersion: 2, bodyOnly: true)
+        let retry = try await store.writeDocument(bodyEdit, ifVersion: 2, bodyOnly: true)
+
+        var expected = original
+        expected.body = bodyEdit.body
+        expected.currentVersion = 3
+        expected.updatedAt = second.document.updatedAt
+        #expect(first.status == .updated)
+        #expect(second.status == .updated)
+        #expect(second.document == expected)
+        #expect(retry.status == .unchanged)
+        #expect(retry.document == second.document)
+        #expect(try await store.inboundReferences(to: target.id) == [original.id])
+        #expect(try await store.listVersions(of: .path(path)).map(\.sequence) == [2, 3])
+
+        var full = DocumentInput(path: path, body: bodyEdit.body)
+        let replaced = try await store.writeDocument(full)
+        #expect(replaced.status == .updated)
+        #expect(replaced.document.title == nil)
+        #expect(replaced.document.metadata.isEmpty)
+        #expect(replaced.document.tags.isEmpty)
+        #expect(replaced.document.references.isEmpty)
+        #expect(try await store.listVersions(of: .path(path)).map(\.sequence) == [3, 4])
+        full.retention = .keepMostRecent(1)
+        let retentionEdit = try await store.writeDocument(full)
+        #expect(retentionEdit.status == .updated)
+        #expect(try await store.listVersions(of: .path(path)).map(\.sequence) == [5])
+        full.retention = nil
+        #expect(try await store.writeDocument(full).status == .unchanged)
+        #expect(try await store.entryMetadata(for: .path(path))?.access == DocumentAccessCounts(fullWriteCount: 5))
+    }
+}
+
+@Test func conditionalDocumentWritesSerializeSameBase() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let path = try DocumentPath("/notes/competing-writes")
+        _ = try await store.putDocument(DocumentInput(path: path, body: "base"))
+
+        let contenders = (1...16).map { DocumentInput(path: path, body: "writer \($0)") }
+        let outcomes = await withTaskGroup(of: Result<DocumentWriteResult, Error>.self) { group in
+            for contender in contenders {
+                group.addTask {
+                    do {
+                        return .success(try await store.writeDocument(contender, ifVersion: 1))
+                    } catch {
+                        return .failure(error)
+                    }
+                }
+            }
+            var collected: [Result<DocumentWriteResult, Error>] = []
+            for await outcome in group {
+                collected.append(outcome)
+            }
+            return collected
+        }
+
+        let successes = outcomes.compactMap { try? $0.get() }
+        #expect(successes.count == 1)
+        let winner = try #require(successes.first)
+        #expect(winner.status == .updated)
+        for case .failure(let error) in outcomes {
+            #expect(error as? MetaBrainStoreError == .documentVersionConflict(path, expected: 1, actual: 2))
+        }
+        #expect(try await store.getDocument(.path(path), trackingRead: false) == winner.document)
+        let versions = try await store.listVersions(of: .path(path))
+        #expect(versions.map(\.sequence) == [1, 2])
+        #expect(versions.last?.snapshot.body == winner.document.body)
+        #expect(try await store.entryMetadata(for: .path(path))?.access == DocumentAccessCounts(fullWriteCount: 2))
+    }
+}
+
+@Test func conditionalDocumentWritesHandleTheMaximumVersion() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let path = try DocumentPath("/notes/max-version")
+        let input = DocumentInput(path: path, body: "maximum")
+        var document = try await store.putDocument(input)
+        document.currentVersion = .max
+        let record = StoredDocumentRecordFixture(document: document, retention: .keepAll)
+        try await store.putCompressedRecord(record, forKey: MetaBrainKeyspace.document(id: document.id))
+
+        #expect(try await store.writeDocument(input, ifVersion: .max).status == .unchanged)
+        #expect(try await store.writeDocument(input, ifVersion: UInt64.max - 1).status == .unchanged)
+        await #expect(throws: MetaBrainStoreError.documentVersionExhausted(path)) {
+            try await store.writeDocument(DocumentInput(path: path, body: "overflow"), ifVersion: .max)
+        }
+        #expect(try await store.getDocument(.path(path), trackingRead: false) == document)
+    }
+}
+
+@Test func conditionalDocumentWritesCompareExactBodyBytes() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let path = try DocumentPath("/notes/body-bytes")
+        _ = try await store.putDocument(DocumentInput(path: path, body: "\u{E9}"))
+        let decomposed = "e\u{301}"
+        let updated = try await store.writeDocument(DocumentInput(path: path, body: decomposed), ifVersion: 1, bodyOnly: true)
+
+        #expect(updated.status == .updated)
+        #expect(updated.document.body.utf8.elementsEqual(decomposed.utf8))
+        #expect(try await store.listVersions(of: .path(path)).map(\.sequence) == [1, 2])
+    }
+}
+
 @Test func renamesDocumentPathAliasWithoutChangingID() async throws {
     try await withTemporaryStoreFixture { fixture in
         let store = try MetaBrainStore(url: fixture.storeURL)
@@ -956,14 +1135,24 @@ private func storeTestCodec<Value: Codable & Sendable>(
         #expect(reloadedSource.references == [.path(try DocumentPath("/refs/path-target"))])
         #expect(try await store.inboundReferences(to: target.id) == [source.id])
 
-        _ = try await store.putDocument(DocumentInput(
+        let sameInput = DocumentInput(
             path: source.path,
             body: source.body,
             references: reloadedSource.references
-        ))
+        )
+        #expect(try await store.putDocument(sameInput) == source)
 
         #expect(try await store.outboundReferences(from: source.id) == [])
         #expect(try await store.inboundReferences(to: target.id) == [])
+
+        let replacedTarget = try await store.putDocument(DocumentInput(path: target.path, body: "different target"))
+        let refreshed = try await store.writeDocument(sameInput, ifVersion: 1)
+        #expect(refreshed.status == .unchanged)
+        #expect(refreshed.document == source)
+        #expect(try await store.outboundReferences(from: source.id) == [replacedTarget.id])
+        #expect(try await store.inboundReferences(to: replacedTarget.id) == [source.id])
+        #expect(try await store.listVersions(of: .documentID(source.id)).map(\.sequence) == [1])
+        #expect(try await store.entryMetadata(for: .documentID(source.id))?.access.fullWriteCount == 1)
     }
 }
 

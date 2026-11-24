@@ -448,6 +448,69 @@ PHYSICAL_WORKSPACE="$(cd "$WORKSPACE" && pwd -P)"
     [[ ! -e ../.metabrain ]]
 )
 
+check_guarded_put() {
+    local store="$1"
+    shift
+    local command=("$@" --store "$store")
+    local result body_file="$TMP_DIR/guarded-put-body.txt"
+    local error_file="$TMP_DIR/guarded-put.err"
+    local original=(/guarded 'initial text' --title Retained --tag tagged --meta source=fixture --ref-path /other --keep-all)
+
+    assert_missing_store "$store" "${command[@]}" put /guarded guarded --if-version 1
+    assert_missing_store "$store" "${command[@]}" put /guarded guarded --body-only
+    [[ ! -e "$(dirname "$store")" ]]
+
+    result="$("${command[@]}" put "${original[@]}" --if-version 0)"
+    assert_put_json "$result" /guarded created 1
+    result="$("${command[@]}" put "${original[@]}" --if-version 0)"
+    assert_put_json "$result" /guarded unchanged 1
+    result="$("${command[@]}" put "${original[@]}")"
+    assert_put_json "$result" /guarded unchanged 1
+
+    if "${command[@]}" put /guarded 'different text' --if-version 0 2>"$error_file"; then
+        echo "Expected a divergent create-only write to conflict" >&2
+        exit 1
+    fi
+    rg -F -q 'expected version 0, found version 1' "$error_file"
+    if "${command[@]}" put /guarded 'different text' --body-only --tag forbidden 2>"$error_file"; then
+        echo "Expected body-only put to reject tag flags" >&2
+        exit 1
+    fi
+    rg -F -q -- '--body-only preserves title, tags, metadata, references, and retention' "$error_file"
+
+    printf 'new body from file' >"$body_file"
+    result="$("${command[@]}" put /guarded --body-file "$body_file" --body-only --if-version 1)"
+    assert_put_json "$result" /guarded updated 2
+    result="$("${command[@]}" put /guarded --body-file "$body_file" --body-only --if-version 1)"
+    assert_put_json "$result" /guarded unchanged 2
+    result="$("${command[@]}" put /guarded 'new body from file' --body-only --format text)"
+    printf '%s\n' "$result" | rg -q '^status: unchanged$'
+
+    if "${command[@]}" put /guarded 'stale body' --body-only --if-version 1 2>"$error_file"; then
+        echo "Expected a stale guarded write to conflict" >&2
+        exit 1
+    fi
+    rg -F -q 'expected version 1, found version 2' "$error_file"
+
+    result="$("${command[@]}" get /guarded)"
+    assert_get_json "$result" /guarded 'new body from file' 2
+    printf '%s\n' "$result" | rg -F -q '"title":"Retained"'
+    printf '%s\n' "$result" | rg -F -q '"tags":["tagged"]'
+    printf '%s\n' "$result" | rg -F -q '"metadata":{"source":"fixture"}'
+    printf '%s\n' "$result" | rg -F -q '"references":[{"kind":"path","value":"/other"}]'
+
+    result="$("${command[@]}" put /guarded 'replacement' --if-version 2)"
+    assert_put_json "$result" /guarded updated 3
+    result="$("${command[@]}" get /guarded)"
+    printf '%s\n' "$result" | rg -F -q '"title":null'
+    printf '%s\n' "$result" | rg -F -q '"tags":[]'
+    printf '%s\n' "$result" | rg -F -q '"metadata":{}'
+    printf '%s\n' "$result" | rg -F -q '"references":[]'
+    assert_versions_jsonl "$("${command[@]}" versions /guarded)" /guarded 3
+}
+
+check_guarded_put "$TMP_DIR/guarded-direct/store.leveldb" "${METABRAIN[@]}" --no-server
+
 INIT_DEFAULT_JSON="$("${METABRAIN[@]}" init --store "$STORE")"
 EXPECTED_INIT_JSON="{\"operation\":\"init\",\"status\":\"initialized\",\"storePath\":\"$STORE\"}"
 if [[ "$INIT_DEFAULT_JSON" != "$EXPECTED_INIT_JSON" ]]; then
@@ -1141,6 +1204,8 @@ server_mb() {
         /needle 'explicit override' 1
     [[ ! -e "$WORKSPACE_CHILD/.metabrain" ]]
 )
+
+check_guarded_put "$TMP_DIR/guarded-daemon/store.leveldb" "${METABRAIN[@]}" --server "$SERVER_SOCKET"
 
 SERVER_INIT_JSON="$(server_mb init)"
 SERVER_EXPECTED_INIT_JSON="{\"operation\":\"init\",\"status\":\"initialized\",\"storePath\":\"$SERVER_STORE\"}"

@@ -276,6 +276,7 @@ GET  /health
 GET  /v1/version
 POST /v1/init
 POST /v1/put
+POST /v1/put-conditional
 POST /v1/patch
 POST /v1/move
 POST /v1/get
@@ -291,9 +292,10 @@ POST /v1/remove-version
 
 `/health` and `/v1/version` work without a store. Store requests use the
 daemon's configured path unless the `X-MetaBrain-Store-Path` header supplies a
-base64-encoded UTF-8 path. Only `/v1/init` and `/v1/put` can create a store.
-Other store requests return HTTP 404 with `store_not_found` and the checked
-path if the selected store is missing. An existing store with a missing
+base64-encoded UTF-8 path. `/v1/init`, `/v1/put`, and
+`/v1/put-conditional` with `ifVersion: 0` can create a store. Existing-only
+operations return HTTP 404 with `store_not_found` and the checked path if the
+selected store is missing. An existing store with a missing
 document can return `document_not_found`.
 
 ### Request Shapes
@@ -332,7 +334,32 @@ Response mirrors CLI JSON:
 }
 ```
 
-Response mirrors `PutOutput`.
+Response mirrors `PutOutput`. The `status` is `created`, `updated`, or
+`unchanged`. A write that leaves the document and retention policy unchanged
+returns the current version without adding a snapshot.
+
+`POST /v1/put-conditional`
+
+```json
+{
+  "document": {"path": "/notes/today", "body": "Revised context"},
+  "ifVersion": 2,
+  "bodyOnly": true
+}
+```
+
+The `document` object uses the `/v1/put` request fields. Supply `ifVersion`,
+`bodyOnly: true`, or both. A positive `ifVersion` checks the current version
+before writing. Use `ifVersion: 0` to create a document at an unused path.
+`bodyOnly: true` requires an existing document and preserves the title, tags,
+metadata, references, and retention policy. Omit these fields and use a
+positive `ifVersion` or leave it unspecified.
+
+A mismatched version returns HTTP 409 with `conflict` and the expected and
+current versions. An exact retry whose current version is `ifVersion + 1`
+returns `unchanged`. The response mirrors `PutOutput`. Older daemons return
+HTTP 404 with `not_found` for this route. Clients should surface that error
+and keep guarded requests on this endpoint.
 
 `POST /v1/patch`
 
