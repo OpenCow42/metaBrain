@@ -323,3 +323,16 @@ private struct SourceManifestFixture: Codable, Sendable {
         }
     }
 }
+
+@Test func sourceByteCountChecksBothOverflowBoundaries() throws {
+    let largestFullChunkCount = Int.max / SourceBlob.chunkSize
+    let largestTail = Int.max % SourceBlob.chunkSize
+    #expect(try SourceBlob.verifiedByteCount(chunkCount: 0, finalChunkSize: 0) == 0)
+    #expect(try SourceBlob.verifiedByteCount(chunkCount: largestFullChunkCount + 1, finalChunkSize: largestTail) == Int.max)
+    #expect(throws: ProjectOperationError.invalid("The original source is too large.")) {
+        try SourceBlob.verifiedByteCount(chunkCount: largestFullChunkCount + 1, finalChunkSize: largestTail + 1)
+    }
+    #expect(throws: ProjectOperationError.invalid("The original source is too large.")) {
+        try SourceBlob.verifiedByteCount(chunkCount: largestFullChunkCount + 2, finalChunkSize: 1)
+    }
+}

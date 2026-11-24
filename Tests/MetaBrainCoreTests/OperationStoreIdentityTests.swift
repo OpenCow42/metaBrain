@@ -2,6 +2,19 @@ import Foundation
 import Testing
 @testable import MetaBrainCore
 
+@Test func projectOperationIdentityReportsFailureWhenTheStoreDirectoryIsMissing() throws {
+    let fixture = try TemporaryStoreFixture()
+    defer { try? fixture.cleanUp() }
+
+    #expect {
+        try MetaBrainStore.loadOperationStoreIdentity(at: fixture.storeURL.path).get()
+    } throws: { error in
+        guard let failure = error as? MetaBrainStoreError, case .operationFailed(let message) = failure else { return false }
+        return message.hasPrefix("Unable to initialize project operation store identity:")
+    }
+    #expect(!FileManager.default.fileExists(atPath: fixture.storeURL.path))
+}
+
 @Test func projectOperationRejectsReplacementStoreAtSamePath() async throws {
     try await withTemporaryStoreFixture { fixture in
         let original = try MetaBrainStore(url: fixture.storeURL)

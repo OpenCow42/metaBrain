@@ -168,7 +168,7 @@ public final class MetaBrainStore: Sendable {
         }
     }
 
-    private static func loadOperationStoreIdentity(at path: String) -> Result<UUID, MetaBrainStoreError> {
+    static func loadOperationStoreIdentity(at path: String) -> Result<UUID, MetaBrainStoreError> {
         let identityURL = URL(fileURLWithPath: path, isDirectory: true).appendingPathComponent("metabrain-identity")
         do {
             let data = try Data(contentsOf: identityURL)
@@ -359,6 +359,7 @@ public final class MetaBrainStore: Sendable {
     ) async throws -> (targets: [OperationTarget], records: [DocumentPath: MetaBrainDocumentRecord]) {
         var targets: [OperationTarget] = []
         var records: [DocumentPath: MetaBrainDocumentRecord] = [:]
+        var plannedIDs: Set<DocumentID> = []
         for input in operation.documents {
             try input.sourceProfile?.validate()
             try await validateSourceCapture(input.sourceCapture)
@@ -373,7 +374,8 @@ public final class MetaBrainStore: Sendable {
                 version = record.document.currentVersion
             } else {
                 let plannedID = operation.creationID(for: input.path)
-                guard try await rawValue(forKey: MetaBrainKeyspace.document(id: plannedID)) == nil else {
+                guard plannedIDs.insert(plannedID).inserted,
+                      try await rawValue(forKey: MetaBrainKeyspace.document(id: plannedID)) == nil else {
                     throw ProjectOperationError.conflict("A planned creation ID already belongs to a document.")
                 }
                 version = 0
@@ -390,7 +392,6 @@ public final class MetaBrainStore: Sendable {
         var prepared: [PreparedDocumentWrite] = []
         var unchanged: [StoredDocument] = []
         var results: [OperationResult] = []
-        var seenIDs: Set<DocumentID> = []
         for input in operation.documents {
             let document: StoredDocument
             let status: DocumentWriteStatus
@@ -413,9 +414,6 @@ public final class MetaBrainStore: Sendable {
                 prepared.append(write)
                 document = write.record.document
                 status = .created
-            }
-            guard seenIDs.insert(document.id).inserted else {
-                throw ProjectOperationError.conflict("Two project targets refer to the same document ID.")
             }
             results.append(OperationResult(
                 path: document.path, documentID: document.id, version: document.currentVersion, status: status
@@ -857,15 +855,12 @@ public final class MetaBrainStore: Sendable {
     }
 
     private func filterOnlyEvidenceCandidates(for query: SearchQuery) async throws -> [EvidenceSearchCandidate] {
-        var ids: Set<DocumentID>
-        if let indexed = try await filteredDocumentIDs(for: query) {
-            ids = indexed
-        } else if let path = query.pathPrefix {
+        let indexed = try await filteredDocumentIDs(for: query)
+        var ids = indexed ?? []
+        if indexed == nil, let path = query.pathPrefix {
             let descendants = try await listDirectory(path: path, recursive: true)
             ids = Set(descendants.compactMap(\.documentID))
             if let id = try await documentID(forPath: path) { ids.insert(id) }
-        } else {
-            return []
         }
 
         var candidates: [EvidenceSearchCandidate] = []
@@ -1801,15 +1796,10 @@ public final class MetaBrainStore: Sendable {
                 }
             }
 
-            let documentPrefix = Data(MetaBrainKeyspace.prefix(.documentID).utf8)
-            let documentKeys = try await records.scanEncodedPrefixKeys(documentPrefix, readOptions: Self.bulkReadOptions)
             var fieldKeys: [String] = []
             var documentCount = 0
-            for key in documentKeys {
-                guard let data = try await records.value(forKey: key, readOptions: Self.bulkReadOptions) else {
-                    continue
-                }
-                let document = try decodeCompressedRecord(data, as: MetaBrainDocumentRecord.self).payload.document
+            let keys = try await scanKeys(withPrefix: MetaBrainKeyspace.prefix(.documentID))
+            try await forEachCurrentDocument(at: keys) { document in
                 if layout == nil {
                     fieldKeys.append(contentsOf: Self.searchFieldKeys(for: document))
                 }
@@ -1868,13 +1858,8 @@ public final class MetaBrainStore: Sendable {
             }
 
             var rebuilt: [String: MetaBrainTreeRecord] = [:]
-            let documentPrefix = Data(MetaBrainKeyspace.prefix(.documentID).utf8)
-            let documentKeys = try await records.scanEncodedPrefixKeys(documentPrefix, readOptions: Self.bulkReadOptions)
-            for key in documentKeys {
-                guard let data = try await records.value(forKey: key, readOptions: Self.bulkReadOptions) else {
-                    continue
-                }
-                let document = try decodeCompressedRecord(data, as: MetaBrainDocumentRecord.self).payload.document
+            let keys = try await scanKeys(withPrefix: MetaBrainKeyspace.prefix(.documentID))
+            try await forEachCurrentDocument(at: keys) { document in
                 for path in Self.treeBranchPaths(for: document.path) {
                     let key = MetaBrainKeyspace.tree(parentPath: path.parent!, name: path.name)
                     if path == document.path {
@@ -1915,6 +1900,21 @@ public final class MetaBrainStore: Sendable {
                 }
                 try batch.put(Self.caseSensitiveTreeLayout, forKey: MetaBrainKeyspace.treeLayout)
             }
+        }
+    }
+
+    /// Reads one document at a time from a previously scanned list of current document keys.
+    func forEachCurrentDocument(
+        at keys: [String],
+        visit: (StoredDocument) throws -> Void
+    ) async throws {
+        let records = try await currentRecords()
+        for key in keys {
+            guard let data = try await records.value(forKey: key, readOptions: Self.bulkReadOptions) else {
+                continue
+            }
+            let document = try decodeCompressedRecord(data, as: MetaBrainDocumentRecord.self).payload.document
+            try visit(document)
         }
     }
 
@@ -3501,7 +3501,7 @@ extension MetaBrainStore {
     /// Verifies the original bytes in order and stores their immutable manifest.
     public func finishSourceBlob(chunks: [String]) async throws -> SourceBlob {
         var hasher = SHA256()
-        var byteCount = 0
+        var finalChunkSize = 0
         for (index, digest) in chunks.enumerated() {
             try Task.checkCancellation()
             let bytes = try await verifiedSourceChunk(digest)
@@ -3509,14 +3509,11 @@ extension MetaBrainStore {
                   index == chunks.count - 1 || bytes.count == SourceBlob.chunkSize else {
                 throw ProjectOperationError.invalid("Only the last source chunk can be shorter than \(SourceBlob.chunkSize) bytes.")
             }
-            let (total, overflow) = byteCount.addingReportingOverflow(bytes.count)
-            guard !overflow else {
-                throw ProjectOperationError.invalid("The original source is too large.")
-            }
-            byteCount = total
+            finalChunkSize = bytes.count
             hasher.update(data: bytes)
         }
 
+        let byteCount = try SourceBlob.verifiedByteCount(chunkCount: chunks.count, finalChunkSize: finalChunkSize)
         let blob = SourceBlob(sha256: hasher.finalize().hexString, byteCount: byteCount)
         let manifest = SourceBlobManifest(blob: blob, chunks: chunks)
         return try await writes.run {

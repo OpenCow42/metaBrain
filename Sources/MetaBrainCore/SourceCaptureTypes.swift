@@ -13,6 +13,17 @@ public struct SourceBlob: Codable, Equatable, Sendable {
 
     public var chunkCount: Int { byteCount <= 0 ? 0 : 1 + (byteCount - 1) / Self.chunkSize }
 
+    /// Calculates the original byte count after the individual chunk sizes have been checked.
+    static func verifiedByteCount(chunkCount: Int, finalChunkSize: Int) throws -> Int {
+        let fullChunks = max(0, chunkCount - 1)
+        let (prefixBytes, prefixOverflow) = fullChunks.multipliedReportingOverflow(by: chunkSize)
+        let (total, totalOverflow) = prefixBytes.addingReportingOverflow(finalChunkSize)
+        guard !prefixOverflow, !totalOverflow else {
+            throw ProjectOperationError.invalid("The original source is too large.")
+        }
+        return total
+    }
+
     public func validate() throws {
         guard byteCount >= 0, Self.isDigest(sha256) else {
             throw ProjectOperationError.invalid("Expected a nonnegative byte count and lowercase SHA-256 digest.")

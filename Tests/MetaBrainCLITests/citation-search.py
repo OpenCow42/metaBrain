@@ -179,6 +179,9 @@ assert ambiguous[0]["candidates"] == [
 assert ambiguous[1]["syntax"] == "markdown" and ambiguous[1]["targetID"] == shared_a["documentID"]
 readable = run("links", review, "--format", "text").decode()
 assert all("candidate: " + item["path"] in readable for item in [shared_a, shared_b])
+lint_text = run("lint", review, "--format", "text").decode()
+candidates = ", ".join(item["path"] for item in [shared_a, shared_b])
+assert f"{review}@1:0-10\tambiguousTarget\tShared\t{candidates}" in lint_text.splitlines(), lint_text
 assert run("get", target, "--block", "keep-last", "--format", "text").decode().strip() == "Independent policy."
 assert read("links", shared_b["path"], "--incoming", "--format", "json") == []
 run("move", shared_b["path"], "/standards/b/Renamed.md")

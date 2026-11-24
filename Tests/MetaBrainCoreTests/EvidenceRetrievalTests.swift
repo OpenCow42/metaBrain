@@ -2,6 +2,38 @@ import Foundation
 @testable import MetaBrainCore
 import Testing
 
+@Test func compactEvidencePreservesAPrecedingQualifier() throws {
+    let qualifier = "Warning. "
+    let match = "The backups keep two versions."
+    let body = EvidenceBody(qualifier + match + " " + String(repeating: "Unrelated context ", count: 8))
+    let window = body.excerpt(around: 13..<20)
+    #expect(body.text(in: window.compact) == qualifier + match)
+    #expect(window.compact.lowerBound == window.full.lowerBound)
+}
+
+@Test(arguments: [false, true])
+func evidenceFallsBackToTheDocumentOpeningWhenNoPassageCanBeUsed(_ includesInvalidChunk: Bool) throws {
+    let document = StoredDocument(id: try DocumentID(rawValue: "legacy"), path: try DocumentPath("/notes/legacy"),
+                                  body: "Current opening.", currentVersion: 2, createdAt: Date(), updatedAt: Date())
+    let chunk = MetaBrainChunkRecord(documentID: document.id, versionSequence: 2, ordinal: 0,
+                                    text: "backups", startOffset: 50, endOffset: 57)
+    let candidate = EvidenceSearchCandidate(
+        document: document,
+        passages: includesInvalidChunk ? [.init(chunk: chunk, hasBodyMatch: true, score: 1)] : [],
+        weights: ["backups": 1], view: .evidence
+    )
+    let output = try EvidenceSearchCandidate.select([candidate], limit: 1, maxTokens: 200)
+    let hit = try #require(output.items.first)
+    #expect(hit.text == document.body)
+    #expect(hit.ref.location == .range(0..<document.body.count))
+}
+
+@Test func evidenceOpeningStopsAfterTheClosingQuote() {
+    let opening = "“The backups keep two versions.”"
+    let body = EvidenceBody(opening + " The schedule varies.")
+    #expect(body.text(in: body.opening) == opening)
+}
+
 @Test func evidenceKeepsTheMatchingSentenceAndQualifierUnderATightBudget() async throws {
     try await withTemporaryStoreFixture { fixture in
         let store = try MetaBrainStore(url: fixture.storeURL)

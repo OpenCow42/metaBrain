@@ -60,6 +60,8 @@ def main():
         run(mode, "lint", "/loose.md", "--strict")
         orphan_only = json.loads(run(mode, "lint", "/loose.md", "--strict", "--orphans", status=3).stdout)
         assert [item["kind"] for item in orphan_only["findings"]] == ["orphan"], orphan_only
+        orphan_text = run(mode, "lint", "/loose.md", "--orphans", "--format", "text").stdout
+        assert "/loose.md@1\torphan" in orphan_text.splitlines(), orphan_text
 
 
 if __name__ == "__main__":

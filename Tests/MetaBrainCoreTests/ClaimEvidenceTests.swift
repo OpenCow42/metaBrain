@@ -8,6 +8,27 @@ private func activeClaimSource(_ group: String) -> ClaimSourceProfile {
     ClaimSourceProfile(status: .active, synthetic: false, independenceGroup: group, freshUntil: freshClaimDate)
 }
 
+@Test func claimCanCiteRetainedRevisionWrittenBeforeSourceAssessment() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let path = try DocumentPath("/atlas/results.md")
+        let body = "The test passed. ^result"
+        let original = try await store.putDocument(DocumentInput(path: path, body: body))
+        let ref = try EvidenceReference("\(original.id.rawValue)@1#^result")
+        _ = try await store.putDocument(DocumentInput(path: path, body: body, sourceProfile: activeClaimSource("lab")))
+
+        let operation = ProjectOperation(operationID: UUID(), project: try DocumentPath("/atlas"), documents: [
+            DocumentInput(path: try DocumentPath("/atlas/summary.md"), body: "Results confirmed.", claims: [
+                ProjectClaim(id: UUID(), text: "The test passed.", state: .accepted, evidence: [
+                    ClaimEvidence(relation: .supports, ref: ref)
+                ])
+            ])
+        ])
+        let preview = try await store.inspectOperation(operation)
+        #expect(try await store.applyOperation(preview).results.first?.status == .created)
+    }
+}
+
 private func claimFileCapture(_ store: MetaBrainStore, text: String, origin: String) async throws -> SourceCapture {
     let chunk = try await store.stageSourceChunk(Data(text.utf8))
     let blob = try await store.finishSourceBlob(chunks: [chunk])

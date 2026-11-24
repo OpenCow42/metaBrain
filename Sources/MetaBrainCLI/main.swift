@@ -1239,9 +1239,6 @@ extension MetaBrainCommand {
                 guard maxTokens == nil else {
                     throw ValidationError("--max-tokens requires --view.")
                 }
-                guard query != nil else {
-                    throw ValidationError("Provide search text or use --view refs with a filter.")
-                }
             }
         }
 
@@ -1251,9 +1248,12 @@ extension MetaBrainCommand {
                 try await searchEvidence(view: view, metadata: metadata)
                 return
             }
+            guard let query else {
+                throw ValidationError("Provide search text or use --view refs with a filter.")
+            }
 
             let searchQuery = SearchQuery(
-                text: query ?? "",
+                text: query,
                 pathPrefix: try pathPrefix.map(DocumentPath.init),
                 tags: tags,
                 metadata: metadata,

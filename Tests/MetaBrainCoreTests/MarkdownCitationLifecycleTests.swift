@@ -125,6 +125,23 @@ import Testing
     }
 }
 
+@Test func citationSchemesRequireASCIIAndAValidFirstCharacter() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let names = ["2notes:report.md", "n_otes:report.md", "nötés:report.md"]
+        var ids: [DocumentID] = []
+        for name in names {
+            let document = try await store.putDocument(DocumentInput(path: DocumentPath("/notes/" + name), body: "Local."))
+            ids.append(document.id)
+        }
+        let body = (names + ["https+notes-1.0:report.md"]).map { "[report](\($0))" }.joined(separator: " ")
+        let source = try await store.putDocument(DocumentInput(path: DocumentPath("/notes/source.md"), body: body))
+        let links = try await store.links(for: .documentID(source.id))
+        #expect(links.map(\.status) == [.resolved, .resolved, .resolved, .external])
+        #expect(links.map(\.targetID) == ids.map(Optional.some) + [nil])
+    }
+}
+
 @Test func repeatedCitationsPreserveSeparateTargetGenerations() async throws {
     try await withTemporaryStoreFixture { fixture in
         let store = try MetaBrainStore(url: fixture.storeURL)
@@ -178,13 +195,14 @@ import Testing
     }
 }
 
-@Test func namedBlocksKeepIdenticalCitationsBoundWhenParagraphsSwap() async throws {
+@Test(arguments: ["[[policy]]", "[[policy|Policy details]]"])
+func namedBlocksKeepIdenticalCitationsBoundWhenParagraphsSwap(_ citation: String) async throws {
     try await withTemporaryStoreFixture { fixture in
         let store = try MetaBrainStore(url: fixture.storeURL)
         let path = try DocumentPath("/policy.md")
         let original = try await store.putDocument(DocumentInput(path: path, body: "Original."))
-        let first = "[[policy]] ^old"
-        let second = "[[policy]] ^new"
+        let first = citation + " ^old"
+        let second = citation + " ^new"
         let source = try await store.putDocument(DocumentInput(path: DocumentPath("/notes.md"), body: first))
         _ = try await store.moveDocument(.documentID(original.id), to: DocumentPath("/archive/policy-old.md"))
         let replacement = try await store.putDocument(DocumentInput(path: path, body: "Replacement."))

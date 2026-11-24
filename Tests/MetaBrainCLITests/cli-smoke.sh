@@ -257,6 +257,8 @@ if ! printf '%s\n' "$VERSION_DEFAULT_JSON" | rg -F -q '"currentTag":"9.8.7"'; th
 fi
 printf '%s\n' "$VERSION_DEFAULT_JSON" | rg -F -q '"endpoint":"http://127.0.0.1:'"$AUTO_EXPECTED_PORT"'"'
 printf '%s\n' "$VERSION_DEFAULT_JSON" | rg -F -q '"reachable":false'
+VERSION_STANDARD_ENDPOINT="$(env -u METABRAIN_COVERAGE_LOOPBACK_PORT "${METABRAIN[@]}" version --no-release-check)"
+printf '%s\n' "$VERSION_STANDARD_ENDPOINT" | rg -F -q '"endpoint":"http://127.0.0.1:6374"'
 VERSION_TEXT="$(METABRAIN_VERSION=9.8.7 "${METABRAIN[@]}" version --no-server --no-release-check --format text)"
 if [[ "$VERSION_TEXT" != $'version: 9.8.7\nserver: skipped\nreleaseCheck: skipped' ]]; then
     echo "Expected version text output without release check, got: $VERSION_TEXT" >&2
@@ -305,6 +307,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             result = [{"documentID": "sample", "path": "/sample.md", "version": 1, "sources": [], "passages": []}]
         elif self.path == "/v1/search-evidence" and request["maxTokens"] == 31:
             result = {"items": [{"ref": "sample@1#0-6", "path": "/sample.md", "text": "Sample"}], "truncated": False}
+        elif self.path == "/v1/get-passage" and request.get("heading") == "Sample":
+            text = "# Sample\n"
+            result = {"documentID": "sample", "path": "/sample.md", "version": 1,
+                      "start": 0, "end": len(text), "heading": "Sample", "text": text}
         else:
             self.respond(404, b'{}')
             return
@@ -361,6 +367,10 @@ if "${budget_command[@]}" search sample --view evidence --max-tokens 31 >"$TMP_D
 fi
 [[ ! -s "$TMP_DIR/budget.out" ]]
 rg -F -q 'Evidence output exceeded --max-tokens 31.' "$TMP_DIR/budget.err"
+
+# Preserve a daemon passage's trailing newline without printing a second one.
+"${budget_command[@]}" get /sample.md --heading Sample --format text >"$TMP_DIR/passage.out"
+printf '# Sample\n' | cmp - "$TMP_DIR/passage.out"
 
 VERSION_CHECKED_TEXT="$(METABRAIN_VERSION=9.8.7 "${METABRAIN[@]}" version --format text --release-api-url "http://127.0.0.1:${release_port}/latest")"
 printf '%s\n' "$VERSION_CHECKED_TEXT" | rg -F -q 'version: 9.8.7'

@@ -77,20 +77,26 @@ claim = {
     "id": claim_id, "text": "Local storage should be preferred.", "state": "contested", "highRisk": False,
     "evidence": [{"relation": "supports", "ref": first_ref}, {"relation": "contradicts", "ref": second_ref}],
 }
-operation["documents"][0]["claims"] = [claim]
+accepted_id = str(uuid.uuid4())
+accepted_claim = {
+    "id": accepted_id, "text": "Local storage works offline.", "state": "accepted", "highRisk": False,
+    "evidence": [{"relation": "supports", "ref": first_ref}],
+}
+operation["documents"][0]["claims"] = [claim, accepted_claim]
 write_operation(operation)
 preview_file.write_bytes(run("operation", "inspect", spec))
 run("get", owner, ok=False)
 receipt = run("operation", "apply", preview_file)
 assert run("operation", "apply", preview_file) == receipt
 decision = read("get", owner, "--format", "json")
-assert decision["claims"][0]["id"].lower() == claim_id
-assert decision["claims"][0]["state"] == "contested"
-assert decision["claims"][0]["evidence"] == claim["evidence"]
+stored_claims = {item["id"].lower(): item for item in decision["claims"]}
+assert stored_claims[claim_id]["state"] == "contested"
+assert stored_claims[claim_id]["evidence"] == claim["evidence"]
 
 assert read("get", "--ref", first_ref)["items"][0]["text"] == first_body
 assert read("get", "--ref", second_ref)["items"][0]["text"] == second_body
 assert findings(claim_id) == []
+assert findings(accepted_id) == []
 
 run("put", first, "Recommendation updated. ^evidence")
 moved = f"{project}/archive/local.md"
@@ -103,3 +109,18 @@ run("remove-version", "--id", ids[first], "--sequence", "1")
 run("get", "--ref", first_ref, ok=False)
 after_prune = findings(claim_id)
 assert after_prune != before_prune and any(finding["evidenceRef"] == first_ref for finding in after_prune), after_prune
+
+accepted_findings = findings(accepted_id)
+assert any(item["evidenceIssue"] == "insufficient" and "evidenceRef" not in item for item in accepted_findings)
+text_report = run("lint", project, "--format", "text").decode().splitlines()
+for finding in after_prune + accepted_findings:
+    expected = [
+        f'{finding["sourcePath"]}@{finding["sourceVersion"]}',
+        "claimEvidence",
+        finding["claimID"],
+        finding["evidenceIssue"],
+    ]
+    if "evidenceRef" in finding:
+        expected.append(finding["evidenceRef"])
+    expected.append(finding["message"])
+    assert "\t".join(expected) in text_report, text_report

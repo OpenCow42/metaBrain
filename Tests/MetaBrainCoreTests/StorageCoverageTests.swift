@@ -2,6 +2,20 @@ import Foundation
 import Testing
 @testable import MetaBrainCore
 
+@Test func storageMigrationVisitorSkipsDocumentsDeletedSinceTheKeyScan() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let removed = try await store.putDocument(DocumentInput(path: DocumentPath("/legacy/removed"), body: "Deleted"))
+        let retained = try await store.putDocument(DocumentInput(path: DocumentPath("/legacy/retained"), body: "Live"))
+        let keys = [removed, retained].map { MetaBrainKeyspace.document(id: $0.id) }
+        #expect(try await store.deleteDocument(.documentID(removed.id)))
+
+        var visited: [StoredDocument] = []
+        try await store.forEachCurrentDocument(at: keys) { visited.append($0) }
+        #expect(visited == [retained])
+    }
+}
+
 @Test func storageRejectsUnsupportedTreeLayoutAndCanRetryAfterRepair() async throws {
     try await withTemporaryStoreFixture { fixture in
         let store = try MetaBrainStore(url: fixture.storeURL)

@@ -386,3 +386,26 @@ func projectOperationRejectsStaleTargetWithoutWritingOtherDocuments(change: Stri
         #expect(try await store.getDocument(.path(shared), trackingRead: false)?.body == (firstResult == nil ? "Second winner" : "First winner"))
     }
 }
+
+@Test func projectOperationRejectsReusingACreationIDAfterMovingTheDocument() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let project = try DocumentPath("/atlas")
+        let path = try DocumentPath("/atlas/report.md")
+        let destination = try DocumentPath("/atlas/archived-report.md")
+        let operation = ProjectOperation(operationID: UUID(), project: project, documents: [
+            DocumentInput(path: path, body: "Review.")
+        ])
+        let preview = try await store.inspectOperation(operation)
+        let receipt = try await store.applyOperation(preview)
+        let moved = try await store.moveDocument(.path(path), to: destination).document
+
+        await #expect(throws: ProjectOperationError.conflict("A planned creation ID already belongs to a document.")) {
+            try await store.inspectOperation(operation)
+        }
+        #expect(moved.id == operation.creationID(for: path))
+        #expect(try await store.getDocument(.path(path), trackingRead: false) == nil)
+        #expect(try await store.getDocument(.path(destination), trackingRead: false) == moved)
+        #expect(try await store.applyOperation(preview) == receipt)
+    }
+}
