@@ -117,6 +117,25 @@ public struct ServerRouter: Sendable {
             }
         case (_, "/v1/operation-inspect"), (_, "/v1/operation-apply"):
             return methodNotAllowed(request, allowedMethod: "POST")
+        case (.post, "/v1/source-stage-chunk"):
+            return await routeStoreOperation(request) { storeServer in
+                try await storeServer.stageSourceChunk(decode(ServerSourceChunk.self, from: request))
+            }
+        case (.post, "/v1/source-finish-blob"):
+            return await routeStoreOperation(request) { storeServer in
+                try await storeServer.finishSourceBlob(decode(ServerSourceFinishRequest.self, from: request))
+            }
+        case (.post, "/v1/source-descriptor"):
+            return await routeStoreOperation(request) { storeServer in
+                try await storeServer.sourceDescriptor(decode(ServerSourceDescriptorRequest.self, from: request))
+            }
+        case (.post, "/v1/source-chunk"):
+            return await routeStoreOperation(request) { storeServer in
+                try await storeServer.sourceChunk(decode(ServerSourceReadRequest.self, from: request))
+            }
+        case (_, "/v1/source-stage-chunk"), (_, "/v1/source-finish-blob"),
+             (_, "/v1/source-descriptor"), (_, "/v1/source-chunk"):
+            return methodNotAllowed(request, allowedMethod: "POST")
         case (.post, "/v1/move"):
             return await routeStoreOperation(request) { storeServer in
                 let decoded = try decode(ServerMoveRequest.self, from: request)

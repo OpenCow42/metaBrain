@@ -155,6 +155,7 @@ public struct GetOutput: Codable, Equatable, Sendable {
     public var metadata: [String: String]
     public var path: String
     public var references: [DocumentDumpReference]
+    public var sourceCapture: SourceCapture?
     public var tags: [String]
     public var title: String?
     public var updatedAt: Date
@@ -171,7 +172,8 @@ public struct GetOutput: Codable, Equatable, Sendable {
         title: String?,
         updatedAt: Date,
         version: UInt64,
-        markdown: Bool? = nil
+        markdown: Bool? = nil,
+        sourceCapture: SourceCapture? = nil
     ) {
         self.body = body
         self.createdAt = createdAt
@@ -180,6 +182,7 @@ public struct GetOutput: Codable, Equatable, Sendable {
         self.metadata = metadata
         self.path = path
         self.references = references
+        self.sourceCapture = sourceCapture
         self.tags = tags
         self.title = title
         self.updatedAt = updatedAt
@@ -198,7 +201,8 @@ public struct GetOutput: Codable, Equatable, Sendable {
             title: document.title,
             updatedAt: document.updatedAt,
             version: document.currentVersion,
-            markdown: document.markdown
+            markdown: document.markdown,
+            sourceCapture: document.sourceCapture
         )
     }
 
@@ -210,6 +214,7 @@ public struct GetOutput: Codable, Equatable, Sendable {
         case metadata
         case path
         case references
+        case sourceCapture
         case tags
         case title
         case updatedAt
@@ -225,6 +230,7 @@ public struct GetOutput: Codable, Equatable, Sendable {
         try container.encode(metadata, forKey: .metadata)
         try container.encode(path, forKey: .path)
         try container.encode(references, forKey: .references)
+        try container.encodeIfPresent(sourceCapture, forKey: .sourceCapture)
         try container.encode(tags, forKey: .tags)
         try container.encode(title, forKey: .title)
         try container.encode(updatedAt, forKey: .updatedAt)

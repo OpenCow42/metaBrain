@@ -18,6 +18,7 @@ public enum ServerClientError: Error, Equatable, Sendable, CustomStringConvertib
     case recallUnsupported
     case historicalGetUnsupported
     case citationOperationUnsupported(String)
+    case sourceOperationUnsupported
 
     public var description: String {
         switch self {
@@ -37,6 +38,8 @@ public enum ServerClientError: Error, Equatable, Sendable, CustomStringConvertib
             return "The daemon does not support get --version. Upgrade mbd or use mb get --version with --no-server."
         case .citationOperationUnsupported(let operation):
             return "The daemon does not support \(operation). Upgrade mbd or pass --no-server."
+        case .sourceOperationUnsupported:
+            return "The daemon does not support source transfers. Upgrade mbd or pass --no-server."
         }
     }
 }
@@ -155,6 +158,46 @@ public struct MetaBrainServerClient: Sendable {
             throw ServerClientError.citationOperationUnsupported(operation)
         } catch ServerClientError.unexpectedStatusCode(404) {
             throw ServerClientError.citationOperationUnsupported(operation)
+        }
+    }
+
+    public func stageSourceChunk(_ bytes: Data) throws -> String {
+        let result: ServerSourceChunkDigest = try sourceOperation(
+            "/v1/source-stage-chunk", request: ServerSourceChunk(bytes: bytes)
+        )
+        return result.sha256
+    }
+
+    public func finishSourceBlob(chunks: [String]) throws -> SourceBlob {
+        try sourceOperation("/v1/source-finish-blob", request: ServerSourceFinishRequest(chunks: chunks))
+    }
+
+    public func sourceDescriptor(
+        _ reference: DocumentReference, version: UInt64? = nil
+    ) throws -> SourceDescriptor {
+        try sourceOperation(
+            "/v1/source-descriptor",
+            request: ServerSourceDescriptorRequest(reference: DocumentReferenceDTO(reference), version: version)
+        )
+    }
+
+    public func sourceChunk(_ reference: DocumentReference, version: UInt64, index: Int) throws -> Data {
+        let result: ServerSourceChunk = try sourceOperation(
+            "/v1/source-chunk",
+            request: ServerSourceReadRequest(reference: DocumentReferenceDTO(reference), version: version, index: index)
+        )
+        return result.bytes
+    }
+
+    private func sourceOperation<Request: Encodable & Sendable, Response: Decodable & Sendable>(
+        _ path: String, request: Request
+    ) throws -> Response {
+        do {
+            return try post(path, request: request)
+        } catch ServerClientError.serverError(statusCode: 404, error: "not_found", message: _) {
+            throw ServerClientError.sourceOperationUnsupported
+        } catch ServerClientError.unexpectedStatusCode(404) {
+            throw ServerClientError.sourceOperationUnsupported
         }
     }
 

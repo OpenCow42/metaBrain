@@ -125,6 +125,7 @@ public struct DocumentInput: Codable, Equatable, Sendable {
     /// Explicit Markdown opt-in for a document whose path has no `.md` extension.
     /// A replacement with `nil` preserves the prior setting.
     public var markdown: Bool?
+    public var sourceCapture: SourceCapture?
 
     public var isMarkdown: Bool { markdown == true || path.hasMarkdownExtension }
 
@@ -136,7 +137,8 @@ public struct DocumentInput: Codable, Equatable, Sendable {
         metadata: [String: String] = [:],
         references: [DocumentReference] = [],
         retention: VersionRetentionPolicy? = nil,
-        markdown: Bool? = nil
+        markdown: Bool? = nil,
+        sourceCapture: SourceCapture? = nil
     ) {
         self.path = path
         self.title = title
@@ -146,6 +148,7 @@ public struct DocumentInput: Codable, Equatable, Sendable {
         self.references = references
         self.retention = retention
         self.markdown = markdown
+        self.sourceCapture = sourceCapture
     }
 }
 
@@ -161,6 +164,7 @@ public struct StoredDocument: Codable, Equatable, Sendable, Identifiable {
     public var createdAt: Date
     public var updatedAt: Date
     public var markdown: Bool?
+    public var sourceCapture: SourceCapture?
 
     public var isMarkdown: Bool { markdown == true || path.hasMarkdownExtension }
 
@@ -175,7 +179,8 @@ public struct StoredDocument: Codable, Equatable, Sendable, Identifiable {
         currentVersion: UInt64,
         createdAt: Date,
         updatedAt: Date,
-        markdown: Bool? = nil
+        markdown: Bool? = nil,
+        sourceCapture: SourceCapture? = nil
     ) {
         self.id = id
         self.path = path
@@ -188,6 +193,7 @@ public struct StoredDocument: Codable, Equatable, Sendable, Identifiable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.markdown = markdown
+        self.sourceCapture = sourceCapture
     }
 }
 

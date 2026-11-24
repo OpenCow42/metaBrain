@@ -73,6 +73,24 @@ Review the preview, then pass that file to
 The operation commits all proposed notes in one batch.
 On a conflict, inspect the changed notes and generate a new preview.
 After a lost response, submit the original preview again to retrieve its receipt.
+.Sh ORIGINAL FILES
+.Cm mb source stage Ar file Fl Fl origin Ar origin
+reads one local file and prints capture JSON.
+Use
+.Fl Fl media-type Ar type
+to record its MIME type and
+.Fl Fl extraction Ar method
+to record how the note body was derived.
+Set the source document's
+.Cm sourceCapture
+field to this JSON in a project operation.
+.Cm mb source export Ar path Fl Fl output Ar file
+writes the verified original to a local file.
+Use
+.Fl Fl id Ar id
+in place of a path after a move, and
+.Fl Fl version Ar sequence
+to select a retained revision.
 .Sh FILES
 .Bl -tag -width ".metabrain/store.leveldb"
 .It Pa /AGENTS.md

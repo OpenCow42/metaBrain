@@ -69,6 +69,7 @@ struct MetaBrainCommand: AsyncParsableCommand {
             Put.self,
             Patch.self,
             Operation.self,
+            Source.self,
             Move.self,
             Get.self,
             Links.self,
@@ -631,6 +632,102 @@ extension MetaBrainCommand {
                     }
                 }
                 try printJSON(receipt)
+            }
+        }
+    }
+
+    struct Source: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "source",
+            abstract: "Stage or export original source bytes.",
+            subcommands: [Stage.self, Export.self]
+        )
+
+        @OptionGroup var storeOptions: StoreOptions
+
+        struct Stage: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(
+                commandName: "stage",
+                abstract: "Stage a local file and print its source capture as JSON."
+            )
+
+            @OptionGroup var storeOptions: StoreOptions
+            @Argument(help: "Local file containing the original bytes.")
+            var file: String
+
+            @Option(help: "Where the original bytes came from.")
+            var origin: String
+
+            @Option(help: "Media type of the original file.")
+            var mediaType = "application/octet-stream"
+
+            @Option(help: "Extraction method, if one ran.")
+            var extraction: String?
+
+            func run() async throws {
+                let fileURL = URL.expandingShellPath(file, isDirectory: false)
+                let filename = fileURL.lastPathComponent
+                try SourceCapture.validateMetadata(filename: filename, mediaType: mediaType, origin: origin, extraction: extraction)
+                let blob: SourceBlob
+                if let client = try storeOptions.serverClient() {
+                    blob = try await SourceFileTransfer.stage(file: fileURL) { bytes in
+                        try client.stageSourceChunk(bytes)
+                    } finish: { chunks in
+                        try client.finishSourceBlob(chunks: chunks)
+                    }
+                } else {
+                    blob = try await storeOptions.withOpenStore { store in
+                        try await SourceFileTransfer.stage(file: fileURL) { bytes in
+                            try await store.stageSourceChunk(bytes)
+                        } finish: { chunks in
+                            try await store.finishSourceBlob(chunks: chunks)
+                        }
+                    }
+                }
+                try printJSON(SourceCapture(
+                    blob: blob, filename: filename, mediaType: mediaType, origin: origin, extraction: extraction
+                ))
+            }
+        }
+
+        struct Export: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(
+                commandName: "export",
+                abstract: "Write the verified original bytes of a document version to a local file."
+            )
+
+            @OptionGroup var storeOptions: StoreOptions
+            @OptionGroup var referenceOptions: ReferenceOptions
+
+            @Option(help: "Retained document version. Omit to use the current version.")
+            var version: UInt64?
+
+            @Option(help: "Local destination file.")
+            var output: String
+
+            func validate() throws {
+                _ = try referenceOptions.reference()
+                if version == 0 {
+                    throw ValidationError("--version must be greater than zero.")
+                }
+            }
+
+            func run() async throws {
+                let reference = try referenceOptions.reference()
+                let destination = URL.expandingShellPath(output, isDirectory: false)
+                if let client = try storeOptions.serverClient() {
+                    let descriptor = try client.sourceDescriptor(reference, version: version)
+                    try await SourceFileTransfer.export(descriptor.capture.blob, to: destination) { index in
+                        try client.sourceChunk(.documentID(descriptor.documentID), version: descriptor.version, index: index)
+                    }
+                } else {
+                    try await storeOptions.withOpenStore { store in
+                        let descriptor = try await store.sourceDescriptor(reference, version: version)
+                        try await SourceFileTransfer.export(descriptor.capture.blob, to: destination) { index in
+                            try await store.sourceChunk(.documentID(descriptor.documentID), version: descriptor.version, index: index)
+                        }
+                    }
+                }
             }
         }
     }
@@ -2098,6 +2195,7 @@ private let daemonBackedCommands: Set<String> = [
     "put",
     "patch",
     "operation",
+    "source",
     "move",
     "get",
     "links",

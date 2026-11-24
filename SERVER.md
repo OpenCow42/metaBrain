@@ -309,6 +309,17 @@ document can return `document_not_found`.
 
 ### Agent retrieval routes
 
+Source transfer uses bounded JSON requests. All four routes use POST and the selected store. References use the ordinary `DocumentReferenceDTO` wire format.
+
+| Route | Request | Result |
+| --- | --- | --- |
+| `/v1/source-stage-chunk` | `{"bytes":"<base64>"}` | `{"sha256":"<chunk digest>"}` |
+| `/v1/source-finish-blob` | `{"chunks":["<chunk digest>"]}` in file order | `{"sha256":"<file digest>","byteCount":42}` |
+| `/v1/source-descriptor` | `reference` and optional `version` | Stable document ID, retained version and capture metadata |
+| `/v1/source-chunk` | `reference`, positive `version`, zero-based `index` | `{"bytes":"<base64>"}` |
+
+Use 1 MiB chunks, with a possibly shorter final chunk. An empty file has an empty chunk list. Submit the returned blob and provenance as `sourceCapture` on its document during operation inspection. Readers resolve a descriptor once, fetch chunks by the returned ID and version, then verify the original length and SHA-256. An older daemon needs an upgrade to serve these routes. [CLI capture example](README.md#capture-and-recover-an-original-file)
+
 For project writes, `POST /v1/operation-inspect` accepts a `ProjectOperation` and returns the full `OperationPreview`. `POST /v1/operation-apply` takes that exact preview and returns an `OperationReceipt` with ordered document IDs, versions, and statuses. A malformed operation returns HTTP 400. A stale preview, wrong store, or reused operation ID with different contents returns HTTP 409. The client selects the store on both calls. See the [complete request example](README.md#commit-related-notes-together).
 
 - `POST /v1/ensure-guide` with `{}` installs `/AGENTS.md` in an existing

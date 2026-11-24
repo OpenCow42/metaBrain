@@ -1,3 +1,4 @@
+import Crypto
 import Foundation
 import LevelDBTyped
 import LevelDBZstd
@@ -109,6 +110,7 @@ public final class MetaBrainStore: Sendable {
     private let treeIndex = MetaBrainIndexPreparation()
     private let searchFieldIndex = MetaBrainIndexPreparation()
     private let citationIndex = MetaBrainIndexPreparation()
+    private let sourceManifests = LastSourceManifest()
     private static let chunkTargetCharacterCount = 4_000
     private static let chunkOverlapCharacterCount = 400
     private static let emptyIndexValue = Data()
@@ -351,6 +353,7 @@ public final class MetaBrainStore: Sendable {
         var targets: [OperationTarget] = []
         var records: [DocumentPath: MetaBrainDocumentRecord] = [:]
         for input in operation.documents {
+            try await validateSourceCapture(input.sourceCapture)
             let id = try await documentID(forPath: input.path)
             let version: UInt64
             if let id {
@@ -503,33 +506,40 @@ public final class MetaBrainStore: Sendable {
         _ reference: DocumentReference,
         version: UInt64
     ) async throws -> StoredDocument? {
-        guard version > 0 else { throw MetaBrainStoreError.invalidDocumentVersion(version) }
-
-        return try await writes.run {
-            guard let id = try await self.documentID(for: reference),
-                  let revision = try await self.compressedRecord(
-                      forKey: MetaBrainKeyspace.version(id: id, sequence: version),
-                      as: DocumentVersion.self
-                  ),
-                  let current = try await self.documentRecord(id: id) else {
-                return nil as StoredDocument?
-            }
-
-            let snapshot = revision.snapshot
-            return StoredDocument(
-                id: id,
-                path: snapshot.path,
-                title: snapshot.title,
-                body: snapshot.body,
-                tags: snapshot.tags,
-                metadata: snapshot.metadata,
-                references: snapshot.references,
-                currentVersion: revision.sequence,
-                createdAt: current.document.createdAt,
-                updatedAt: revision.createdAt,
-                markdown: snapshot.markdown
-            )
+        try await writes.run {
+            try await self.retainedDocument(reference, version: version)
         }
+    }
+
+    private func retainedDocument(
+        _ reference: DocumentReference,
+        version: UInt64
+    ) async throws -> StoredDocument? {
+        guard version > 0 else { throw MetaBrainStoreError.invalidDocumentVersion(version) }
+        guard let id = try await documentID(for: reference),
+              let revision = try await compressedRecord(
+                  forKey: MetaBrainKeyspace.version(id: id, sequence: version),
+                  as: DocumentVersion.self
+              ),
+              let current = try await documentRecord(id: id) else {
+            return nil
+        }
+
+        let snapshot = revision.snapshot
+        return StoredDocument(
+            id: id,
+            path: snapshot.path,
+            title: snapshot.title,
+            body: snapshot.body,
+            tags: snapshot.tags,
+            metadata: snapshot.metadata,
+            references: snapshot.references,
+            currentVersion: revision.sequence,
+            createdAt: current.document.createdAt,
+            updatedAt: revision.createdAt,
+            markdown: snapshot.markdown,
+            sourceCapture: snapshot.sourceCapture
+        )
     }
 
     public func getDocumentEntry(
@@ -969,6 +979,9 @@ public final class MetaBrainStore: Sendable {
             let records = try await currentRecords()
             try await records.put(value, forKey: key)
         }
+        if key.hasPrefix(MetaBrainKeyspace.sourceBlobPrefix) {
+            await sourceManifests.invalidate(key: key)
+        }
     }
 
     func deleteRawValue(forKey key: String) async throws {
@@ -977,6 +990,9 @@ public final class MetaBrainStore: Sendable {
             try await records.write { batch in
                 try batch.deleteValue(forKey: key)
             }
+        }
+        if key.hasPrefix(MetaBrainKeyspace.sourceBlobPrefix) {
+            await sourceManifests.invalidate(key: key)
         }
     }
 
@@ -1109,6 +1125,7 @@ public final class MetaBrainStore: Sendable {
         _ input: DocumentInput,
         writeOptions: Database.WriteOptions = .default
     ) async throws -> StoredDocument {
+        try await validateSourceCapture(input.sourceCapture)
         let write = Self.prepareNewDocument(input)
         try await writeDocumentBatch(write, writeOptions: writeOptions)
         return write.record.document
@@ -1128,7 +1145,8 @@ public final class MetaBrainStore: Sendable {
             currentVersion: 1,
             createdAt: now,
             updatedAt: now,
-            markdown: input.markdown
+            markdown: input.markdown,
+            sourceCapture: input.sourceCapture
         )
         let record = MetaBrainDocumentRecord(
             document: document,
@@ -1180,6 +1198,7 @@ public final class MetaBrainStore: Sendable {
         input: DocumentInput,
         accessMutation: EntryAccessMutation = .fullWrite
     ) async throws -> StoredDocument {
+        try await validateSourceCapture(input.sourceCapture)
         let write = try await prepareDocumentUpdate(
             id: id, existingRecord: existingRecord, input: input, accessMutation: accessMutation
         )
@@ -1206,6 +1225,7 @@ public final class MetaBrainStore: Sendable {
 
         var input = input
         input.markdown = input.markdown ?? existing.markdown
+        input.sourceCapture = input.sourceCapture ?? existing.sourceCapture
         if existing.path.hasMarkdownExtension, !input.path.hasMarkdownExtension, input.markdown == nil {
             input.markdown = true
         }
@@ -1221,7 +1241,8 @@ public final class MetaBrainStore: Sendable {
             currentVersion: nextVersion,
             createdAt: existing.createdAt,
             updatedAt: now,
-            markdown: input.markdown
+            markdown: input.markdown,
+            sourceCapture: input.sourceCapture
         )
         let record = MetaBrainDocumentRecord(
             document: document,
@@ -2750,6 +2771,7 @@ private struct MetaBrainDocumentRecord: Codable, Equatable, Sendable {
             && document.metadata == input.metadata && document.references == input.references
             && retention == (input.retention ?? retention) && document.body.utf8.elementsEqual(input.body.utf8)
             && document.markdown == (input.markdown ?? document.markdown)
+            && document.sourceCapture == (input.sourceCapture ?? document.sourceCapture)
     }
 }
 
@@ -3295,5 +3317,178 @@ extension MetaBrainStore {
             throw MetaBrainStoreError.operationFailed(message: "Invalid Markdown citation occurrence key.")
         }
         return (try DocumentID(rawValue: String(parts[0])), String(parts[1]))
+    }
+}
+
+private struct SourceBlobManifest: Codable, Equatable, Sendable {
+    let blob: SourceBlob
+    let chunks: [String]
+}
+
+private actor LastSourceManifest {
+    private var manifest: SourceBlobManifest?
+
+    func matching(_ blob: SourceBlob) -> SourceBlobManifest? {
+        guard let manifest, manifest.blob == blob else { return nil }
+        return manifest
+    }
+
+    func remember(_ manifest: SourceBlobManifest) {
+        self.manifest = manifest
+    }
+
+    func invalidate(key: String) {
+        if let manifest, key == MetaBrainKeyspace.sourceBlob(manifest.blob.sha256) {
+            self.manifest = nil
+        }
+    }
+}
+
+extension MetaBrainStore {
+    /// Stores one immutable upload chunk and returns its SHA-256 identifier.
+    public func stageSourceChunk(_ bytes: Data) async throws -> String {
+        guard (1...SourceBlob.chunkSize).contains(bytes.count) else {
+            throw ProjectOperationError.invalid("A source chunk must contain 1 through \(SourceBlob.chunkSize) bytes.")
+        }
+        let digest = SHA256.hash(data: bytes).hexString
+        return try await writes.run {
+            let key = MetaBrainKeyspace.sourceChunk(digest)
+            if let existing = try await self.rawValue(forKey: key) {
+                guard existing == bytes else {
+                    throw MetaBrainStoreError.operationFailed(message: "Stored source chunk differs from its digest.")
+                }
+            } else {
+                var edit = MetaBrainRecordEdit()
+                edit.put(bytes, for: key)
+                try await self.commit(edit, writeOptions: .init(sync: true))
+            }
+            return digest
+        }
+    }
+
+    /// Verifies the original bytes in order and stores their immutable manifest.
+    public func finishSourceBlob(chunks: [String]) async throws -> SourceBlob {
+        var hasher = SHA256()
+        var byteCount = 0
+        for (index, digest) in chunks.enumerated() {
+            try Task.checkCancellation()
+            let bytes = try await verifiedSourceChunk(digest)
+            guard (1...SourceBlob.chunkSize).contains(bytes.count),
+                  index == chunks.count - 1 || bytes.count == SourceBlob.chunkSize else {
+                throw ProjectOperationError.invalid("Only the last source chunk can be shorter than \(SourceBlob.chunkSize) bytes.")
+            }
+            let (total, overflow) = byteCount.addingReportingOverflow(bytes.count)
+            guard !overflow else {
+                throw ProjectOperationError.invalid("The original source is too large.")
+            }
+            byteCount = total
+            hasher.update(data: bytes)
+        }
+
+        let blob = SourceBlob(sha256: hasher.finalize().hexString, byteCount: byteCount)
+        let manifest = SourceBlobManifest(blob: blob, chunks: chunks)
+        return try await writes.run {
+            let key = MetaBrainKeyspace.sourceBlob(blob.sha256)
+            if let existing = try await self.compressedStoredRecord(forKey: key, as: SourceBlobManifest.self) {
+                try existing.requireCurrentSchemaVersion(operation: "reuse verified source manifest")
+                guard existing.payload == manifest else {
+                    throw MetaBrainStoreError.operationFailed(message: "Stored source manifest differs from the verified original.")
+                }
+            } else {
+                var edit = MetaBrainRecordEdit()
+                edit.put(try self.compressedData(manifest), for: key)
+                try await self.commit(edit, writeOptions: .init(sync: true))
+            }
+            return blob
+        }
+    }
+
+    /// Resolves original source metadata through a current or retained document revision.
+    public func sourceDescriptor(
+        _ reference: DocumentReference,
+        version: UInt64? = nil
+    ) async throws -> SourceDescriptor {
+        try await writes.run {
+            try await self.resolveSourceDescriptor(reference, version: version)
+        }
+    }
+
+    /// Reads one verified original source chunk through an explicit document revision.
+    public func sourceChunk(_ reference: DocumentReference, version: UInt64, index: Int) async throws -> Data {
+        try await writes.run {
+            let descriptor = try await self.resolveSourceDescriptor(reference, version: version)
+            let blob = descriptor.capture.blob
+            let manifest: SourceBlobManifest
+            if let cached = await self.sourceManifests.matching(blob) {
+                manifest = cached
+            } else {
+                manifest = try await self.sourceManifest(for: blob)
+                await self.sourceManifests.remember(manifest)
+            }
+            guard manifest.chunks.indices.contains(index) else {
+                throw ProjectOperationError.invalid("Source chunk index \(index) is out of range.")
+            }
+            let data = try await self.verifiedSourceChunk(manifest.chunks[index])
+            let expected = min(SourceBlob.chunkSize, manifest.blob.byteCount - index * SourceBlob.chunkSize)
+            guard data.count == expected else {
+                throw MetaBrainStoreError.operationFailed(message: "Stored source chunk length disagrees with the manifest.")
+            }
+            return data
+        }
+    }
+
+    private func resolveSourceDescriptor(
+        _ reference: DocumentReference,
+        version: UInt64?
+    ) async throws -> SourceDescriptor {
+        let document: StoredDocument
+        if let version {
+            guard let revision = try await retainedDocument(reference, version: version) else {
+                throw MetaBrainStoreError.documentVersionNotFound(reference: Self.referenceDescription(reference), version: version)
+            }
+            document = revision
+        } else {
+            guard let id = try await documentID(for: reference),
+                  let current = try await documentRecord(id: id)?.document else {
+                throw MetaBrainStoreError.documentNotFound(Self.referenceDescription(reference))
+            }
+            document = current
+        }
+
+        guard let capture = document.sourceCapture else {
+            throw ProjectOperationError.invalid("Document \(document.path) at version \(document.currentVersion) has no original source.")
+        }
+        return SourceDescriptor(documentID: document.id, version: document.currentVersion, capture: capture)
+    }
+
+    private func validateSourceCapture(_ capture: SourceCapture?) async throws {
+        guard let capture else { return }
+        try capture.validate()
+        _ = try await sourceManifest(for: capture.blob)
+    }
+
+    private func sourceManifest(for blob: SourceBlob) async throws -> SourceBlobManifest {
+        try blob.validate()
+        guard let manifest = try await compressedStoredRecord(
+                  forKey: MetaBrainKeyspace.sourceBlob(blob.sha256), as: SourceBlobManifest.self
+              ), manifest.payload.blob == blob else {
+            throw ProjectOperationError.invalid("The original source is missing or its byte count does not match the verified manifest.")
+        }
+        try manifest.requireCurrentSchemaVersion(operation: "read verified source manifest")
+        guard manifest.payload.chunks.count == blob.chunkCount else {
+            throw MetaBrainStoreError.operationFailed(message: "Source manifest has an invalid chunk count.")
+        }
+        return manifest.payload
+    }
+
+    private func verifiedSourceChunk(_ digest: String) async throws -> Data {
+        guard SourceBlob.isDigest(digest),
+              let bytes = try await rawValue(forKey: MetaBrainKeyspace.sourceChunk(digest)) else {
+            throw ProjectOperationError.invalid("A requested source chunk is invalid or missing.")
+        }
+        guard SHA256.hash(data: bytes).hexString == digest else {
+            throw MetaBrainStoreError.operationFailed(message: "Stored source chunk differs from its digest.")
+        }
+        return bytes
     }
 }

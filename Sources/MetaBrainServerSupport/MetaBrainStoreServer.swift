@@ -155,6 +155,24 @@ public actor MetaBrainStoreServer {
         try await store.applyOperation(preview)
     }
 
+    func stageSourceChunk(_ request: ServerSourceChunk) async throws -> ServerSourceChunkDigest {
+        try await ServerSourceChunkDigest(sha256: store.stageSourceChunk(request.bytes))
+    }
+
+    func finishSourceBlob(_ request: ServerSourceFinishRequest) async throws -> SourceBlob {
+        try await store.finishSourceBlob(chunks: request.chunks)
+    }
+
+    func sourceDescriptor(_ request: ServerSourceDescriptorRequest) async throws -> SourceDescriptor {
+        try await store.sourceDescriptor(request.reference.documentReference(), version: request.version)
+    }
+
+    func sourceChunk(_ request: ServerSourceReadRequest) async throws -> ServerSourceChunk {
+        try await ServerSourceChunk(bytes: store.sourceChunk(
+            request.reference.documentReference(), version: request.version, index: request.index
+        ))
+    }
+
     public func move(_ request: ServerMoveRequest) async throws -> MoveOutput {
         let result = try await store.moveDocument(
             request.documentReference(),

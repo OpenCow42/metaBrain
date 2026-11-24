@@ -12,6 +12,16 @@ enum MetaBrainKeyspace {
         "op/receipt/\(id.uuidString.lowercased())"
     }
 
+    static func sourceChunk(_ sha256: String) -> String {
+        "source/chunk/\(sha256)"
+    }
+
+    static let sourceBlobPrefix = "source/blob/"
+
+    static func sourceBlob(_ sha256: String) -> String {
+        sourceBlobPrefix + sha256
+    }
+
     static func document(id: DocumentID) -> String {
         "doc/id/\(id.rawValue)"
     }

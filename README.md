@@ -231,6 +231,22 @@ mb operation apply preview.json
 
 Inspection records the canonical store path, store identity, expected document IDs and versions, and a SHA-256 digest. Apply uses the reviewed file. Changed targets cause a conflict before any proposed note is written. After a lost response, submit the **same preview** to recover the committed receipt, even if the documents have since changed. The CLI reads these files locally in either connection mode.
 
+### Capture and recover an original file
+
+Stage the original before inspecting the operation. Supply its origin and, if text was extracted for the note, the method used. An opaque binary can have an empty note body.
+
+```sh
+mb source stage review.pdf --origin "Design review, 2026-11-21" --media-type application/pdf > capture.json
+jq --arg id "$(uuidgen)" --slurpfile capture capture.json '.operationID = $id | .documents[0].sourceCapture = $capture[0]' operation.json > ingest.json
+mb operation inspect ingest.json > preview.json
+mb operation apply preview.json
+mb source export /projects/atlas/review.md --output recovered.pdf
+cmp review.pdf recovered.pdf
+```
+
+Staging saves the original under its SHA-256 digest. Applying the operation attaches the original and its provenance to the note revision. A second note can cite the same file under a different origin while sharing the stored bytes. A move preserves the attachment. Export accepts a current path or `--id ID` and an optional retained `--version N`. The destination is replaced after the complete file passes verification. The same commands work with a directly opened store or a daemon.
+
+
 ### Command list
 
 - `version` prints the current release tag, probes the default local daemon, and

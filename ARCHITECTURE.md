@@ -72,6 +72,9 @@ that need a consistent view of document records and their indexes.
 
 Project operations expose `inspectOperation` and `applyOperation` on the same store handle. The store keeps a UUID in the database directory, so replacing the directory at the same path invalidates prior previews. Preserve the identity file when backing up the directory. Inspect observes the current IDs and versions of all requested paths under the write coordinator. Apply revalidates the preview, stages document revisions, chunks, graph edges, tree entries, corpus counts, and the operation receipt, then commits one synchronous LevelDB write batch. Newly created targets are visible during planning of same-batch links. Receipt lookup precedes version comparison on retry. Existing stores prepare their usual derived indexes on first use.
 
+Original files use immutable chunks and a manifest keyed by the SHA-256 of the complete byte stream. The owning document revision stores the manifest digest and byte count alongside filename, media type, origin and optional extraction method. Several revisions or source notes can refer to the same manifest. Staging alone creates no navigable note. Removing a revision drops that route to the original. Chunks and manifests are retained in this release, including uploads abandoned before publication.
+
+
 LevelDB allows concurrent access from multiple threads inside one process, but a database may only be opened by one process at a time.
 
 The v1 model is:
