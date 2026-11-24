@@ -503,6 +503,18 @@ The project also has deeper coverage, smoke-test, fuzzing, benchmark, and
 release workflows for maintainers. Maintainer smoke tests use `ripgrep`. See
 the project documents below when you need those paths.
 
+To measure Markdown citation performance, build the release binaries and save a
+report. The default run measures latency and response bytes at 1, 32, and 256
+links in both direct and daemon mode.
+
+```bash
+swift build -c release
+python3 Benchmarks/citation-performance.py > citation-report.json
+```
+
+The [citation benchmark guide](docs/citation-performance.md) describes the four
+workloads and records a baseline for comparison.
+
 ## Project Documents
 
 - [MANIFESTO.md](MANIFESTO.md) explains the project vision and principles.
