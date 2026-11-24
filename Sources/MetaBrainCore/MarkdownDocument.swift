@@ -25,8 +25,9 @@ struct MarkdownDocument: Sendable {
         var scanner = MarkdownScanner(body)
         scanner.maskBlocks()
         scanner.maskInlineLiterals()
-        anchors = scanner.anchors()
-        links = includeLinks ? scanner.links(in: anchors) : []
+        let references = scanner.references()
+        anchors = scanner.anchors(excluding: references.lines)
+        links = includeLinks ? scanner.links(in: anchors, references: references) : []
     }
 
     func section(containing range: Range<Int>) -> Range<Int>? {
@@ -93,86 +94,94 @@ private struct MarkdownScanner {
                 return line == "---" || line == "..."
             }
         }
-        var fence: (character: Character, length: Int)?
+        var fence: (character: Character, length: Int, quoteDepth: Int)?
         var literalBlockEnd = 0
+        var paragraphOpen = false
+        var previousQuoteDepth = 0
+        let possibleFences = lines.compactMap { line -> Int? in
+            let contents = quoteContents(trimmed(line)).contents
+            return fenceMarker(contents) == nil ? nil : contents.lowerBound
+        }
+        var nextFence = 0
         for (number, line) in lines.enumerated() {
+            while nextFence < possibleFences.count, possibleFences[nextFence] < line.upperBound { nextFence += 1 }
             let contents = trimmed(line)
+            let quote = quoteContents(contents)
+            if let open = fence, quote.depth < open.quoteDepth { fence = nil }
             if let frontMatterEnd, number <= frontMatterEnd {
                 maskLine(number)
             } else if let open = fence {
-                if contents.lowerBound < contents.upperBound, characters[contents.lowerBound] == open.character {
-                    let end = run(of: open.character, since: contents.lowerBound, until: contents.upperBound)
-                    if end - contents.lowerBound >= open.length, trimmed(end..<contents.upperBound).isEmpty {
+                if quote.depth == open.quoteDepth, !quote.contents.isEmpty,
+                   characters[quote.contents.lowerBound] == open.character {
+                    let end = run(of: open.character, since: quote.contents.lowerBound, until: quote.contents.upperBound)
+                    if end - quote.contents.lowerBound >= open.length, trimmed(end..<quote.contents.upperBound).isEmpty {
                         fence = nil
                     }
                 }
                 maskLine(number)
             } else if line.lowerBound < literalBlockEnd {
                 mask(line.lowerBound..<min(literalBlockEnd, line.upperBound))
-            } else if contents.isEmpty {
+            } else if quote.contents.isEmpty {
                 if line.upperBound < characters.count { visible[line.upperBound] = false }
+                paragraphOpen = false
             } else {
-                let first = characters[contents.lowerBound]
+                let block = quote.contents
+                let terminal = atxLevel(block) != nil || isThematicBreak(block)
+                let beginsBlock = terminal || beginsListItem(block) || previousQuoteDepth != quote.depth
+                if beginsBlock, line.lowerBound > 0 { visible[line.lowerBound - 1] = false }
                 let indented = contents.lowerBound - line.lowerBound >= 4
                     || characters[line.lowerBound..<contents.lowerBound].contains("\t")
-                if indented {
+                if indented, !paragraphOpen {
                     maskLine(number)
-                } else if let end = literalEnd(start: contents.lowerBound), end > line.upperBound {
-                    literalBlockEnd = end
-                    mask(contents.lowerBound..<line.upperBound)
-                } else if first == "~" || first == Self.backtick {
-                    let end = run(of: first, since: contents.lowerBound, until: contents.upperBound)
-                    if end - contents.lowerBound >= 3,
-                       first == "~" || !characters[end..<contents.upperBound].contains(first) {
-                        fence = (first, end - contents.lowerBound)
+                } else {
+                    if !indented, let marker = fenceMarker(block) {
+                        fence = (marker.character, marker.length, quote.depth)
+                        paragraphOpen = false
                         maskLine(number)
+                        continue
+                    }
+                    // Let inline parsing decide precedence except for a literal
+                    // that may hide a fence while we are identifying blocks.
+                    if nextFence < possibleFences.count,
+                       let literal = continuedLiteral(in: block, through: possibleFences[nextFence]) {
+                        literalBlockEnd = literal.upperBound
+                        mask(literal.lowerBound..<line.upperBound)
+                    }
+                    if terminal, line.upperBound < characters.count {
+                        visible[line.upperBound] = false
+                    }
+                    if literalBlockEnd > line.upperBound && !block.contains(where: { visible[$0] }) {
+                        maskLine(number)
+                        paragraphOpen = false
+                    } else {
+                        paragraphOpen = !terminal
                     }
                 }
             }
+            previousQuoteDepth = quote.depth
         }
     }
 
     mutating func maskInlineLiterals() {
-        var nextRun: [Int: Range<Int>] = [:]
-        var closingRuns: [Int: Range<Int>] = [:]
-        var index = characters.count
-        while index > 0 {
-            index -= 1
-            guard visible[index] else {
-                if !nextRun.isEmpty { nextRun.removeAll(keepingCapacity: true) }
-                continue
-            }
-            guard characters[index] == Self.backtick else { continue }
-            let end = index + 1
-            while index > 0, visible[index - 1], characters[index - 1] == Self.backtick { index -= 1 }
-            let length = end - index
-            closingRuns[index] = nextRun[length]
-            nextRun[length] = index..<end
-        }
-
-        index = 0
+        let closingRuns = backtickClosers(in: characters.indices)
+        var index = 0
         while index < characters.count {
             guard visible[index] else {
                 index += 1
                 continue
             }
             let character = characters[index]
-            if character == "\\", index + 1 < characters.count,
-               characters[index + 1].isPunctuation || characters[index + 1].isSymbol {
+            if escapesNext(at: index, before: characters.count) {
                 visible[index + 1] = false
                 index += 2
-                continue
-            }
-
-            if character == Self.backtick {
+            } else if character == Self.backtick {
                 if let closer = closingRuns[index] {
                     mask(index..<closer.upperBound)
                     index = closer.upperBound
                 } else {
                     index = run(of: Self.backtick, since: index, until: characters.count)
                 }
-            } else if character == "<" || character == "%",
-                      let end = literalEnd(start: index) {
+            } else if (character == "<" || character == "%"), let end = literalEnd(start: index) {
                 mask(index..<end)
                 index = end
             } else {
@@ -181,13 +190,63 @@ private struct MarkdownScanner {
         }
     }
 
-    func anchors() -> [MarkdownAnchor] {
+    private func backtickClosers(in range: Range<Int>) -> [Int: Range<Int>] {
+        var nextRun: [Int: Range<Int>] = [:]
+        var closingRuns: [Int: Range<Int>] = [:]
+        var index = range.upperBound
+        while index > range.lowerBound {
+            index -= 1
+            guard visible[index] else {
+                if !nextRun.isEmpty { nextRun.removeAll(keepingCapacity: true) }
+                continue
+            }
+            guard characters[index] == Self.backtick else { continue }
+            let end = index + 1
+            while index > range.lowerBound, visible[index - 1], characters[index - 1] == Self.backtick { index -= 1 }
+            let length = end - index
+            closingRuns[index] = nextRun[length]
+            // A backslash can escape the first tick, leaving the remainder as a shorter opener.
+            if length > 1, index > range.lowerBound, characters[index - 1] == "\\" {
+                closingRuns[index + 1] = nextRun[length - 1]
+            }
+            nextRun[length] = index..<end
+        }
+        return closingRuns
+    }
+
+    private func continuedLiteral(in line: Range<Int>, through fence: Int) -> Range<Int>? {
+        guard line.contains(where: { characters[$0] == "<" || characters[$0] == "%" }) else { return nil }
+        let closingRuns = backtickClosers(in: line)
+        var index = line.lowerBound
+        while index < line.upperBound {
+            let character = characters[index]
+            if escapesNext(at: index, before: line.upperBound) {
+                index += 2
+            } else if character == Self.backtick {
+                index = closingRuns[index]?.upperBound ?? run(of: character, since: index, until: line.upperBound)
+            } else if (character == "<" || character == "%"), let end = literalEnd(start: index) {
+                if end > fence { return index..<end }
+                index = end
+            } else {
+                index += 1
+            }
+        }
+        return nil
+    }
+
+    private func escapesNext(at index: Int, before end: Int) -> Bool {
+        guard characters[index] == "\\", index + 1 < end, let byte = characters[index + 1].asciiValue else { return false }
+        return (33...47).contains(byte) || (58...64).contains(byte)
+            || (91...96).contains(byte) || (123...126).contains(byte)
+    }
+
+    func anchors(excluding definitions: Set<Int>) -> [MarkdownAnchor] {
         var headings: [Heading] = []
         var blocks: [MarkdownAnchor] = []
         var paragraph: Range<Int>?
         var precedingParagraph: Range<Int>?
         for (number, line) in lines.enumerated() {
-            guard activeLines[number] else {
+            guard activeLines[number], !definitions.contains(number) else {
                 paragraph = nil
                 precedingParagraph = nil
                 continue
@@ -262,19 +321,33 @@ private struct MarkdownScanner {
         }
     }
 
-    func links(in anchors: [MarkdownAnchor]) -> [MarkdownLink] {
+    func references() -> (destinations: [String: String], lines: Set<Int>) {
+        var definitions: [String: String] = [:]
+        var definitionLines: Set<Int> = []
+        var paragraphOpen = false
+        for (number, line) in lines.enumerated() {
+            if !activeLines[number] || !line.contains(where: { visible[$0] && !characters[$0].isWhitespace }) {
+                paragraphOpen = false
+            } else if !paragraphOpen, let definition = referenceDefinition(in: line) {
+                definitionLines.insert(number)
+                if definitions[definition.label] == nil { definitions[definition.label] = definition.destination }
+            } else {
+                let contents = trimmed(line)
+                paragraphOpen = atxLevel(contents) == nil && !isThematicBreak(contents)
+                    && !(paragraphOpen && setextLevel(contents) != nil)
+            }
+        }
+        return (definitions, definitionLines)
+    }
+
+    func links(
+        in anchors: [MarkdownAnchor],
+        references: (destinations: [String: String], lines: Set<Int>)
+    ) -> [MarkdownLink] {
         let blocks = anchors.filter { $0.slug == nil }
         var nextBlock = 0
         var output: [MarkdownLink] = []
-        var definitions: [String: String] = [:]
-        var definitionLines: Set<Int> = []
-        for (number, line) in lines.enumerated() where activeLines[number] {
-            if let definition = referenceDefinition(in: line) {
-                definitionLines.insert(number)
-                if definitions[definition.label] == nil { definitions[definition.label] = definition.destination }
-            }
-        }
-        for (number, line) in lines.enumerated() where activeLines[number] && !definitionLines.contains(number) {
+        for (number, line) in lines.enumerated() where activeLines[number] && !references.lines.contains(number) {
             let closingBrackets = bracketPairs(in: line)
             var index = line.lowerBound
             while index < line.upperBound {
@@ -286,7 +359,7 @@ private struct MarkdownScanner {
                 if has("[[", at: index, before: line.upperBound) {
                     parsed = wikiLink(at: index, in: line)
                 } else {
-                    parsed = markdownLink(at: index, in: line, closingBrackets: closingBrackets, definitions: definitions)
+                    parsed = markdownLink(at: index, in: line, closingBrackets: closingBrackets, definitions: references.destinations)
                 }
                 guard let parsed else {
                     index += 1
@@ -384,25 +457,33 @@ private struct MarkdownScanner {
         let contents = trimmed(line)
         let start = contents.lowerBound
         guard has("[", at: start, before: contents.upperBound),
-              !has("[[", at: start, before: contents.upperBound),
               let close = closingBracket(from: start, before: contents.upperBound),
+              !(start + 1..<close).contains(where: { visible[$0] && characters[$0] == "[" }),
               has(":", at: close + 1, before: contents.upperBound),
               let destination = destination(from: close + 2, before: contents.upperBound),
-              !destination.value.isEmpty else { return nil }
-        return (Self.referenceLabel(text((start + 1)..<close)), destination.value)
+              !destination.value.isEmpty,
+              destinationSuffixEnd(from: destination.end, before: contents.upperBound) == contents.upperBound else { return nil }
+        let label = Self.referenceLabel(text((start + 1)..<close))
+        guard !label.isEmpty else { return nil }
+        return (label, destination.value)
     }
 
     private func inlineDestination(from start: Int, before end: Int) -> (value: String, end: Int)? {
-        guard let parsed = destination(from: start, before: end) else { return nil }
-        var cursor = whitespaceEnd(from: parsed.end, before: end)
-        if cursor > parsed.end, cursor < end, let close = titleDelimiter(characters[cursor]) {
+        guard let parsed = destination(from: start, before: end),
+              let cursor = destinationSuffixEnd(from: parsed.end, before: end),
+              has(")", at: cursor, before: end) else { return nil }
+        return (parsed.value, cursor + 1)
+    }
+
+    private func destinationSuffixEnd(from start: Int, before end: Int) -> Int? {
+        var cursor = whitespaceEnd(from: start, before: end)
+        if cursor > start, cursor < end, let close = titleDelimiter(characters[cursor]) {
             cursor += 1
             while cursor < end, !has(String(close), at: cursor, before: end) { cursor += 1 }
             guard cursor < end else { return nil }
             cursor = whitespaceEnd(from: cursor + 1, before: end)
         }
-        guard has(")", at: cursor, before: end) else { return nil }
-        return (parsed.value, cursor + 1)
+        return cursor
     }
 
     private func destination(from start: Int, before end: Int) -> (value: String, end: Int)? {
@@ -461,16 +542,22 @@ private struct MarkdownScanner {
     }
 
     private func atxHeading(_ contents: Range<Int>, start: Int) -> Heading? {
-        guard has("#", at: contents.lowerBound, before: contents.upperBound) else { return nil }
-        let textStart = run(of: "#", since: contents.lowerBound, until: contents.upperBound)
-        let level = textStart - contents.lowerBound
-        guard level <= 6, textStart < contents.upperBound, characters[textStart].isWhitespace else { return nil }
+        guard let level = atxLevel(contents) else { return nil }
+        let textStart = contents.lowerBound + level
         var title = trimmed(textStart..<contents.upperBound)
         var end = title.upperBound
         while end > title.lowerBound, has("#", at: end - 1, before: title.upperBound) { end -= 1 }
         if end > title.lowerBound, characters[end - 1].isWhitespace { title = trimmed(title.lowerBound..<end) }
         guard !title.isEmpty else { return nil }
         return Heading(title: text(title), start: start, level: level)
+    }
+
+    private func atxLevel(_ contents: Range<Int>) -> Int? {
+        guard has("#", at: contents.lowerBound, before: contents.upperBound) else { return nil }
+        let textStart = run(of: "#", since: contents.lowerBound, until: contents.upperBound)
+        let level = textStart - contents.lowerBound
+        guard level <= 6, textStart == contents.upperBound || characters[textStart].isWhitespace else { return nil }
+        return level
     }
 
     private func setextLevel(_ contents: Range<Int>) -> Int? {
@@ -491,6 +578,35 @@ private struct MarkdownScanner {
         }
         return cursor > first && cursor + 1 < contents.upperBound
             && ".)".contains(characters[cursor]) && characters[cursor + 1].isWhitespace
+    }
+
+    private func isThematicBreak(_ contents: Range<Int>) -> Bool {
+        guard let first = contents.first, visible[first], "-*_".contains(characters[first]) else { return false }
+        var count = 0
+        for index in contents where !characters[index].isWhitespace {
+            guard characters[index] == characters[first] else { return false }
+            count += 1
+        }
+        return count >= 3
+    }
+
+    private func quoteContents(_ contents: Range<Int>) -> (contents: Range<Int>, depth: Int) {
+        var start = contents.lowerBound
+        var depth = 0
+        while has(">", at: start, before: contents.upperBound) {
+            depth += 1
+            start = whitespaceEnd(from: start + 1, before: contents.upperBound)
+        }
+        return (start..<contents.upperBound, depth)
+    }
+
+    private func fenceMarker(_ contents: Range<Int>) -> (character: Character, length: Int)? {
+        guard let first = contents.first else { return nil }
+        let character = characters[first]
+        guard character == "~" || character == Self.backtick else { return nil }
+        let end = run(of: character, since: first, until: contents.upperBound)
+        guard end - first >= 3, character == "~" || !characters[end..<contents.upperBound].contains(character) else { return nil }
+        return (character, end - first)
     }
 
     private func blockSuffix(_ contents: Range<Int>) -> (start: Int, name: String)? {
@@ -525,16 +641,80 @@ private struct MarkdownScanner {
         if matches("%%", at: start, before: end) {
             return literalClose("%%", from: start + 2)
         }
+        if isAngleDestination(at: start) { return nil }
         if matches("<!--", at: start, before: end) {
             return literalClose("-->", from: start + 4) ?? end
         }
-        for tag in ["code", "pre"] {
-            guard matches("<\(tag)", at: start, before: end, ignoringCase: true) else { continue }
-            let suffix = start + tag.count + 1
-            guard suffix < end, characters[suffix].isWhitespace || characters[suffix] == ">" else { continue }
-            return literalClose("</\(tag)>", from: suffix, ignoringCase: true) ?? end
+        guard let tag = htmlTag(at: start) else { return nil }
+        if !tag.closing, !tag.selfClosing, tag.name == "code" || tag.name == "pre" {
+            let closingPrefix = "</" + tag.name
+            if let close = (tag.end..<end).first(where: {
+                matches(closingPrefix, at: $0, before: end, ignoringCase: true)
+                    && htmlTag(at: $0)?.name == tag.name
+            }) {
+                return htmlTag(at: close)?.end
+            }
+            return end
+        }
+        return tag.end
+    }
+
+    private func isAngleDestination(at start: Int) -> Bool {
+        guard characters[start] == "<" else { return false }
+        var index = start
+        while index > 0, characters[index - 1].isWhitespace, !characters[index - 1].isNewline { index -= 1 }
+        return index >= 2 && characters[index - 2] == "]" && "(:".contains(characters[index - 1])
+    }
+
+    private func htmlTag(at start: Int) -> (name: String, end: Int, closing: Bool, selfClosing: Bool)? {
+        let end = characters.count
+        guard matches("<", at: start, before: end) else { return nil }
+        let closing = matches("</", at: start, before: end)
+        let nameStart = start + (closing ? 2 : 1)
+        guard nameStart < end, characters[nameStart].isASCII, characters[nameStart].isLetter else { return nil }
+        var cursor = nameStart + 1
+        while cursor < end, characters[cursor].isASCII,
+              characters[cursor].isLetter || characters[cursor].isNumber || characters[cursor] == "-" { cursor += 1 }
+        let name = text(nameStart..<cursor).lowercased()
+        while cursor < end {
+            let attributeStart = whitespaceEnd(from: cursor, before: end)
+            if matches(">", at: attributeStart, before: end) {
+                return (name, attributeStart + 1, closing, false)
+            }
+            if !closing, matches("/>", at: attributeStart, before: end) {
+                return (name, attributeStart + 2, false, true)
+            }
+            guard !closing, attributeStart > cursor, attributeStart < end,
+                  isHTMLAttributeStart(characters[attributeStart]) else { return nil }
+            cursor = attributeStart + 1
+            while cursor < end, isHTMLAttributeStart(characters[cursor])
+                || (characters[cursor].isASCII && characters[cursor].isNumber)
+                || "-.".contains(characters[cursor]) { cursor += 1 }
+            let assignment = whitespaceEnd(from: cursor, before: end)
+            if matches("=", at: assignment, before: end) {
+                let valueStart = whitespaceEnd(from: assignment + 1, before: end)
+                guard let valueEnd = htmlAttributeValueEnd(from: valueStart) else { return nil }
+                cursor = valueEnd
+            }
         }
         return nil
+    }
+
+    private func isHTMLAttributeStart(_ character: Character) -> Bool {
+        (character.isASCII && character.isLetter) || "_:".contains(character)
+    }
+
+    private func htmlAttributeValueEnd(from start: Int) -> Int? {
+        let end = characters.count
+        guard start < end else { return nil }
+        let delimiter = characters[start]
+        if delimiter == "\"" || delimiter == "'" {
+            return ((start + 1)..<end).first { characters[$0] == delimiter }.map { $0 + 1 }
+        }
+        var cursor = start
+        while cursor < end, !characters[cursor].isWhitespace,
+              !"\"'=<>`".contains(characters[cursor]) { cursor += 1 }
+        return start < cursor ? cursor : nil
     }
 
     private func literalClose(_ token: String, from start: Int, ignoringCase: Bool = false) -> Int? {

@@ -2789,12 +2789,11 @@ extension MetaBrainStore {
     }
 
     private func prepareCitationIndex() async throws {
-        let layout = Data([1])
-        if let current = try await rawValue(forKey: MetaBrainKeyspace.citationLayout) {
-            guard current == layout else {
-                throw MetaBrainStoreError.operationFailed(message: "Unrecognized Markdown citation index layout.")
-            }
-            return
+        let layout = Data([2])
+        let current = try await rawValue(forKey: MetaBrainKeyspace.citationLayout)
+        if current == layout { return }
+        guard current == nil || current == Data([1]) else {
+            throw MetaBrainStoreError.operationFailed(message: "Unrecognized Markdown citation index layout.")
         }
 
         let prefix = MetaBrainKeyspace.prefix(.documentID)
@@ -2807,18 +2806,42 @@ extension MetaBrainStore {
             let header = MarkdownCitationHeader(id: id, path: document.path)
             catalog.append(header)
             Self.insertCitationHeader(header, in: &edit)
-            citations += Self.markdownCitations(from: document)
+            var parsed = Self.markdownCitations(from: document)
+            if current != nil && document.isMarkdown {
+                // The body has not changed. Its offsets identify the surviving occurrences,
+                // even when the old target moved or was deleted and its path was reused.
+                let previous = try await outgoingCitationRecords(from: id, operation: "upgrade Markdown citations")
+                var bound: [Int: MarkdownCitation] = [:]
+                for citation in previous {
+                    edit.remove(citation)
+                    if citation.targetID != nil { bound[citation.link.start] = citation }
+                }
+                for index in parsed.indices {
+                    let link = parsed[index].link
+                    guard let prior = bound[link.start], prior.sourceVersion == document.currentVersion,
+                          prior.link.syntax == link.syntax, prior.link.destination.utf8.elementsEqual(link.destination.utf8),
+                          parsed[index].destination.bindableTarget != nil else { continue }
+                    parsed[index].targetID = prior.targetID
+                    parsed[index].status = prior.status
+                }
+            }
+            citations += parsed
         }
 
         let resolver = MarkdownCitationCatalog(catalog)
         for citation in citations {
-            let resolved = try await resolveCitation(citation, catalog: resolver)
+            let resolved = if citation.targetID == nil {
+                try await resolveCitation(citation, catalog: resolver)
+            } else {
+                citation
+            }
             try addCitation(resolved, to: &edit)
         }
         edit.put(layout, for: MetaBrainKeyspace.citationLayout)
         try await Self.mapLevelDBErrors(path: url.path) { [edit] in
             let records = try await currentRecords()
             try await records.write { batch in
+                for key in edit.removals { try batch.deleteValue(forKey: key) }
                 for (key, value) in edit.puts { try batch.put(value, forKey: key) }
             }
         }

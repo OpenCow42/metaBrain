@@ -15,6 +15,7 @@ import Testing
         👩🏽‍💻 Read [[Target (draft)#^keep-last|the rule]] and [café](<Target%20(draft).md#caf%C3%A9-archive> "Title"). ^excerpt
 
         [another][reference] and [outside](https://example.test/#x).
+
         [reference]: <Target (draft).md>
         ![image](Target%20(draft).md)
         ![[Target (draft)#^keep-last]]
@@ -237,7 +238,7 @@ import Testing
         #expect(outgoing.targetID == target.id)
         #expect(outgoing.status == .resolved)
         #expect(try await store.links(for: .documentID(target.id), direction: .incoming) == [outgoing])
-        #expect(try await store.rawValue(forKey: MetaBrainKeyspace.citationLayout) == Data([1]))
+        #expect(try await store.rawValue(forKey: MetaBrainKeyspace.citationLayout) == Data([2]))
         #expect(try await store.rawValue(forKey: sourceKey) == saved)
 
         await store.close()

@@ -422,11 +422,19 @@ On an older store, the first Markdown citation operation or document mutation
 scans current documents, parses Markdown bodies, and writes the occurrence
 index, path/name lookups, and layout marker in an atomic batch. It uses a
 temporary catalog of document IDs and paths and retains the current occurrences
-during that backfill. Search index layout 2 also backfills YAML filter postings
+during that backfill. An upgrade from citation layout 1 to 2 additionally
+scans the previous outgoing rows of each Markdown document. It removes obsolete
+occurrences and their secondary keys, and matches surviving bindings by source
+offset, syntax, and destination before resolving new links. The reads and
+temporary storage for this step scale with the old and new occurrences.
+Search index layout 2 also backfills YAML filter postings
 once from current documents. Neither migration rewrites document versions.
 
 A subsequent Markdown write parses the source, scans its previous occurrences
-and updates their inbound or pending rows in the document write batch. A new,
+and updates their inbound or pending rows in the document write batch.
+For `L` old and new occurrences combined, pairing repeated destinations sorts
+the occurrences by source offset in `O(L log L)` time, then uses a fixed number
+of hash-table passes and `O(L)` auxiliary entries. A new,
 moved, or deleted target revisits pending prefixes for its affected names and
 paths. Bare names can scan multiple matching IDs. Target deletion also visits
 its inbound citations. Cost therefore depends on the changed body, its outgoing

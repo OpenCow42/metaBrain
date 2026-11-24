@@ -271,10 +271,23 @@ mb links /decisions/backups.md
 A resolved occurrence records the target's stable ID, so it follows the move.
 Deleting that target leaves the occurrence unresolved. A new document at the
 former path gets its own ID and leaves the original binding intact.
+Adding another citation to that path resolves it against the current store.
+Distinct link labels help preserve each binding when reordering citations.
+Repeated occurrences with identical syntax and labels are matched in source order.
 The author's Markdown stays verbatim. For a specific revision use
 `mb get --id "$document_id" --version 1 --block keep-last`. A reference copied
 from evidence search also selects the exact revision. Use `--ref-id` for explicit
 document-level relationships alongside the citations written in prose.
+
+Keep each citation on one line. Inline Markdown links, reference-style links
+with a single-line definition, wikilinks, and their image/embed forms are
+indexed. Separate a reference definition from the preceding paragraph with a
+blank line. Code examples and comments can contain literal link syntax.
+
+The first citation lookup or document edit upgrades a store with the original
+citation index. It checks current Markdown bodies again and preserves the IDs
+of surviving occurrences, including links whose targets moved or were deleted.
+Upgrade `mb`, `mbd`, and any other writers together before opening that store.
 
 Flat YAML properties between opening and closing `---` lines participate in
 search. A `tags` scalar or list adds tag postings. Other scalar and flat list
