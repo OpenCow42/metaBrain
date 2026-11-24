@@ -17,7 +17,7 @@ struct MetaBrainCommand: AsyncParsableCommand {
         searchable store instead of scattering scratch files across a workspace.
 
         Store manual: read the selected store's agent guide with mb get /AGENTS.md.
-        Use mb ensure-guide to add the default guide to an existing store.
+        Use mb ensure-guide to add the default guide if the store lacks one.
 
         Agent discovery:
           mb
@@ -26,6 +26,8 @@ struct MetaBrainCommand: AsyncParsableCommand {
           mb help list
           mb help tree
           mb help search
+          mb help get
+          mb help links
           mb help recall
           mb help dump
           mb help move
@@ -34,21 +36,14 @@ struct MetaBrainCommand: AsyncParsableCommand {
           mb help version
 
         Common workflow:
-          mb version
-          mb init --store .metabrain/store.leveldb
           mb get /AGENTS.md
-          mb put /notes/today "Important context" --tag planning --meta source=agent
-          mb patch /notes/today --patch-file change.diff
-          mb move /notes/today /notes/archive/today
-          mb list
-          mb list /notes --recursive --dates
-          mb tree --max-depth 2
-          mb search "Important context" --tag planning
-          mb recall "Important context" --tag planning --max-bytes 4096
-          mb get /notes/today --version 1
-          mb dump /notes --output-dir ./metabrain-dump
-          mb delete /notes/today
-          mb remove-version /notes/today --sequence 1
+          mb search --tag storage --view refs --limit 5
+          mb search "nightly backups" --view evidence --max-tokens 512
+          mb get --ref "$ref" --context section --max-tokens 1024
+          mb put /decisions/backups.md 'Follow [[Retention#^keep-last]].' --if-version 0
+          mb links /decisions/backups.md
+
+        Run mb init to create a store. Set ref to a value returned by search.
 
         Store selection uses --store, then METABRAIN_STORE, then the nearest
         ancestor .metabrain/store.leveldb, starting in the current directory.
