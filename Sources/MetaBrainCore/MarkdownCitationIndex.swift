@@ -61,6 +61,11 @@ struct MarkdownDestination {
 
     var isSelfLink: Bool { !isExternal && rawTarget.isEmpty && fragment != nil }
 
+    var bindableTarget: Data? {
+        guard !isExternal, !rawTarget.isEmpty else { return nil }
+        return Data(rawTarget.utf8)
+    }
+
     init(_ link: MarkdownLink, relativeTo source: DocumentPath) {
         let parts = Self.split(link.destination)
         rawTarget = Self.decode(parts.path)
@@ -152,6 +157,97 @@ struct MarkdownCitationCatalog: Sendable {
     func id(for path: DocumentPath) -> DocumentID? { paths[path] }
 
     func ids(named name: String) -> Set<DocumentID> { names[MetaBrainKeyspace.citationNamePrefix(name)] ?? [] }
+}
+
+/// Preserves surviving occurrences across source edits while leaving newly authored links to resolve afresh.
+enum MarkdownCitationBindings {
+    private struct Target: Hashable {
+        let syntax: DocumentLinkSyntax
+        let rawTarget: Data
+    }
+
+    private struct Signature: Hashable {
+        var destination: Data? = nil
+        var label: Data? = nil
+        let embed: Bool
+        var sourceBlock: String? = nil
+    }
+
+    static func preserve(from previous: [MarkdownCitation], in next: inout [MarkdownCitation]) {
+        guard !previous.isEmpty, !next.isEmpty else { return }
+        let oldTargets = groups(in: previous)
+        for (target, newOffsets) in groups(in: next) {
+            guard let oldOffsets = oldTargets[target] else { continue }
+            let pairs = if oldOffsets.count == 1, newOffsets.count == 1 {
+                [(oldOffsets[0], newOffsets[0])]
+            } else {
+                match(previous, oldOffsets, next, newOffsets)
+            }
+            for (old, new) in pairs {
+                guard let targetID = previous[old].targetID else { continue }
+                next[new].targetID = targetID
+                next[new].status = previous[old].status
+            }
+        }
+    }
+
+    private static func groups(in citations: [MarkdownCitation]) -> [Target: [Int]] {
+        var groups: [Target: [Int]] = [:]
+        for index in citations.indices.sorted(by: { citations[$0].link.start < citations[$1].link.start }) {
+            let citation = citations[index]
+            if let rawTarget = citation.destination.bindableTarget {
+                groups[Target(syntax: citation.link.syntax, rawTarget: rawTarget), default: []].append(index)
+            }
+        }
+        return groups
+    }
+
+    private static func match(
+        _ previous: [MarkdownCitation], _ oldOffsets: [Int],
+        _ next: [MarkdownCitation], _ newOffsets: [Int]
+    ) -> [(Int, Int)] {
+        var usedOld: Set<Int> = []
+        var usedNew: Set<Int> = []
+        var pairs: [(Int, Int)] = []
+
+        func pair<Key: Hashable>(by signature: (MarkdownLink) -> Key?) {
+            var queues: [Key: [Int]] = [:]
+            var consumed: [Key: Int] = [:]
+            for old in oldOffsets where !usedOld.contains(old) {
+                if let key = signature(previous[old].link) { queues[key, default: []].append(old) }
+            }
+            for new in newOffsets where !usedNew.contains(new) {
+                guard let key = signature(next[new].link), let matching = queues[key] else { continue }
+                let index = consumed[key, default: 0]
+                guard index < matching.count else { continue }
+                let old = matching[index]
+                consumed[key] = index + 1
+                usedOld.insert(old)
+                usedNew.insert(new)
+                pairs.append((old, new))
+            }
+        }
+
+        // Named source blocks can distinguish repeated text even after a source is reordered.
+        pair { link -> Signature? in
+            guard let block = link.sourceBlock else { return nil }
+            return Signature(destination: Data(link.destination.utf8), label: link.label.map { Data($0.utf8) },
+                             embed: link.embed == true, sourceBlock: block)
+        }
+        pair { link in
+            Signature(destination: Data(link.destination.utf8), label: link.label.map { Data($0.utf8) }, embed: link.embed == true)
+        }
+        pair { link -> Signature? in
+            guard let label = link.label else { return nil }
+            return Signature(label: Data(label.utf8), embed: link.embed == true)
+        }
+        pair { link in Signature(destination: Data(link.destination.utf8), embed: link.embed == true) }
+        pair { $0.start }
+
+        // Indistinguishable or fully edited repeats pair in body order. Each prior edge is consumed once.
+        pairs.append(contentsOf: zip(oldOffsets.filter { !usedOld.contains($0) }, newOffsets.filter { !usedNew.contains($0) }))
+        return pairs
+    }
 }
 
 struct MarkdownCitationEdit: Sendable {

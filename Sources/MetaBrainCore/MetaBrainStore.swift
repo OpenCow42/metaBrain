@@ -2836,13 +2836,8 @@ extension MetaBrainStore {
             [] as [MarkdownCitation]
         }
         var edit = MarkdownCitationEdit()
-        var bindings: [DocumentLinkSyntax: [Data: MarkdownCitation]] = [:]
         for citation in old {
             edit.remove(citation)
-            if citation.targetID != nil {
-                let target = Data(citation.destination.rawTarget.utf8)
-                bindings[citation.link.syntax, default: [:]][target] = citation
-            }
         }
         if previous?.path != next?.path {
             if let previous {
@@ -2867,15 +2862,15 @@ extension MetaBrainStore {
         }
 
         if let next {
-            for var citation in Self.markdownCitations(from: next) {
-                let target = Data(citation.destination.rawTarget.utf8)
-                if let binding = bindings[citation.link.syntax]?[target] {
-                    citation.targetID = binding.targetID
-                    citation.status = binding.status
+            var citations = Self.markdownCitations(from: next)
+            MarkdownCitationBindings.preserve(from: old, in: &citations)
+            for citation in citations {
+                let resolved = if citation.targetID == nil {
+                    try await resolveCitation(citation, replacing: previous?.path, with: next.path, id: id)
                 } else {
-                    citation = try await resolveCitation(citation, replacing: previous?.path, with: next.path, id: id)
+                    citation
                 }
-                try addCitation(citation, to: &edit)
+                try addCitation(resolved, to: &edit)
             }
         } else {
             let prefix = MetaBrainKeyspace.citationInPrefix(id)
