@@ -136,9 +136,18 @@ Planned key families:
 - `idx/meta/<key>/<value>/<id>`: metadata lookup
 - `idx/ref/out/<source-id>/<target-id>`: outbound document reference
 - `idx/ref/in/<target-id>/<source-id>`: backlink lookup
-- `tree/<parent-path>/<name>`: filesystem-like discovery
+- `tree/<parent-path>/<name>`: filesystem-like discovery with case-sensitive escaped components
+- `meta/tree-layout`: layout marker for the derived tree index
 
-Document writes should use one write batch to update the document record, version record, current chunks, lexical indexes, metadata indexes, path aliases, and reference indexes together.
+Document writes use one write batch to update the document record, version
+record, current chunks, indexes, and path aliases together. Tree keys preserve
+case in both components. Term, tag, and metadata index keys still fold case.
+
+On first use of the tree, a store without a layout marker rebuilds its tree
+entries from `doc/id/` records. One batch publishes the changed tree entries
+and layout marker. The rebuild preserves compatible future tree records when
+their keys and decoded entries already agree with the rebuilt tree. An upgrade
+is required if rebuilding would delete or overwrite a future tree record.
 
 ## Search
 

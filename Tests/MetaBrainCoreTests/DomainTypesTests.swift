@@ -141,6 +141,8 @@ import Testing
     #expect(MetaBrainKeyspace.documentPathDescendantPrefix(try DocumentPath("/notes")) == "doc/path//notes/")
     #expect(MetaBrainKeyspace.tree(parentPath: try DocumentPath("/notes"), name: "today") == "tree/%2Fnotes/today")
     #expect(MetaBrainKeyspace.treePrefix(parentPath: try DocumentPath("/notes")) == "tree/%2Fnotes/")
+    #expect(MetaBrainKeyspace.tree(parentPath: try DocumentPath("/Notes/É"), name: "Today%") == "tree/%2FNotes%2F%C3%89/Today%25")
+    #expect(MetaBrainKeyspace.treePrefix(parentPath: try DocumentPath("/Notes")) == "tree/%2FNotes/")
     #expect(MetaBrainKeyspace.prefix(.documentID) == "doc/id/")
     #expect(MetaBrainKeyspace.prefix(.documentMetadata) == "doc/meta/")
 

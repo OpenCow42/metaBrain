@@ -79,10 +79,12 @@ public final class MetaBrainStore: Sendable {
 
     private let records: MetaBrainStoreDatabase
     private let writes = MetaBrainWriteCoordinator()
+    private let treeIndex = MetaBrainTreeIndex()
     private static let chunkTargetCharacterCount = 4_000
     private static let chunkOverlapCharacterCount = 400
     private static let emptyIndexValue = Data()
     private static let bulkReadOptions = Database.ReadOptions(fillCache: false)
+    private static let caseSensitiveTreeLayout = Data([1])
 
     public convenience init(path: String, options: MetaBrainStoreOptions = .default) throws {
         try self.init(url: URL(fileURLWithPath: path, isDirectory: true), options: options)
@@ -288,6 +290,7 @@ public final class MetaBrainStore: Sendable {
         recursive: Bool = false,
         directoriesOnly: Bool = false
     ) async throws -> [DocumentTreeEntry] {
+        try await ensureTreeIndex()
         guard recursive else {
             let children = try await childTreeEntries(of: path)
             var entries: [DocumentTreeEntry] = []
@@ -310,7 +313,12 @@ public final class MetaBrainStore: Sendable {
     }
 
     public func tree(_ query: TreeQuery = TreeQuery()) async throws -> [DocumentTreeEntry] {
-        try await flattenedTreeEntries(
+        if let maxDepth = query.maxDepth, maxDepth <= 0 {
+            return []
+        }
+
+        try await ensureTreeIndex()
+        return try await flattenedTreeEntries(
             under: query.path,
             directoriesOnly: query.directoriesOnly,
             maxDepth: query.maxDepth,
@@ -1106,6 +1114,75 @@ public final class MetaBrainStore: Sendable {
         }
     }
 
+    private func ensureTreeIndex() async throws {
+        try await treeIndex.prepare {
+            try await self.migrateTreeIndexIfNeeded()
+        }
+    }
+
+    private func migrateTreeIndexIfNeeded() async throws {
+        try await Self.mapLevelDBErrors(path: url.path) {
+            let records = try await currentRecords()
+            if let layout = try await records.value(forKey: MetaBrainKeyspace.treeLayout) {
+                guard layout == Self.caseSensitiveTreeLayout else {
+                    throw MetaBrainStoreError.operationFailed(
+                        message: "Unrecognized tree index layout. Upgrade metaBrain to use this store's tree."
+                    )
+                }
+                return
+            }
+
+            var rebuilt: [String: MetaBrainTreeRecord] = [:]
+            let documentPrefix = Data(MetaBrainKeyspace.prefix(.documentID).utf8)
+            let documentKeys = try await records.scanEncodedPrefixKeys(documentPrefix, readOptions: Self.bulkReadOptions)
+            for key in documentKeys {
+                guard let data = try await records.value(forKey: key, readOptions: Self.bulkReadOptions) else {
+                    continue
+                }
+                let document = try decodeCompressedRecord(data, as: MetaBrainDocumentRecord.self).payload.document
+                for path in Self.treeBranchPaths(for: document.path) {
+                    let key = MetaBrainKeyspace.tree(parentPath: path.parent!, name: path.name)
+                    if path == document.path {
+                        rebuilt[key] = MetaBrainTreeRecord(
+                            path: path,
+                            hasChildren: rebuilt[key]?.entry.hasChildren ?? false,
+                            document: document
+                        )
+                    } else {
+                        let directory = MetaBrainTreeRecord(path: path, hasChildren: true)
+                        rebuilt[key, default: directory].entry.hasChildren = true
+                    }
+                }
+            }
+
+            var obsoleteKeys: [String] = []
+            let treePrefix = Data(MetaBrainKeyspace.prefix(.tree).utf8)
+            for row in try await records.scanEncodedPrefix(treePrefix, readOptions: Self.bulkReadOptions) {
+                let stored = try decodeCompressedRecord(row.value, as: MetaBrainTreeRecord.self)
+                // A byte-for-byte retained row can keep compatible future fields.
+                if stored.payload == rebuilt[row.key] {
+                    rebuilt.removeValue(forKey: row.key)
+                } else {
+                    try stored.requireCurrentSchemaVersion(operation: "rebuild document tree")
+                    if rebuilt[row.key] == nil {
+                        obsoleteKeys.append(row.key)
+                    }
+                }
+            }
+
+            let updatedRecords = try rebuilt.map { (key: $0.key, value: try compressedData($0.value)) }
+            try await records.write { [obsoleteKeys] batch in
+                for key in obsoleteKeys {
+                    try batch.deleteValue(forKey: key)
+                }
+                for record in updatedRecords {
+                    try batch.put(record.value, forKey: record.key)
+                }
+                try batch.put(Self.caseSensitiveTreeLayout, forKey: MetaBrainKeyspace.treeLayout)
+            }
+        }
+    }
+
     private func childTreeEntries(of path: DocumentPath) async throws -> [DocumentTreeEntry] {
         try await childTreeRecordEntries(of: path)
             .map { $0.payload.entry }
@@ -1163,6 +1240,7 @@ public final class MetaBrainStore: Sendable {
         replacing document: StoredDocument,
         removedPath: DocumentPath?
     ) async throws -> (removedKeys: [String], records: [(key: String, value: Data)]) {
+        try await ensureTreeIndex()
         let affectedPaths = Self.treeAffectedPaths(
             newPath: document.path,
             removedPath: removedPath
@@ -1192,6 +1270,7 @@ public final class MetaBrainStore: Sendable {
     private func incrementalTreeUpdate(
         removing document: StoredDocument
     ) async throws -> (removedKeys: [String], records: [(key: String, value: Data)]) {
+        try await ensureTreeIndex()
         let affectedPaths = Self.treeBranchPaths(for: document.path)
         try await requireCurrentTreeRecords(for: affectedPaths, operation: "delete document tree")
 
@@ -1255,17 +1334,7 @@ public final class MetaBrainStore: Sendable {
             return nil
         }
 
-        return MetaBrainTreeRecord(
-            parentPath: path.parent!,
-            entry: DocumentTreeEntry(
-                path: path,
-                name: path.name,
-                hasChildren: hasChildren,
-                documentID: documentAtPath?.id,
-                createdAt: documentAtPath?.createdAt,
-                updatedAt: documentAtPath?.updatedAt
-            )
-        )
+        return MetaBrainTreeRecord(path: path, hasChildren: hasChildren, document: documentAtPath)
     }
 
     private func pathHasChildrenAfterWrite(
@@ -1315,17 +1384,7 @@ public final class MetaBrainStore: Sendable {
             return nil
         }
 
-        return MetaBrainTreeRecord(
-            parentPath: path.parent!,
-            entry: DocumentTreeEntry(
-                path: path,
-                name: path.name,
-                hasChildren: hasChildren,
-                documentID: documentAtPath?.id,
-                createdAt: documentAtPath?.createdAt,
-                updatedAt: documentAtPath?.updatedAt
-            )
-        )
+        return MetaBrainTreeRecord(path: path, hasChildren: hasChildren, document: documentAtPath)
     }
 
     private func pathHasChildrenAfterDelete(
@@ -2019,6 +2078,27 @@ private actor MetaBrainWriteCoordinator {
     }
 }
 
+private actor MetaBrainTreeIndex {
+    private var preparation: Task<Void, Error>?
+
+    func prepare(_ operation: @Sendable @escaping () async throws -> Void) async throws {
+        if let preparation {
+            return try await preparation.value
+        }
+
+        let task = Task {
+            do {
+                try await operation()
+            } catch {
+                preparation = nil
+                throw error
+            }
+        }
+        preparation = task
+        try await task.value
+    }
+}
+
 private enum EntryAccessMutation: Sendable {
     case fullWrite
     case patch
@@ -2032,6 +2112,18 @@ private struct MetaBrainDocumentRecord: Codable, Equatable, Sendable {
 private struct MetaBrainTreeRecord: Codable, Equatable, Sendable {
     var parentPath: DocumentPath
     var entry: DocumentTreeEntry
+
+    init(path: DocumentPath, hasChildren: Bool, document: StoredDocument? = nil) {
+        parentPath = path.parent!
+        entry = DocumentTreeEntry(
+            path: path,
+            name: path.name,
+            hasChildren: hasChildren,
+            documentID: document?.id,
+            createdAt: document?.createdAt,
+            updatedAt: document?.updatedAt
+        )
+    }
 }
 
 struct MetaBrainChunkRecord: Codable, Equatable, Sendable {

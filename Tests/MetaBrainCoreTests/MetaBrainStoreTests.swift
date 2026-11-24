@@ -16,6 +16,24 @@ private struct StoredDocumentRecordFixture: Codable, Equatable, Sendable {
     var retention: VersionRetentionPolicy
 }
 
+private struct TreeRecordFixture: Codable, Sendable {
+    var parentPath: DocumentPath
+    var entry: DocumentTreeEntry
+
+    init(path: String, hasChildren: Bool, document: StoredDocument? = nil) throws {
+        let path = try DocumentPath(path)
+        parentPath = try #require(path.parent)
+        entry = DocumentTreeEntry(
+            path: path,
+            name: path.name,
+            hasChildren: hasChildren,
+            documentID: document?.id,
+            createdAt: document?.createdAt,
+            updatedAt: document?.updatedAt
+        )
+    }
+}
+
 private func storeTestCodec<Value: Codable & Sendable>(
     options: MetaBrainStoreOptions,
     for type: Value.Type
@@ -2248,6 +2266,133 @@ private func storeTestCodec<Value: Codable & Sendable>(
         #expect(entries.first?.documentID == original.id)
         #expect(entries.first?.updatedAt == updated.updatedAt)
     }
+}
+
+@Test func caseSensitiveTreePathsRemainDistinctAcrossWritesAndExports() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let root = try DocumentPath("/")
+        let rootDocument = try await store.putDocument(DocumentInput(path: root, body: "root"))
+        let upperParent = try await store.putDocument(DocumentInput(path: try DocumentPath("/Topic"), body: "upper parent"))
+        let lowerParent = try await store.putDocument(DocumentInput(path: try DocumentPath("/topic"), body: "lower parent"))
+        let upperLeaf = try await store.putDocument(DocumentInput(path: try DocumentPath("/Topic/Sub/Note"), body: "upper leaf"))
+        let lowerLeaf = try await store.putDocument(DocumentInput(path: try DocumentPath("/Topic/Sub/note"), body: "lower leaf"))
+        let otherBranchLeaf = try await store.putDocument(DocumentInput(path: try DocumentPath("/topic/Sub/Note"), body: "other branch"))
+
+        #expect(try await store.listDirectory().map(\.documentID) == [upperParent.id, lowerParent.id])
+        #expect(try await store.listDirectory(path: try DocumentPath("/Topic/Sub")).map(\.documentID) == [upperLeaf.id, lowerLeaf.id])
+        #expect(try await store.tree(TreeQuery(path: try DocumentPath("/topic"))).compactMap(\.documentID) == [otherBranchLeaf.id])
+        #expect(try await store.listDirectory(path: try DocumentPath("/Topic/sub")).isEmpty)
+        #expect(try await store.dump(DocumentDumpQuery(path: upperParent.path)).map(\.documentID) == [upperParent.id, upperLeaf.id, lowerLeaf.id])
+        #expect(try await store.dump(DocumentDumpQuery(path: lowerParent.path)).map(\.documentID) == [lowerParent.id, otherBranchLeaf.id])
+        #expect(try await store.dump(DocumentDumpQuery(path: root)).map(\.documentID) == [rootDocument.id, upperParent.id, upperLeaf.id, lowerLeaf.id, lowerParent.id, otherBranchLeaf.id])
+
+        let movedPath = try DocumentPath("/Topic/Sub/NOTE")
+        let moved = try await store.moveDocument(.path(upperLeaf.path), to: movedPath)
+        #expect(moved.document.id == upperLeaf.id)
+        #expect(try await store.getDocument(.path(upperLeaf.path)) == nil)
+        #expect(try await store.getDocument(.path(lowerLeaf.path), trackingRead: false) == lowerLeaf)
+        #expect(try await store.deleteDocument(.path(otherBranchLeaf.path)))
+        #expect(try await store.listDirectory(path: lowerParent.path).isEmpty)
+        #expect(try await store.listDirectory(path: try DocumentPath("/Topic/Sub")).map(\.path) == [movedPath, lowerLeaf.path])
+        #expect(try await store.dump(DocumentDumpQuery(path: root)).map(\.documentID) == [rootDocument.id, upperParent.id, upperLeaf.id, lowerLeaf.id, lowerParent.id])
+    }
+}
+
+@Test func caseSensitiveTreeMigrationRebuildsLegacyCollisions() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let legacyStore = try MetaBrainStore(url: fixture.storeURL)
+        let parent = try await seedLegacyDocument(in: legacyStore, id: "z-parent", path: "/Folder")
+        let upper = try await seedLegacyDocument(in: legacyStore, id: "a-upper", path: "/Folder/Page", schemaVersion: 2)
+        let lower = try await seedLegacyDocument(in: legacyStore, id: "b-lower", path: "/folder/page")
+        let legacyRootKey = "tree/%2F/folder"
+        let obsoleteKey = "tree/%2F/obsolete"
+        try await legacyStore.putCompressedRecord(TreeRecordFixture(path: "/folder", hasChildren: true), forKey: legacyRootKey)
+        try await legacyStore.putCompressedRecord(TreeRecordFixture(path: "/folder/page", hasChildren: false, document: lower), forKey: "tree/%2Ffolder/page")
+        try await legacyStore.putCompressedRecord(TreeRecordFixture(path: "/obsolete", hasChildren: true), forKey: obsoleteKey)
+        await legacyStore.close()
+
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let root = try DocumentPath("/")
+        #expect(try await store.getDocument(.path(upper.path), trackingRead: false) == upper)
+        #expect(try await store.rawValue(forKey: MetaBrainKeyspace.treeLayout) == nil)
+
+        async let rootEntries = store.listDirectory()
+        async let folderEntries = store.listDirectory(path: parent.path, recursive: true)
+        async let dump = store.dump(DocumentDumpQuery(path: root, versionSelection: .allRetained))
+        let (rootList, folderList, exportedVersions) = try await (rootEntries, folderEntries, dump)
+
+        #expect(rootList.map(\.path.rawValue) == ["/Folder", "/folder"])
+        #expect(rootList.first?.documentID == parent.id)
+        #expect(rootList.first?.hasChildren == true)
+        #expect(rootList.first?.createdAt == parent.createdAt)
+        #expect(folderList.map(\.documentID) == [upper.id])
+        #expect(exportedVersions.map(\.documentID) == [parent.id, parent.id, upper.id, upper.id, lower.id, lower.id])
+        #expect(exportedVersions.map(\.version) == [1, 2, 1, 2, 1, 2])
+        #expect(try await store.rawValue(forKey: obsoleteKey) == nil)
+        #expect(try await store.rawValue(forKey: MetaBrainKeyspace.treeLayout) != nil)
+        await store.close()
+
+        let reopened = try MetaBrainStore(url: fixture.storeURL)
+        #expect(try await reopened.dump(DocumentDumpQuery(path: root)).map(\.documentID) == [parent.id, upper.id, lower.id])
+    }
+}
+
+@Test func caseSensitiveTreeMigrationPreservesFutureRecordsAndCanRetry() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let document = try await seedLegacyDocument(in: store, id: "archive", path: "/Archive")
+        let newPath = try DocumentPath("/New")
+        let foldedKey = "tree/%2F/archive"
+        let caseSensitiveKey = "tree/%2F/Archive"
+        let record = try TreeRecordFixture(path: "/Archive", hasChildren: false, document: document)
+        let data = try storeTestCodec(options: store.options, for: TreeRecordFixture.self).encode(
+            MetaBrainRecordEnvelope(schemaVersion: 2, payload: record)
+        )
+        try await store.writeRawValue(data, forKey: foldedKey)
+
+        await #expect(throws: MetaBrainStoreError.newerRecordSchemaVersion(2, operation: "rebuild document tree")) {
+            try await store.putDocument(DocumentInput(path: newPath, body: "first attempt"))
+        }
+        #expect(try await store.getDocument(.path(newPath), trackingRead: false) == nil)
+        #expect(try await store.rawValue(forKey: foldedKey) == data)
+        #expect(try await store.rawValue(forKey: caseSensitiveKey) == nil)
+        #expect(try await store.rawValue(forKey: MetaBrainKeyspace.treeLayout) == nil)
+
+        try await store.deleteRawValue(forKey: foldedKey)
+        try await store.writeRawValue(data, forKey: caseSensitiveKey)
+        async let new = store.putDocument(DocumentInput(path: newPath, body: "second attempt"))
+        async let list = store.listDirectory()
+        let (created, entries) = try await (new, list)
+        #expect(entries.contains { $0.documentID == document.id })
+        #expect(try await store.listDirectory().map(\.documentID) == [document.id, created.id])
+        #expect(try await store.rawValue(forKey: caseSensitiveKey) == data)
+        await #expect(throws: MetaBrainStoreError.newerRecordSchemaVersion(2, operation: "delete document tree")) {
+            try await store.deleteDocument(.documentID(document.id))
+        }
+    }
+}
+
+private func seedLegacyDocument(
+    in store: MetaBrainStore,
+    id rawID: String,
+    path rawPath: String,
+    schemaVersion: UInt8 = 1
+) async throws -> StoredDocument {
+    let id = try DocumentID(rawValue: rawID)
+    let path = try DocumentPath(rawPath)
+    let createdAt = Date(timeIntervalSince1970: 1)
+    let updatedAt = Date(timeIntervalSince1970: 2)
+    let document = StoredDocument(id: id, path: path, body: "current", currentVersion: 2, createdAt: createdAt, updatedAt: updatedAt)
+    let data = try storeTestCodec(options: store.options, for: StoredDocumentRecordFixture.self)
+        .encode(MetaBrainRecordEnvelope(schemaVersion: schemaVersion, payload: StoredDocumentRecordFixture(document: document, retention: .keepAll)))
+    try await store.writeRawValue(data, forKey: MetaBrainKeyspace.document(id: id))
+    try await store.writeRawValue(Data(id.rawValue.utf8), forKey: MetaBrainKeyspace.documentPath(path))
+    for (sequence, date, body) in [(UInt64(1), createdAt, "previous"), (UInt64(2), updatedAt, document.body)] {
+        let version = DocumentVersion(documentID: id, sequence: sequence, snapshot: DocumentInput(path: path, body: body), createdAt: date)
+        try await store.putCompressedRecord(version, forKey: MetaBrainKeyspace.version(id: id, sequence: sequence))
+    }
+    return document
 }
 
 @Test func treeIndexIgnoresMalformedDescendantPathKeys() async throws {

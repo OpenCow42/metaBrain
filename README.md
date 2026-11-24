@@ -288,6 +288,15 @@ read by older binaries. A future release may add required payload fields or a
 new key layout that old tools cannot decode. Older tools should fail
 gracefully in those cases.
 
+Virtual paths are case-sensitive, so `/Notes/Today` and `/notes/today` can
+both appear in `list`, `tree`, and `dump`. On the first tree read or document
+write, metaBrain rebuilds the tree index of an older store from its current
+documents. Document IDs and retained versions are preserved. Upgrade any older
+CLI, daemon, or app that writes to the same store before using it with this
+release. Older binaries use case-folded tree keys, which can produce incorrect
+tree listings or exports and damage the derived index if used to write to the
+upgraded store.
+
 Implemented behavior includes:
 
 - Async `MetaBrainStore` facade over one explicit store path.

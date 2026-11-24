@@ -3,6 +3,7 @@ import Foundation
 enum MetaBrainKeyspace {
     static let sequenceWidth = 20
     static let ordinalWidth = 10
+    static let treeLayout = "meta/tree-layout"
 
     static func document(id: DocumentID) -> String {
         "doc/id/\(id.rawValue)"
@@ -77,11 +78,11 @@ enum MetaBrainKeyspace {
     }
 
     static func tree(parentPath: DocumentPath, name: String) -> String {
-        "tree/\(component(parentPath.rawValue))/\(component(name))"
+        treePrefix(parentPath: parentPath) + escapedComponent(name)
     }
 
     static func treePrefix(parentPath: DocumentPath) -> String {
-        "tree/\(component(parentPath.rawValue))/"
+        "tree/\(escapedComponent(parentPath.rawValue))/"
     }
 
     static func prefix(_ family: KeyFamily) -> String {
@@ -93,9 +94,13 @@ enum MetaBrainKeyspace {
     }
 
     private static func component(_ value: String) -> String {
+        escapedComponent(value.lowercased())
+    }
+
+    private static func escapedComponent(_ value: String) -> String {
         var output = ""
 
-        for scalar in value.lowercased().unicodeScalars {
+        for scalar in value.unicodeScalars {
             if isUnescapedComponentScalar(scalar) {
                 output.unicodeScalars.append(scalar)
             } else {
@@ -112,6 +117,7 @@ enum MetaBrainKeyspace {
     private static func isUnescapedComponentScalar(_ scalar: UnicodeScalar) -> Bool {
         scalar == "-" || scalar == "_" || scalar == "." ||
             (scalar.value >= 48 && scalar.value <= 57) ||
+            (scalar.value >= 65 && scalar.value <= 90) ||
             (scalar.value >= 97 && scalar.value <= 122)
     }
 }

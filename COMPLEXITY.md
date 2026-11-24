@@ -11,6 +11,7 @@ contributors toward the calls that can become expensive as a store grows.
 - `B`: size of the current document body being read or written.
 - `B_old`: size of the previous body for an updated document.
 - `B_version`: size of one retained version snapshot body.
+- `B_store`: total decoded bytes in current document records.
 - `C`: number of current chunks for a document.
 - `C_old`: number of previous chunks for an updated document.
 - `T`: number of distinct indexed terms in a document or query context.
@@ -29,6 +30,8 @@ contributors toward the calls that can become expensive as a store grows.
 - `L`: number of virtual tree entries on the new and old path branches touched
   by one write.
 - `D`: total path segments processed while maintaining or traversing tree records.
+- `D_rebuild`: total path component work to derive tree entries for all current documents.
+- `A_legacy`: number of old tree entries processed during a layout upgrade.
 - `K`: number of direct children listed for one virtual directory.
 - `D_dump`: number of current documents selected by one dump path.
 - `H_dump`: total body bytes emitted by a dump operation, including expanded
@@ -93,6 +96,15 @@ and [LevelDB options](https://github.com/google/leveldb/blob/main/include/leveld
 | `prune` | `prune`, `pruneVersions`, `versionRecords`, retention helpers | `O(seek(S) + V log V + H + P_delete)` | Scans and decodes all versions before deciding which version keys to delete. |
 | `delete` | `deleteDocument`, `deleteDocumentRecord`, cleanup helpers | `O((C + R + E + L) * seek(S) + T + V + H + X_tree + P_delete + K_delete)` | Resolves one explicit document, checks retained version envelopes for compatible mutation, then cleans current chunks, lexical/tag/metadata indexes, references/backlinks, retained versions, and affected tree entries. |
 | `remove-version` | `getDocument`, `removeVersion` | `O(seek(S) + B + B_version)` | Resolves one document and decodes the target version envelope before deleting it. Rejects the current version. |
+
+The first tree read or document mutation that updates the tree checks the
+layout marker once per open store. An older store without the marker incurs a
+one-time `O(N * seek(S) + B_store + D_rebuild + A_legacy)` rebuild. It scans
+document keys, decodes one current document at a time, and compares the rebuilt
+tree with the existing tree. The rebuild materializes the document keys and
+tree entries, then applies edits and the marker together in one batch. Later
+operations on the same open store reuse the completed check. A reopened store
+with the marker needs one point lookup to skip the rebuild.
 
 ## Current Complex Calls To Treat Carefully
 
