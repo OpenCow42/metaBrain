@@ -56,8 +56,10 @@ enum MetaBrainAgentGuide {
 
         After editing linked notes, run `mb lint /decisions --format text` to find missing or ambiguous document targets and anchors. Omit the path to audit the whole store. Use `--orphans` to include Markdown notes with no indexed backlink from another document, or `--strict` to exit with status 3 when the selected checks find a problem.
 
+        For a source and decision that must appear together, inspect their full replacements with `mb operation inspect operation.json > preview.json`, review the target paths and versions, then use `mb operation apply preview.json`. Retry the original preview if the response was lost.
+
         Use `mb man search` for CLI options. Use `mb ensure-guide` to install this guide in an existing store that lacks it.
         """ + "\n",
-        metadata: ["guide-revision": "4"]
+        metadata: ["guide-revision": "5"]
     )
 }

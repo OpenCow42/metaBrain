@@ -315,10 +315,7 @@ private struct MarkdownScanner {
             open.append(heading)
         }
         headingAnchors += open.map { $0.anchor(ending: characters.count, characters: characters) }
-        return (headingAnchors + blocks).sorted { lhs, rhs in
-            if lhs.range.lowerBound != rhs.range.lowerBound { return lhs.range.lowerBound < rhs.range.lowerBound }
-            return lhs.range.upperBound > rhs.range.upperBound
-        }
+        return (headingAnchors + blocks).sorted { $0.range.lowerBound < $1.range.lowerBound }
     }
 
     func references() -> (destinations: [String: String], lines: Set<Int>) {

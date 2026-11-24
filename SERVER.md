@@ -275,6 +275,8 @@ GET  /v1/version
 POST /v1/init
 POST /v1/put
 POST /v1/put-conditional
+POST /v1/operation-inspect
+POST /v1/operation-apply
 POST /v1/patch
 POST /v1/move
 POST /v1/get
@@ -306,6 +308,8 @@ selected store is missing. An existing store with a missing
 document can return `document_not_found`.
 
 ### Agent retrieval routes
+
+For project writes, `POST /v1/operation-inspect` accepts a `ProjectOperation` and returns the full `OperationPreview`. `POST /v1/operation-apply` takes that exact preview and returns an `OperationReceipt` with ordered document IDs, versions, and statuses. A malformed operation returns HTTP 400. A stale preview, wrong store, or reused operation ID with different contents returns HTTP 409. The client selects the store on both calls. See the [complete request example](README.md#commit-related-notes-together).
 
 - `POST /v1/ensure-guide` with `{}` installs `/AGENTS.md` in an existing
   store only when absent. Response fields match a put result, with operation

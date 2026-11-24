@@ -124,6 +124,8 @@ reads the count with a point lookup at search time.
 
 ## Current Complex Calls To Treat Carefully
 
+For a project operation with N documents, inspect reads N path aliases and current records and hashes the serialized proposal. Apply performs the per-document chunk, posting, retention, and reference work of the corresponding puts. It combines their affected tree branches and citation candidates, including pending links to newly introduced names. Memory includes the proposed bodies and encoded record edits until the single batch commits. Replaying the identical preview verifies its digest and reads one receipt without rebuilding the affected indexes.
+
 - `put` builds one large in-memory `WriteBatch` for document, version, chunk,
   term, metadata, reference, tree, and prune edits. LevelDB applies it
   atomically, but the batch size, WAL write, memtable pressure, and later

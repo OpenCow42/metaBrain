@@ -103,6 +103,8 @@ public final class MetaBrainStore: Sendable {
     public let options: MetaBrainStoreOptions
 
     private let records: MetaBrainStoreDatabase
+    private let canonicalOperationStorePath: String
+    private let operationStoreIdentity: Result<UUID, MetaBrainStoreError>
     private let writes = MetaBrainWriteCoordinator()
     private let treeIndex = MetaBrainIndexPreparation()
     private let searchFieldIndex = MetaBrainIndexPreparation()
@@ -145,23 +147,59 @@ public final class MetaBrainStore: Sendable {
         }
         self.url = url
         self.options = options
+        let databasePath = url.resolvingSymlinksInPath().standardizedFileURL.path
 
         do {
             let openedRecords = try LevelDBStore(
-                path: url.path,
+                path: databasePath,
                 keyCodec: StringCodec(),
                 valueCodec: DataCodec(),
                 options: openOptions
             )
+            // An existing directory resolves consistently on the first open and later retries.
+            canonicalOperationStorePath = url.resolvingSymlinksInPath().standardizedFileURL.path
+            // Seed legacy and new stores under LevelDB's exclusive lock, before inspect or apply.
+            operationStoreIdentity = Self.loadOperationStoreIdentity(at: databasePath)
             records = MetaBrainStoreDatabase(openedRecords)
         } catch let error as LevelDBError {
             throw Self.storeError(from: error, path: url.path)
         }
     }
 
+    private static func loadOperationStoreIdentity(at path: String) -> Result<UUID, MetaBrainStoreError> {
+        let identityURL = URL(fileURLWithPath: path, isDirectory: true).appendingPathComponent("metabrain-identity")
+        do {
+            let data = try Data(contentsOf: identityURL)
+            guard let uuid = UUID(uuidString: String(decoding: data, as: UTF8.self)) else {
+                return .failure(.operationFailed(message: "Invalid project operation store identity."))
+            }
+            return .success(uuid)
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            let identity = UUID()
+            do {
+                try Data(identity.uuidString.utf8).write(to: identityURL, options: .atomic)
+                return .success(identity)
+            } catch {
+                return .failure(.operationFailed(message: "Unable to initialize project operation store identity: \(error)"))
+            }
+        } catch {
+            return .failure(.operationFailed(message: "Unable to read project operation store identity: \(error)"))
+        }
+    }
+
     /// Opens a store, writing the agent guide only when creating a new database.
     /// Pass `empty: true` to create a database with no initial documents.
     public static func initialize(at url: URL, empty: Bool = false) async throws -> MetaBrainStore {
+        try await initialize(at: url, empty: empty) { store in
+            try await store.writeNewDocument(MetaBrainAgentGuide.document, writeOptions: .init(sync: true))
+        }
+    }
+
+    static func initialize(
+        at url: URL,
+        empty: Bool,
+        seed: (MetaBrainStore) async throws -> Void
+    ) async throws -> MetaBrainStore {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         if empty {
             return try MetaBrainStore(url: url)
@@ -183,7 +221,7 @@ public final class MetaBrainStore: Sendable {
         }
 
         do {
-            try await store.writeNewDocument(MetaBrainAgentGuide.document, writeOptions: .init(sync: true))
+            try await seed(store)
             return store
         } catch {
             await store.close()
@@ -265,6 +303,132 @@ public final class MetaBrainStore: Sendable {
             let document = try await self.writeDocumentUpdate(id: id, existingRecord: record, input: effectiveInput)
             return DocumentWriteResult(document: document, status: .updated)
         }
+    }
+
+    /// Inspects the current document identities and versions without changing the store.
+    public func inspectOperation(_ operation: ProjectOperation) async throws -> OperationPreview {
+        try operation.validate()
+        return try await writes.run {
+            let current = try await self.operationState(for: operation)
+            return try OperationPreview.make(
+                operation: operation, storePath: self.canonicalOperationStorePath,
+                storeIdentity: try self.operationStoreIdentity.get(), targets: current.targets
+            )
+        }
+    }
+
+    /// Applies a reviewed operation once, or returns its original receipt on an identical retry.
+    public func applyOperation(_ preview: OperationPreview) async throws -> OperationReceipt {
+        try preview.verify()
+        guard preview.storePath.utf8.elementsEqual(canonicalOperationStorePath.utf8),
+              preview.storeIdentity == (try operationStoreIdentity.get()) else {
+            throw ProjectOperationError.conflict("The preview identifies a different store.")
+        }
+
+        return try await writes.run {
+            let operation = preview.operation
+            let receiptKey = MetaBrainKeyspace.operationReceipt(operation.operationID)
+            if let receipt = try await self.compressedStoredRecord(forKey: receiptKey, as: OperationReceipt.self) {
+                try receipt.requireCurrentSchemaVersion(operation: "replay project operation")
+                guard receipt.payload.operationID == operation.operationID, receipt.payload.digest == preview.digest else {
+                    throw ProjectOperationError.conflict("The operation ID was already used with a different preview.")
+                }
+                return receipt.payload
+            }
+
+            let current = try await self.operationState(for: operation)
+            guard current.targets == preview.targets else {
+                throw ProjectOperationError.conflict("A target document changed after inspection. Inspect the operation again.")
+            }
+
+            return try await self.commitOperation(preview, current: current.records, receiptKey: receiptKey)
+        }
+    }
+
+    private func operationState(
+        for operation: ProjectOperation
+    ) async throws -> (targets: [OperationTarget], records: [DocumentPath: MetaBrainDocumentRecord]) {
+        var targets: [OperationTarget] = []
+        var records: [DocumentPath: MetaBrainDocumentRecord] = [:]
+        for input in operation.documents {
+            let id = try await documentID(forPath: input.path)
+            let version: UInt64
+            if let id {
+                guard let record = try await currentDocumentRecord(id: id, operation: "inspect project operation"),
+                      record.document.path == input.path, record.document.id == id else {
+                    throw MetaBrainStoreError.operationFailed(message: "Invalid document record at \(input.path.rawValue).")
+                }
+                records[input.path] = record
+                version = record.document.currentVersion
+            } else {
+                version = 0
+            }
+            targets.append(OperationTarget(path: input.path, documentID: id, version: version))
+        }
+        return (targets, records)
+    }
+
+    private func commitOperation(
+        _ preview: OperationPreview,
+        current: [DocumentPath: MetaBrainDocumentRecord],
+        receiptKey: String
+    ) async throws -> OperationReceipt {
+        var prepared: [PreparedDocumentWrite] = []
+        var unchanged: [StoredDocument] = []
+        var results: [OperationResult] = []
+        for input in preview.operation.documents {
+            let document: StoredDocument
+            let status: DocumentWriteStatus
+            if let existing = current[input.path] {
+                if existing.matches(input) {
+                    document = existing.document
+                    status = .unchanged
+                    unchanged.append(document)
+                } else {
+                    let write = try await prepareDocumentUpdate(
+                        id: existing.document.id, existingRecord: existing, input: input
+                    )
+                    prepared.append(write)
+                    document = write.record.document
+                    status = .updated
+                }
+            } else {
+                let write = Self.prepareNewDocument(input)
+                prepared.append(write)
+                document = write.record.document
+                status = .created
+            }
+            results.append(OperationResult(
+                path: document.path, documentID: document.id, version: document.currentVersion, status: status
+            ))
+        }
+
+        let receipt = OperationReceipt(operationID: preview.operation.operationID, digest: preview.digest, results: results)
+        var edit = MetaBrainRecordEdit()
+        let stagedIDs = Dictionary(uniqueKeysWithValues: results.map { ($0.path, $0.documentID) })
+        for write in prepared {
+            edit.merge(try await documentRecordEdit(for: write, stagedIDs: stagedIDs))
+        }
+        for document in unchanged {
+            edit.merge(try await pathReferenceEdit(for: document, stagedIDs: stagedIDs))
+        }
+
+        if !prepared.isEmpty {
+            edit.merge(try await operationCitationEdit(for: prepared))
+            edit.merge(try await operationTreeEdit(for: prepared.map { $0.record.document }))
+            try await ensureSearchFieldIndex()
+            let newDocumentCount = prepared.filter { $0.previousRecord == nil }.count
+            if newDocumentCount > 0 {
+                edit.put(
+                    try await updatedSearchDocumentCount(by: newDocumentCount), for: MetaBrainKeyspace.searchDocumentCount
+                )
+            }
+        }
+
+        edit.put(try compressedData(receipt), for: receiptKey)
+        try Task.checkCancellation()
+        try await commit(edit, writeOptions: .init(sync: true))
+        return receipt
     }
 
     @discardableResult
@@ -647,7 +811,7 @@ public final class MetaBrainStore: Sendable {
             )
         }
 
-        let ranking = MetaBrainSearchRanking(terms: queryTerms, weights: weights)
+        let ranking = MetaBrainSearchRanking(weights: weights)
         for (id, bodyOrdinals) in bodyOrdinalsByDocument {
             guard let document = try await documentRecord(id: id)?.document,
                   Self.path(document.path, matchesPrefix: query.pathPrefix) else {
@@ -655,7 +819,7 @@ public final class MetaBrainStore: Sendable {
             }
             let chunks = try await searchChunks(for: document, includeBodyMatches: !bodyOrdinals.isEmpty)
             let fields = ranking.fieldFrequencies(title: document.title, path: document.path)
-            var passageFrequencies: [UInt32: [String: Int]] = [:]
+            var matchingPassages: [(chunk: MetaBrainChunkRecord, frequencies: [String: Int])] = []
             var documentFrequencies: [String: Int] = [:]
             for ordinal in bodyOrdinals {
                 guard let chunk = chunks[ordinal] else {
@@ -664,33 +828,28 @@ public final class MetaBrainStore: Sendable {
 
                 let frequencies = ranking.termFrequencies(in: chunk.text)
                 if !frequencies.isEmpty {
-                    passageFrequencies[ordinal] = frequencies
+                    matchingPassages.append((chunk, frequencies))
                     for (term, count) in frequencies {
                         documentFrequencies[term] = max(documentFrequencies[term, default: 0], count)
                     }
                 }
             }
 
-            if passageFrequencies.isEmpty, !fields.isEmpty, chunks[0] != nil {
-                passageFrequencies[0] = [:]
+            if matchingPassages.isEmpty, !fields.isEmpty, let firstChunk = chunks[0] {
+                matchingPassages.append((firstChunk, [:]))
             }
 
-            guard !passageFrequencies.isEmpty else {
+            guard !matchingPassages.isEmpty else {
                 continue
             }
             let documentScore = ranking.score(fields: fields, body: documentFrequencies)
-            var passages: [MetaBrainRankedPassage] = []
-            for (ordinal, frequencies) in passageFrequencies {
-                guard let chunk = chunks[ordinal] else {
-                    continue
-                }
-
+            let passages = matchingPassages.map { chunk, frequencies in
                 let passageScore = ranking.score(fields: fields, body: frequencies)
-                passages.append(MetaBrainRankedPassage(
+                return MetaBrainRankedPassage(
                     chunk: chunk,
                     hasBodyMatch: !frequencies.isEmpty,
                     score: documentScore + 0.1 * passageScore
-                ))
+                )
             }
             try visit(document, chunks, passages, weights)
         }
@@ -950,6 +1109,12 @@ public final class MetaBrainStore: Sendable {
         _ input: DocumentInput,
         writeOptions: Database.WriteOptions = .default
     ) async throws -> StoredDocument {
+        let write = Self.prepareNewDocument(input)
+        try await writeDocumentBatch(write, writeOptions: writeOptions)
+        return write.record.document
+    }
+
+    private static func prepareNewDocument(_ input: DocumentInput) -> PreparedDocumentWrite {
         let now = Date()
         let id = DocumentID.generate()
         let document = StoredDocument(
@@ -976,7 +1141,7 @@ public final class MetaBrainStore: Sendable {
             createdAt: now
         )
 
-        try await writeDocumentBatch(
+        return PreparedDocumentWrite(
             record: record,
             version: version,
             entryMetadata: Self.defaultEntryMetadata(
@@ -985,11 +1150,8 @@ public final class MetaBrainStore: Sendable {
             ),
             previousRecord: nil,
             removedPath: nil,
-            prunedVersions: [],
-            writeOptions: writeOptions
+            prunedVersions: []
         )
-
-        return document
     }
 
     private func writeDocumentUpdate(
@@ -1018,6 +1180,19 @@ public final class MetaBrainStore: Sendable {
         input: DocumentInput,
         accessMutation: EntryAccessMutation = .fullWrite
     ) async throws -> StoredDocument {
+        let write = try await prepareDocumentUpdate(
+            id: id, existingRecord: existingRecord, input: input, accessMutation: accessMutation
+        )
+        try await writeDocumentBatch(write)
+        return write.record.document
+    }
+
+    private func prepareDocumentUpdate(
+        id: DocumentID,
+        existingRecord: MetaBrainDocumentRecord,
+        input: DocumentInput,
+        accessMutation: EntryAccessMutation = .fullWrite
+    ) async throws -> PreparedDocumentWrite {
         if let existingPathID = try await documentID(forPath: input.path),
            existingPathID != id {
             throw MetaBrainStoreError.pathAlreadyExists(input.path, existingID: existingPathID)
@@ -1074,7 +1249,7 @@ public final class MetaBrainStore: Sendable {
             accessMutation: accessMutation
         )
 
-        try await writeDocumentBatch(
+        return PreparedDocumentWrite(
             record: record,
             version: version,
             entryMetadata: entryMetadata,
@@ -1082,8 +1257,6 @@ public final class MetaBrainStore: Sendable {
             removedPath: removedPath,
             prunedVersions: prunedVersions
         )
-
-        return document
     }
 
     private func patchedDocumentInput(
@@ -1110,109 +1283,72 @@ public final class MetaBrainStore: Sendable {
     }
 
     private func writeDocumentBatch(
-        record: MetaBrainDocumentRecord,
-        version: DocumentVersion,
-        entryMetadata: DocumentEntryMetadata,
-        previousRecord: MetaBrainDocumentRecord?,
-        removedPath: DocumentPath?,
-        prunedVersions: [DocumentVersion],
+        _ write: PreparedDocumentWrite,
         writeOptions: Database.WriteOptions = .default
     ) async throws {
-        let document = record.document
-        let documentKey = MetaBrainKeyspace.document(id: document.id)
-        let pathKey = MetaBrainKeyspace.documentPath(document.path)
-        let versionKey = MetaBrainKeyspace.version(
-            id: document.id,
-            sequence: version.sequence
-        )
-        let encodedRecord = try compressedData(record)
-        let encodedVersion = try compressedData(version)
-        let encodedEntryMetadata = try compressedData(entryMetadata)
-        let encodedID = Data(document.id.rawValue.utf8)
-        let staleChunkRecords = try await currentChunkRecordEntries(for: document.id)
-        try staleChunkRecords.requireCurrentSchemaVersions(operation: "update document chunks")
-        let staleChunkKeys = staleChunkRecords.map(\.key)
-        let staleIndexKeys = try await staleIndexKeys(
-            for: previousRecord?.document,
-            staleChunks: staleChunkRecords.map(\.payload)
-        )
-        let staleReferenceKeys = try await staleReferenceKeys(sourceID: document.id)
-        let citationEdit = try await citationEdit(replacing: previousRecord?.document, with: document)
-        let treeUpdate = try await incrementalTreeUpdate(
-            replacing: document,
-            removedPath: removedPath
-        )
-        let chunks = Self.chunkRecords(for: document)
-        let encodedChunks = try chunks.map { chunk in
-            (
-                key: MetaBrainKeyspace.currentChunk(id: document.id, ordinal: chunk.ordinal),
-                value: try compressedData(chunk)
-            )
-        }
-        let indexKeys = try await currentIndexKeys(for: document, chunks: chunks)
+        let document = write.record.document
+        var edit = try await documentRecordEdit(for: write)
+        edit.merge(try await citationEdit(replacing: write.previousRecord?.document, with: document))
+        let tree = try await incrementalTreeUpdate(replacing: document, removedPath: write.removedPath)
+        for key in tree.removedKeys { edit.remove(key) }
+        for row in tree.records { edit.put(row.value, for: row.key) }
         try await ensureSearchFieldIndex()
-        let previousFieldKeys = previousRecord.map { Self.searchFieldKeys(for: $0.document) } ?? []
-        let fieldKeys = Self.searchFieldKeys(for: document)
-        let removedFieldKeys = previousFieldKeys.subtracting(fieldKeys)
-        let addedFieldKeys = fieldKeys.subtracting(previousFieldKeys)
-        let updatedDocumentCount = if previousRecord == nil {
-            try await updatedSearchDocumentCount(by: 1)
-        } else {
-            nil as Data?
+        if write.previousRecord == nil {
+            edit.put(try await updatedSearchDocumentCount(by: 1), for: MetaBrainKeyspace.searchDocumentCount)
+        }
+        try await commit(edit, writeOptions: writeOptions)
+    }
+
+    private func documentRecordEdit(
+        for write: PreparedDocumentWrite,
+        stagedIDs: [DocumentPath: DocumentID] = [:]
+    ) async throws -> MetaBrainRecordEdit {
+        let document = write.record.document
+        let id = document.id
+        let staleChunks = try await currentChunkRecordEntries(for: id)
+        try staleChunks.requireCurrentSchemaVersions(operation: "update document chunks")
+        let staleTerms = try await staleIndexKeys(
+            for: write.previousRecord?.document, staleChunks: staleChunks.map(\.payload)
+        )
+        let staleReferences = try await staleReferenceKeys(sourceID: id)
+        var edit = MetaBrainRecordEdit()
+        for key in staleChunks.map(\.key) + staleTerms + staleReferences { edit.remove(key) }
+
+        edit.put(try compressedData(write.record), for: MetaBrainKeyspace.document(id: id))
+        edit.put(try compressedData(write.version), for: MetaBrainKeyspace.version(id: id, sequence: write.version.sequence))
+        edit.put(try compressedData(write.entryMetadata), for: MetaBrainKeyspace.documentMetadata(id: id))
+        edit.put(Data(id.rawValue.utf8), for: MetaBrainKeyspace.documentPath(document.path))
+
+        let chunks = Self.chunkRecords(for: document)
+        for chunk in chunks {
+            let key = MetaBrainKeyspace.currentChunk(id: id, ordinal: chunk.ordinal)
+            edit.put(try compressedData(chunk), for: key)
+        }
+        for key in try await currentIndexKeys(for: document, chunks: chunks, stagedIDs: stagedIDs) {
+            edit.put(for: key)
         }
 
+        let previousFields = write.previousRecord.map { Self.searchFieldKeys(for: $0.document) } ?? []
+        let fields = Self.searchFieldKeys(for: document)
+        for key in previousFields.subtracting(fields) { edit.remove(key) }
+        for key in fields.subtracting(previousFields) { edit.put(for: key) }
+
+        if let removedPath = write.removedPath { edit.remove(MetaBrainKeyspace.documentPath(removedPath)) }
+        for version in write.prunedVersions {
+            edit.remove(MetaBrainKeyspace.version(id: version.documentID, sequence: version.sequence))
+        }
+        return edit
+    }
+
+    private func commit(
+        _ edit: MetaBrainRecordEdit,
+        writeOptions: Database.WriteOptions = .default
+    ) async throws {
         try await Self.mapLevelDBErrors(path: url.path) {
             let records = try await currentRecords()
             try await records.write(writeOptions: writeOptions) { batch in
-                for key in staleChunkKeys + staleIndexKeys + staleReferenceKeys {
-                    try batch.deleteValue(forKey: key)
-                }
-                for key in citationEdit.removals { try batch.deleteValue(forKey: key) }
-                for (key, value) in citationEdit.puts { try batch.put(value, forKey: key) }
-
-                try batch.put(encodedRecord, forKey: documentKey)
-                try batch.put(
-                    encodedEntryMetadata,
-                    forKey: MetaBrainKeyspace.documentMetadata(id: document.id)
-                )
-                try batch.put(encodedID, forKey: pathKey)
-                try batch.put(encodedVersion, forKey: versionKey)
-
-                for chunk in encodedChunks {
-                    try batch.put(chunk.value, forKey: chunk.key)
-                }
-
-                for key in indexKeys {
-                    try batch.put(Self.emptyIndexValue, forKey: key)
-                }
-                for key in removedFieldKeys {
-                    try batch.deleteValue(forKey: key)
-                }
-                for key in addedFieldKeys {
-                    try batch.put(Self.emptyIndexValue, forKey: key)
-                }
-                if let updatedDocumentCount {
-                    try batch.put(updatedDocumentCount, forKey: MetaBrainKeyspace.searchDocumentCount)
-                }
-
-                for key in treeUpdate.removedKeys {
-                    try batch.deleteValue(forKey: key)
-                }
-
-                for record in treeUpdate.records {
-                    try batch.put(record.value, forKey: record.key)
-                }
-
-                if let removedPath {
-                    try batch.deleteValue(forKey: MetaBrainKeyspace.documentPath(removedPath))
-                }
-
-                for prunedVersion in prunedVersions {
-                    try batch.deleteValue(forKey: MetaBrainKeyspace.version(
-                        id: prunedVersion.documentID,
-                        sequence: prunedVersion.sequence
-                    ))
-                }
+                for key in edit.removals { try batch.deleteValue(forKey: key) }
+                for (key, value) in edit.puts { try batch.put(value, forKey: key) }
             }
         }
     }
@@ -1709,6 +1845,37 @@ public final class MetaBrainStore: Sendable {
         return entries
     }
 
+    private func operationTreeEdit(for documents: [StoredDocument]) async throws -> MetaBrainRecordEdit {
+        try await ensureTreeIndex()
+        let staged = Dictionary(uniqueKeysWithValues: documents.map { ($0.path, $0) })
+        let branches = Set(documents.flatMap { Self.treeBranchPaths(for: $0.path) })
+        let stagedDirectories = Set(branches.compactMap(\.parent))
+        try await requireCurrentTreeRecords(for: branches.sorted(), operation: "update document tree")
+
+        var edit = MetaBrainRecordEdit()
+        for path in branches {
+            let document: StoredDocument?
+            if let replacement = staged[path] {
+                document = replacement
+            } else if let id = try await documentID(forPath: path) {
+                document = try await documentRecord(id: id)?.document
+            } else {
+                document = nil
+            }
+
+            let hasChildren: Bool
+            if stagedDirectories.contains(path) {
+                hasChildren = true
+            } else {
+                hasChildren = try await pathHasStoredChildren(path, excluding: nil)
+            }
+            let key = MetaBrainKeyspace.tree(parentPath: path.parent!, name: path.name)
+            let row = MetaBrainTreeRecord(path: path, hasChildren: hasChildren, document: document)
+            edit.put(try compressedData(row), for: key)
+        }
+        return edit
+    }
+
     private func incrementalTreeUpdate(
         replacing document: StoredDocument,
         removedPath: DocumentPath?
@@ -1819,23 +1986,7 @@ public final class MetaBrainStore: Sendable {
             return true
         }
 
-        let prefix = MetaBrainKeyspace.documentPathDescendantPrefix(path)
-        for key in try await scanKeys(withPrefix: prefix) {
-            let rawPath = String(key.dropFirst(MetaBrainKeyspace.prefix(.documentPath).count))
-            guard let existingPath = try? DocumentPath(rawPath) else {
-                continue
-            }
-
-            if existingPath == removedPath {
-                continue
-            }
-
-            if existingPath != document.path {
-                return true
-            }
-        }
-
-        return false
+        return try await pathHasStoredChildren(path, excluding: removedPath)
     }
 
     private func treeRecordAfterDelete(
@@ -1852,7 +2003,7 @@ public final class MetaBrainStore: Sendable {
             documentAtPath = nil
         }
 
-        let hasChildren = try await pathHasChildrenAfterDelete(path, removing: document)
+        let hasChildren = try await pathHasStoredChildren(path, excluding: document.path)
         guard documentAtPath != nil || hasChildren else {
             return nil
         }
@@ -1860,9 +2011,9 @@ public final class MetaBrainStore: Sendable {
         return MetaBrainTreeRecord(path: path, hasChildren: hasChildren, document: documentAtPath)
     }
 
-    private func pathHasChildrenAfterDelete(
+    private func pathHasStoredChildren(
         _ path: DocumentPath,
-        removing document: StoredDocument
+        excluding removedPath: DocumentPath?
     ) async throws -> Bool {
         let prefix = MetaBrainKeyspace.documentPathDescendantPrefix(path)
         for key in try await scanKeys(withPrefix: prefix) {
@@ -1871,7 +2022,7 @@ public final class MetaBrainStore: Sendable {
                 continue
             }
 
-            if existingPath != document.path {
+            if existingPath != removedPath {
                 return true
             }
         }
@@ -1913,34 +2064,36 @@ public final class MetaBrainStore: Sendable {
     }
 
     private func refreshPathReferenceIndexes(for document: StoredDocument) async throws {
+        let edit = try await pathReferenceEdit(for: document)
+        if !edit.isEmpty {
+            try await commit(edit)
+        }
+    }
+
+    private func pathReferenceEdit(
+        for document: StoredDocument,
+        stagedIDs: [DocumentPath: DocumentID] = [:]
+    ) async throws -> MetaBrainRecordEdit {
+        var edit = MetaBrainRecordEdit()
         guard document.references.contains(where: { reference in
             if case .path = reference { true } else { false }
         }) else {
-            return
+            return edit
         }
 
         let sourceID = document.id
-        let resolvedIDs = try await resolvedReferenceIDs(from: document.references)
+        let resolvedIDs = try await resolvedReferenceIDs(from: document.references, stagedIDs: stagedIDs)
         let indexedIDs = try await Set(nativeOutboundReferences(from: sourceID))
-        guard resolvedIDs != indexedIDs else {
-            return
-        }
 
-        let removedIDs = indexedIDs.subtracting(resolvedIDs)
-        let addedIDs = resolvedIDs.subtracting(indexedIDs)
-        try await Self.mapLevelDBErrors(path: url.path) {
-            let records = try await currentRecords()
-            try await records.write { batch in
-                for targetID in removedIDs {
-                    try batch.deleteValue(forKey: MetaBrainKeyspace.outboundReference(sourceID: sourceID, targetID: targetID))
-                    try batch.deleteValue(forKey: MetaBrainKeyspace.inboundReference(targetID: targetID, sourceID: sourceID))
-                }
-                for targetID in addedIDs {
-                    try batch.put(Self.emptyIndexValue, forKey: MetaBrainKeyspace.outboundReference(sourceID: sourceID, targetID: targetID))
-                    try batch.put(Self.emptyIndexValue, forKey: MetaBrainKeyspace.inboundReference(targetID: targetID, sourceID: sourceID))
-                }
-            }
+        for targetID in indexedIDs.subtracting(resolvedIDs) {
+            edit.remove(MetaBrainKeyspace.outboundReference(sourceID: sourceID, targetID: targetID))
+            edit.remove(MetaBrainKeyspace.inboundReference(targetID: targetID, sourceID: sourceID))
         }
+        for targetID in resolvedIDs.subtracting(indexedIDs) {
+            edit.put(for: MetaBrainKeyspace.outboundReference(sourceID: sourceID, targetID: targetID))
+            edit.put(for: MetaBrainKeyspace.inboundReference(targetID: targetID, sourceID: sourceID))
+        }
+        return edit
     }
 
     private func staleBacklinkKeys(targetID: DocumentID) async throws -> [String] {
@@ -1959,7 +2112,8 @@ public final class MetaBrainStore: Sendable {
 
     private func currentIndexKeys(
         for document: StoredDocument,
-        chunks: [MetaBrainChunkRecord]
+        chunks: [MetaBrainChunkRecord],
+        stagedIDs: [DocumentPath: DocumentID] = [:]
     ) async throws -> [String] {
         var keys = Set<String>()
 
@@ -1969,7 +2123,7 @@ public final class MetaBrainStore: Sendable {
             }
         }
         keys.formUnion(MarkdownProperties.filterKeys(for: document))
-        for targetID in try await resolvedReferenceIDs(from: document.references) {
+        for targetID in try await resolvedReferenceIDs(from: document.references, stagedIDs: stagedIDs) {
             keys.insert(MetaBrainKeyspace.outboundReference(sourceID: document.id, targetID: targetID))
             keys.insert(MetaBrainKeyspace.inboundReference(targetID: targetID, sourceID: document.id))
         }
@@ -1977,7 +2131,10 @@ public final class MetaBrainStore: Sendable {
         return keys.sorted()
     }
 
-    private func resolvedReferenceIDs(from references: [DocumentReference]) async throws -> Set<DocumentID> {
+    private func resolvedReferenceIDs(
+        from references: [DocumentReference],
+        stagedIDs: [DocumentPath: DocumentID] = [:]
+    ) async throws -> Set<DocumentID> {
         var ids = Set<DocumentID>()
 
         for reference in references {
@@ -1985,7 +2142,9 @@ public final class MetaBrainStore: Sendable {
             case .documentID(let id):
                 ids.insert(id)
             case .path(let path):
-                if let id = try await documentID(forPath: path) {
+                if let id = stagedIDs[path] {
+                    ids.insert(id)
+                } else if let id = try await documentID(forPath: path) {
                     ids.insert(id)
                 }
             case .externalURL:
@@ -2556,6 +2715,15 @@ private actor MetaBrainIndexPreparation {
     }
 }
 
+private struct PreparedDocumentWrite: Sendable {
+    let record: MetaBrainDocumentRecord
+    let version: DocumentVersion
+    let entryMetadata: DocumentEntryMetadata
+    let previousRecord: MetaBrainDocumentRecord?
+    let removedPath: DocumentPath?
+    let prunedVersions: [DocumentVersion]
+}
+
 private enum EntryAccessMutation: Sendable {
     case fullWrite
     case patch
@@ -2864,7 +3032,7 @@ extension MetaBrainStore {
         let prefix = MetaBrainKeyspace.prefix(.documentID)
         var catalog: [MarkdownCitationHeader] = []
         var citations: [MarkdownCitation] = []
-        var edit = MarkdownCitationEdit()
+        var edit = MetaBrainRecordEdit()
         for key in try await scanKeys(withPrefix: prefix) {
             let id = try DocumentID(rawValue: String(key.dropFirst(prefix.count)))
             guard let document = try await documentRecord(id: id)?.document else { continue }
@@ -2903,27 +3071,61 @@ extension MetaBrainStore {
             try addCitation(resolved, to: &edit)
         }
         edit.put(layout, for: MetaBrainKeyspace.citationLayout)
-        try await Self.mapLevelDBErrors(path: url.path) { [edit] in
-            let records = try await currentRecords()
-            try await records.write { batch in
-                for key in edit.removals { try batch.deleteValue(forKey: key) }
-                for (key, value) in edit.puts { try batch.put(value, forKey: key) }
+        try await commit(edit)
+    }
+
+    private func operationCitationEdit(for writes: [PreparedDocumentWrite]) async throws -> MetaBrainRecordEdit {
+        try await ensureCitationIndex()
+        let documents = writes.map { $0.record.document }
+        let changedIDs = Set(documents.map(\.id))
+        let created = writes.filter { $0.previousRecord == nil }.map { $0.record.document }
+        let additions = MarkdownCitationCatalog(created.map { MarkdownCitationHeader(id: $0.id, path: $0.path) })
+        var edit = MetaBrainRecordEdit()
+        var pendingPrefixes: Set<String> = []
+        for document in created {
+            Self.insertCitationHeader(MarkdownCitationHeader(id: document.id, path: document.path), in: &edit)
+            pendingPrefixes.formUnion(MarkdownDestination.pendingPrefixes(changedBy: document.path))
+        }
+        var visited: Set<String> = []
+        for prefix in pendingPrefixes {
+            for citation in try await citationRecords(at: prefix, operation: "resolve Markdown citations")
+                where !changedIDs.contains(citation.sourceID) && visited.insert(citation.key).inserted {
+                edit.remove(citation)
+                try addCitation(try await resolveCitation(citation, additions: additions), to: &edit)
             }
         }
+
+        for write in writes {
+            let document = write.record.document
+            let old = try await previousCitations(for: write.previousRecord?.document)
+            for citation in old { edit.remove(citation) }
+            var citations = Self.markdownCitations(from: document)
+            MarkdownCitationBindings.preserve(from: old, in: &citations)
+            for citation in citations {
+                let resolved = if citation.targetID == nil {
+                    try await resolveCitation(citation, additions: additions)
+                } else {
+                    citation
+                }
+                try addCitation(resolved, to: &edit)
+            }
+        }
+        return edit
+    }
+
+    private func previousCitations(for document: StoredDocument?) async throws -> [MarkdownCitation] {
+        guard let document, document.isMarkdown else { return [] }
+        return try await outgoingCitationRecords(from: document.id, operation: "update Markdown citations")
     }
 
     private func citationEdit(
         replacing previous: StoredDocument?,
         with next: StoredDocument?
-    ) async throws -> MarkdownCitationEdit {
+    ) async throws -> MetaBrainRecordEdit {
         try await ensureCitationIndex()
-        guard let id = next?.id ?? previous?.id else { return MarkdownCitationEdit() }
-        let old = if previous?.isMarkdown == true {
-            try await outgoingCitationRecords(from: id, operation: "update Markdown citations")
-        } else {
-            [] as [MarkdownCitation]
-        }
-        var edit = MarkdownCitationEdit()
+        guard let id = next?.id ?? previous?.id else { return MetaBrainRecordEdit() }
+        let old = try await previousCitations(for: previous)
+        var edit = MetaBrainRecordEdit()
         for citation in old {
             edit.remove(citation)
         }
@@ -2985,7 +3187,7 @@ extension MetaBrainStore {
         }
     }
 
-    private static func insertCitationHeader(_ header: MarkdownCitationHeader, in edit: inout MarkdownCitationEdit) {
+    private static func insertCitationHeader(_ header: MarkdownCitationHeader, in edit: inout MetaBrainRecordEdit) {
         edit.put(Data(header.path.rawValue.utf8), for: MetaBrainKeyspace.citationPath(header.id))
         edit.put(for: citationNameKey(header.path, id: header.id))
     }
@@ -2994,7 +3196,7 @@ extension MetaBrainStore {
         MetaBrainKeyspace.citationNamePrefix(MarkdownDestination.wikiName(path.name)) + id.rawValue
     }
 
-    private func addCitation(_ citation: MarkdownCitation, to edit: inout MarkdownCitationEdit) throws {
+    private func addCitation(_ citation: MarkdownCitation, to edit: inout MetaBrainRecordEdit) throws {
         edit.put(try compressedData(citation), for: citation.key)
         for key in citation.secondaryKeys { edit.put(for: key) }
     }
@@ -3004,7 +3206,8 @@ extension MetaBrainStore {
         replacing oldPath: DocumentPath? = nil,
         with newPath: DocumentPath? = nil,
         id: DocumentID? = nil,
-        catalog: MarkdownCitationCatalog? = nil
+        catalog: MarkdownCitationCatalog? = nil,
+        additions: MarkdownCitationCatalog? = nil
     ) async throws -> MarkdownCitation {
         var citation = citation
         citation.candidates = []
@@ -3019,6 +3222,8 @@ extension MetaBrainStore {
         for path in destination.paths where citation.targetID == nil {
             if let catalog {
                 citation.targetID = catalog.id(for: path)
+            } else if let addedID = additions?.id(for: path) {
+                citation.targetID = addedID
             } else if path == newPath {
                 citation.targetID = id
             } else if path != oldPath {
@@ -3034,6 +3239,7 @@ extension MetaBrainStore {
                 matches = try await Set(scanKeys(withPrefix: prefix).map { key in
                     try DocumentID(rawValue: String(key.dropFirst(prefix.count)))
                 })
+                if let additions { matches.formUnion(additions.ids(named: name)) }
                 if let id, let oldPath, MarkdownDestination.wikiName(oldPath.name).utf8.elementsEqual(name.utf8) {
                     matches.remove(id)
                 }

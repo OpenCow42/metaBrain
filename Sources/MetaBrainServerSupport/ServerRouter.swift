@@ -107,6 +107,16 @@ public struct ServerRouter: Sendable {
             }
         case (_, "/v1/patch"):
             return methodNotAllowed(request, allowedMethod: "POST")
+        case (.post, "/v1/operation-inspect"):
+            return await routeStoreOperation(request) { storeServer in
+                try await storeServer.inspectOperation(decode(ProjectOperation.self, from: request))
+            }
+        case (.post, "/v1/operation-apply"):
+            return await routeStoreOperation(request) { storeServer in
+                try await storeServer.applyOperation(decode(OperationPreview.self, from: request))
+            }
+        case (_, "/v1/operation-inspect"), (_, "/v1/operation-apply"):
+            return methodNotAllowed(request, allowedMethod: "POST")
         case (.post, "/v1/move"):
             return await routeStoreOperation(request) { storeServer in
                 let decoded = try decode(ServerMoveRequest.self, from: request)
@@ -336,6 +346,13 @@ public struct ServerRouter: Sendable {
 
         if let patchError = error as? MetaBrainPatchError {
             return patchErrorResponse(patchError)
+        }
+
+        if case ProjectOperationError.conflict(let message) = error {
+            return jsonResponse(
+                statusCode: 409,
+                payload: ServerErrorPayload(error: "conflict", message: message)
+            )
         }
 
         if error as? ServerPassageError == .passageNotFound {

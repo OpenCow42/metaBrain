@@ -147,6 +147,14 @@ public actor MetaBrainStoreServer {
         return .patch(PatchOutput(document))
     }
 
+    public func inspectOperation(_ operation: ProjectOperation) async throws -> OperationPreview {
+        try await store.inspectOperation(operation)
+    }
+
+    public func applyOperation(_ preview: OperationPreview) async throws -> OperationReceipt {
+        try await store.applyOperation(preview)
+    }
+
     public func move(_ request: ServerMoveRequest) async throws -> MoveOutput {
         let result = try await store.moveDocument(
             request.documentReference(),

@@ -68,6 +68,7 @@ struct MetaBrainCommand: AsyncParsableCommand {
             EnsureGuide.self,
             Put.self,
             Patch.self,
+            Operation.self,
             Move.self,
             Get.self,
             Links.self,
@@ -91,7 +92,16 @@ struct MetaBrainCommand: AsyncParsableCommand {
 }
 
 struct StoreOptions: ParsableArguments {
-    static let defaultLoopbackServer = "http://127.0.0.1:\(ServerServeConfiguration.defaultLoopbackPort)"
+    static let defaultLoopbackServer: String = {
+        let defaultPort = ServerServeConfiguration.defaultLoopbackPort
+        #if METABRAIN_COVERAGE_SMOKE
+        let port = ProcessInfo.processInfo.environment["METABRAIN_COVERAGE_LOOPBACK_PORT"]
+            .flatMap(UInt16.init) ?? UInt16(defaultPort)
+        return "http://127.0.0.1:\(port)"
+        #else
+        return "http://127.0.0.1:\(defaultPort)"
+        #endif
+    }()
     static let autoProbeTimeoutMilliseconds = 50
     static let daemonRequestTimeoutMilliseconds = 30_000
 
@@ -154,11 +164,10 @@ struct StoreOptions: ParsableArguments {
                 return candidate
             }
             let parent = directory.deletingLastPathComponent()
-            if parent.path == directory.path {
-                return Self.workspaceStoreURL(in: currentDirectory)
-            }
+            guard parent.path != directory.path else { break }
             directory = parent
         }
+        return Self.workspaceStoreURL(in: currentDirectory)
     }
 
     private static func workspaceStoreURL(in directory: URL) -> URL {
@@ -562,6 +571,66 @@ extension MetaBrainCommand {
 
                 let document = try await store.patchDocument(request)
                 try printPatchOutput(PatchOutput(document), format: output.format)
+            }
+        }
+    }
+
+    struct Operation: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "operation",
+            abstract: "Inspect and apply reviewed project writes.",
+            subcommands: [Inspect.self, Apply.self]
+        )
+
+        @OptionGroup var storeOptions: StoreOptions
+
+        struct Inspect: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(
+                commandName: "inspect",
+                abstract: "Print a JSON preview without writing project documents."
+            )
+
+            @OptionGroup var storeOptions: StoreOptions
+            @Argument(help: "JSON file describing the project operation.")
+            var file: String
+
+            func run() async throws {
+                let data = try Data(contentsOf: URL.expandingShellPath(file, isDirectory: false))
+                let operation = try MetaBrainJSON.decoder().decode(ProjectOperation.self, from: data)
+                let preview: OperationPreview
+                if let client = try storeOptions.serverClient() {
+                    preview = try client.post("/v1/operation-inspect", request: operation)
+                } else {
+                    preview = try await storeOptions.withOpenStore { store in
+                        try await store.inspectOperation(operation)
+                    }
+                }
+                try printJSON(preview)
+            }
+        }
+
+        struct Apply: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(
+                commandName: "apply",
+                abstract: "Apply an inspected preview and print its JSON receipt."
+            )
+
+            @OptionGroup var storeOptions: StoreOptions
+            @Argument(help: "JSON preview returned by mb operation inspect.")
+            var file: String
+
+            func run() async throws {
+                let data = try Data(contentsOf: URL.expandingShellPath(file, isDirectory: false))
+                let preview = try MetaBrainJSON.decoder().decode(OperationPreview.self, from: data)
+                let receipt: OperationReceipt
+                if let client = try storeOptions.serverClient() {
+                    receipt = try client.post("/v1/operation-apply", request: preview)
+                } else {
+                    receipt = try await storeOptions.withOpenStore { store in
+                        try await store.applyOperation(preview)
+                    }
+                }
+                try printJSON(receipt)
             }
         }
     }
@@ -2028,6 +2097,7 @@ private let daemonBackedCommands: Set<String> = [
     "ensure-guide",
     "put",
     "patch",
+    "operation",
     "move",
     "get",
     "links",

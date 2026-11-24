@@ -208,6 +208,31 @@ mb help dump
 
 ## Commands
 
+### Commit related notes together
+
+Create an operation file such as `operation.json` with a fresh UUID for each logical change. Each document is a full replacement with the same field semantics as `put`. The project is a virtual directory below the store root. All document paths must be unique descendants of it.
+
+```json
+{
+  "operationID": "a744f24c-317e-4e89-a1d4-cff18c642a54",
+  "project": {"rawValue": "/projects/atlas"},
+  "documents": [
+    {"path": {"rawValue": "/projects/atlas/review.md"}, "body": "Support offline work. ^offline", "tags": [], "metadata": {}, "references": []},
+    {"path": {"rawValue": "/projects/atlas/decision.md"}, "body": "See [[/projects/atlas/review.md#^offline]].", "tags": [], "metadata": {}, "references": []}
+  ]
+}
+```
+
+```sh
+mb operation inspect operation.json > preview.json
+cat preview.json
+mb operation apply preview.json
+```
+
+Inspection records the canonical store path, store identity, expected document IDs and versions, and a SHA-256 digest. Apply uses the reviewed file. Changed targets cause a conflict before any proposed note is written. After a lost response, submit the **same preview** to recover the committed receipt, even if the documents have since changed. The CLI reads these files locally in either connection mode.
+
+### Command list
+
 - `version` prints the current release tag, probes the default local daemon, and
   checks GitHub for newer releases.
 - `init` creates a store with `/AGENTS.md` by default or opens an existing store.
@@ -585,6 +610,8 @@ swift build
 swift test
 git diff --check
 ```
+
+Run `bash Scripts/check-coverage.sh` to verify line coverage in each of the four Swift targets. The default target is 100%. For an explicitly agreed exception, `--minimum 95` sets a per-target floor for that run. The report includes every missed line count.
 
 The project also has deeper coverage, smoke-test, fuzzing, benchmark, and
 release workflows for maintainers. Maintainer smoke tests use `ripgrep`. See

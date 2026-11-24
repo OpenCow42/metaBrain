@@ -195,7 +195,7 @@ extension DocumentPath {
     var hasMarkdownExtension: Bool { name.lowercased().hasSuffix(".md") }
 }
 
-public enum DocumentWriteStatus: String, Sendable {
+public enum DocumentWriteStatus: String, Codable, Sendable {
     case created
     case updated
     case unchanged
