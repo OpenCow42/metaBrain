@@ -230,6 +230,7 @@ assert_remove_version_json() {
 "${METABRAIN[@]}" help | rg -q 'mb help recall'
 "${METABRAIN[@]}" man | rg -F -q 'mb get /AGENTS.md'
 "${METABRAIN[@]}" man search | rg -F -q 'mb get /AGENTS.md'
+"${METABRAIN[@]}" help ensure-guide | rg -F -q 'default /AGENTS.md'
 "${METABRAIN[@]}" help | rg -q 'mb help list'
 "${METABRAIN[@]}" help | rg -q 'mb help tree'
 "${METABRAIN[@]}" help | rg -q 'mb help dump'
@@ -632,6 +633,7 @@ PYRECALL
 }
 
 check_recall "$TMP_DIR/recall-direct/store.leveldb" "${METABRAIN[@]}" --no-server
+python3 Tests/MetaBrainCLITests/citation-search.py "$TMP_DIR/citations-direct/store.leveldb" "${METABRAIN[@]}" --no-server
 
 INIT_DEFAULT_JSON="$("${METABRAIN[@]}" init --store "$STORE" --empty)"
 EXPECTED_INIT_JSON="{\"operation\":\"init\",\"status\":\"initialized\",\"storePath\":\"$STORE\"}"
@@ -1331,6 +1333,7 @@ server_mb() {
 check_guarded_put "$TMP_DIR/guarded-daemon/store.leveldb" "${METABRAIN[@]}" --server "$SERVER_SOCKET"
 
 check_recall "$TMP_DIR/recall-daemon/store.leveldb" "${METABRAIN[@]}" --server "$SERVER_SOCKET"
+python3 Tests/MetaBrainCLITests/citation-search.py "$TMP_DIR/citations-daemon/store.leveldb" "${METABRAIN[@]}" --server "$SERVER_SOCKET"
 
 SERVER_INIT_JSON="$(server_mb init)"
 SERVER_EXPECTED_INIT_JSON="{\"operation\":\"init\",\"status\":\"initialized\",\"storePath\":\"$SERVER_STORE\"}"
