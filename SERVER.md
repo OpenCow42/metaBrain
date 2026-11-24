@@ -1,7 +1,9 @@
-# metaBrain Server Plan
+# metaBrain Server
 
-This document specifies a future local `metaBrain` server/daemon. The work is
-planned for `feat/server`.
+`mbd` is the local metaBrain daemon. See the [README](README.md#daemon) for
+current CLI usage and [Architecture](ARCHITECTURE.md#process-model) for the
+process model. This document records the API and the original design plan.
+Sections on goals, implementation order, and distribution describe that plan.
 
 The goal is to keep the existing architecture intact while removing the current
 multi-process LevelDB lock problem for agents and tools. LevelDB supports
@@ -133,18 +135,14 @@ The daemon should close the store on SIGINT and SIGTERM.
 
 ## CLI Relationship
 
-The existing `mb` CLI should continue to work directly against LevelDB for
-simple one-shot use.
-
-After the daemon exists, add optional client behavior in a separate slice:
+By default, `mb` probes `http://127.0.0.1:6374` and sends store operations to a
+healthy daemon there. Otherwise it opens the selected store directly. Use
+`--no-server` for a direct open or `--server` to select a daemon explicitly.
 
 ```bash
 mb --server .metabrain/mbd.sock put /notes/today "..."
 mb --server .metabrain/mbd.sock search "..."
 ```
-
-Do not make the CLI silently switch to daemon mode until the socket discovery,
-error model, and compatibility behavior are documented and tested.
 
 ## Transports
 
@@ -313,16 +311,24 @@ document can return `document_not_found`.
   `ensure-guide` and status `created` or `unchanged`.
 - `POST /v1/put-markdown` explicitly enables Markdown on a put, including for
   extensionless paths. The request wraps ordinary put fields in `document` and
-  optionally accepts a top-level `ifVersion`. Existing `.md` writes use the normal put route.
+  optionally accepts a top-level `ifVersion`. Ordinary `.md` puts already
+  enable Markdown through the normal put route.
 - `POST /v1/links` takes a document reference and optional `direction`
-  (`incoming` or `outgoing`) and `block`. It returns one entry per citation.
-- `POST /v1/get-passage` takes a document reference, a `block` or `heading`,
-  and an optional retained `version`.
-- `POST /v1/search-evidence` accepts search filters, a `view` of `refs` or
-  `evidence`, and an optional `maxTokens`. Filter-only requests use `refs`.
+  (`incoming` or `outgoing`, the default) and `block`. The block filter matches
+  the cited block for incoming links and the source block for outgoing links.
+  Each occurrence includes its source revision and character offsets, target
+  details when available, and a resolution status.
+- `POST /v1/get-passage` takes a document reference, exactly one of `block` or
+  `heading`, and an optional retained `version`. It uses the current revision
+  by default.
+- `POST /v1/search-evidence` accepts `query`, `pathPrefix`, `tags`, `metadata`,
+  `limit`, a required `view` of `refs` or `evidence`, and optional `maxTokens`.
+  Filter-only requests require `refs`.
 - `POST /v1/get-ref` expands a versioned `ref`, with optional `context`
-  (`section`) and `maxTokens`. Its compact JSON envelope matches search
-  evidence. The budget includes JSON framing and the CLI's final line feed.
+  (`section`) and `maxTokens`. The cited revision must still be retained.
+  Both evidence routes return compact JSON with `items` and `truncated`. Each
+  item has `path` and `ref`, plus `text` when returning passages. The budget
+  counts UTF-8 bytes including JSON framing and the CLI's final line feed.
 
 ### Request Shapes
 
@@ -674,7 +680,7 @@ When `feat/server` changes command flow or store scan patterns, update:
 - `RELEASING.md` for packaging changes.
 - `SERVER.md` as implementation decisions settle.
 
-## Implementation Order
+## Original Implementation Order
 
 1. Add shared DTOs and output encoders without changing CLI behavior.
 2. Add `MetaBrainServerSupport` and a router with `/health` only.

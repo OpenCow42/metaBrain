@@ -17,7 +17,18 @@ operates on a local metaBrain store directly or through the
 daemon.
 Read the selected store's own agent manual with
 .Cm mb get /AGENTS.md .
-It describes efficient retrieval, citations, and local instructions.
+Start with a scoped search.
+Use
+.Fl Fl view Cm refs
+to choose documents or
+.Fl Fl view Cm evidence
+to find verbatim passages.
+Use
+.Cm mb get Fl Fl ref
+to verify the passage in its retained revision before citing it.
+Use
+.Cm mb links
+to inspect Markdown citations to current documents.
 A newly initialized store includes this document by default.
 Run
 .Cm mb ensure-guide
@@ -50,5 +61,7 @@ Default store discovered in the working directory or its ancestors.
 mb search --tag storage --view refs --limit 5
 mb search "nightly backups" --view evidence --max-tokens 512
 mb get --ref "$ref" --context section --max-tokens 1024
+mb links /decisions/backups.md
 mb links /policies/Retention.md --incoming --block keep-last
+mb get /policies/Retention.md --block keep-last
 .Ed
