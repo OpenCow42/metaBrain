@@ -145,33 +145,11 @@ struct MetaBrainRecallCandidate: Sendable {
     }
 
     private static func strongestMatch(in text: String, weights: [String: Double]) -> Range<Int>? {
-        var token = ""
-        var tokenStart = 0
-        var tokenEnd = 0
-        var best: Range<Int>?
-        var bestWeight = -Double.infinity
-
-        func finishToken() {
-            if let weight = weights[token.lowercased()], weight > bestWeight {
-                best = tokenStart..<tokenEnd
-                bestWeight = weight
-            }
-            token.removeAll(keepingCapacity: true)
+        var best: MetaBrainSearchMatch?
+        MetaBrainSearchMatch.forEach(in: text, weights: weights) { match in
+            if match.weight > (best?.weight ?? -.infinity) { best = match }
         }
-
-        for (offset, character) in text.enumerated() {
-            for scalar in character.unicodeScalars {
-                if CharacterSet.alphanumerics.contains(scalar) {
-                    if token.isEmpty { tokenStart = offset }
-                    tokenEnd = offset + 1
-                    token.unicodeScalars.append(scalar)
-                } else if !token.isEmpty {
-                    finishToken()
-                }
-            }
-        }
-        if !token.isEmpty { finishToken() }
-        return best
+        return best?.range
     }
 
     private static func window(around anchor: Range<Int>, within length: Int, width: Int) -> Range<Int> {

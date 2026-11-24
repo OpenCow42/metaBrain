@@ -6,6 +6,37 @@ struct MetaBrainRankedPassage: Sendable {
     let score: Double
 }
 
+struct MetaBrainSearchMatch {
+    let range: Range<Int>
+    let weight: Double
+
+    static func forEach(in text: String, weights: [String: Double], visit: (Self) -> Void) {
+        var token = ""
+        var start = 0
+        var end = 0
+
+        func finishToken() {
+            if let weight = weights[token.lowercased()] {
+                visit(Self(range: start..<end, weight: weight))
+            }
+            token.removeAll(keepingCapacity: true)
+        }
+
+        for (offset, character) in text.enumerated() {
+            for scalar in character.unicodeScalars {
+                if CharacterSet.alphanumerics.contains(scalar) {
+                    if token.isEmpty { start = offset }
+                    end = offset + 1
+                    token.unicodeScalars.append(scalar)
+                } else if !token.isEmpty {
+                    finishToken()
+                }
+            }
+        }
+        if !token.isEmpty { finishToken() }
+    }
+}
+
 struct MetaBrainSearchRanking: Sendable {
     let terms: [String]
     let weights: [String: Double]

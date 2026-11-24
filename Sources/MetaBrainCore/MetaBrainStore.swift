@@ -543,6 +543,61 @@ public final class MetaBrainStore: Sendable {
         return try MetaBrainRecallCandidate.select(candidates, limit: query.limit, maxBytes: maxBytes)
     }
 
+    /// Returns versioned references and optional verbatim excerpts under a serialized output budget.
+    /// The budget includes the final line feed. The query limit counts distinct documents.
+    /// A refs query with only filters returns one whole-body reference for each matching document.
+    public func searchEvidence(
+        _ query: SearchQuery,
+        view: EvidenceSearchView,
+        maxTokens: Int = EvidenceOutput.defaultMaxTokens
+    ) async throws -> EvidenceOutput {
+        guard maxTokens >= EvidenceOutput.minimumMaxTokens else { throw EvidenceError.invalidTokenBudget(maxTokens) }
+        guard query.limit > 0 else { throw EvidenceError.invalidDocumentLimit(query.limit) }
+
+        let terms = Set(Self.tokenize(query.text)).sorted()
+        let candidates: [EvidenceSearchCandidate]
+        if query.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            guard query.pathPrefix != nil || !query.tags.isEmpty || !query.metadata.isEmpty else {
+                throw EvidenceError.missingTextOrFilters
+            }
+            guard view == .refs else { throw EvidenceError.filterOnlyRequiresRefs }
+            candidates = try await writes.run { try await self.filterOnlyEvidenceCandidates(for: query) }
+        } else if terms.isEmpty {
+            candidates = []
+        } else {
+            candidates = try await writes.run {
+                var candidates: [EvidenceSearchCandidate] = []
+                try await self.forEachRankedSearchDocument(query, terms: terms) { document, _, passages, weights in
+                    candidates.append(EvidenceSearchCandidate(document: document, passages: passages, weights: weights, view: view))
+                }
+                return candidates
+            }
+        }
+        return try EvidenceSearchCandidate.select(candidates, limit: query.limit, maxTokens: maxTokens)
+    }
+
+    private func filterOnlyEvidenceCandidates(for query: SearchQuery) async throws -> [EvidenceSearchCandidate] {
+        var ids: Set<DocumentID>
+        if let indexed = try await filteredDocumentIDs(for: query) {
+            ids = indexed
+        } else if let path = query.pathPrefix {
+            let descendants = try await listDirectory(path: path, recursive: true)
+            ids = Set(descendants.compactMap(\.documentID))
+            if let id = try await documentID(forPath: path) { ids.insert(id) }
+        } else {
+            return []
+        }
+
+        var candidates: [EvidenceSearchCandidate] = []
+        for id in ids {
+            guard let document = try await documentRecord(id: id)?.document,
+                  Self.path(document.path, matchesPrefix: query.pathPrefix) else { continue }
+            let ref = EvidenceReference(document: document, location: .range(0..<document.body.count))
+            candidates.append(EvidenceSearchCandidate(document: document, reference: ref))
+        }
+        return candidates
+    }
+
     private func forEachRankedSearchDocument(
         _ query: SearchQuery,
         terms queryTerms: [String],
