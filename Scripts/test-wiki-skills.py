@@ -255,6 +255,162 @@ class SkillsTest(unittest.TestCase):
         return {item["path"]: self.mb(cli, "get", item["path"]) for item in
                 self.mb(cli, "list", root, "--recursive", "--format", "json") if "documentID" in item}
 
+    def skill_script(self, skill, script, *args, stdin=None, check=True):
+        result = subprocess.run(
+            [sys.executable, str(REPO / "skills" / ("metabrain-wiki-" + skill) / "scripts" / script),
+             *map(str, args)], input=stdin, capture_output=True, text=True,
+        )
+        if not check:
+            return result
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_lint_repeated_and_separate_selected_repair(self):
+        info, common = self.fixture("initialized")
+        cli = [*common, "--no-server"]
+        root = info["project"]
+        path = root + "/audit.md"
+        index = root + "/index.md"
+        missing = root + "/gone.md"
+        self.mb(cli, "put", path,
+                "## Empty\n<!--\n# Ignored HTML heading\n-->\n%%\n# Ignored wiki heading\n%%\n"
+                "## Code only\n~~~sh\n# Literal code\n~~~\n"
+                "## Present\nText.\n", "--if-version", "0")
+        yaml = root + "/titled.md"
+        self.mb(cli, "put", "--if-version", "0", "--", yaml, "---\ntitle: YAML title\n---\nUseful text.\n")
+        index_note = self.mb(cli, "get", index)
+        self.mb(cli, "put", "--body-only", "--if-version", index_note["version"], index,
+                index_note["body"] + f"\n- [[{missing}]]\n- [[{path}#missing]]\n"
+                f"- [[{info['decoy']}/review.md]]\n")
+        before = self.project_snapshot(cli, root)
+        args = ("--mb", MB, "--store", info["store"], "--no-server", "--project", root)
+        report = self.skill_script("lint", "lint.py", *args)
+        self.assertEqual(self.skill_script("lint", "lint.py", *args), report)
+        self.assertEqual(report["native"], self.mb(cli, "lint", root, "--orphans"))
+        self.assertEqual({item["link"]["destination"] for item in report["wikiFindings"]
+                          if item["kind"] == "staleIndexEntry"}, {missing, path + "#missing"})
+        self.assertEqual([(item["heading"], item["line"]) for item in report["wikiFindings"]
+                          if item["sourcePath"] == path and item["kind"] == "emptySection"], [("Empty", 1)])
+        self.assertEqual([item["property"] for item in report["wikiFindings"]
+                          if item["sourcePath"] == path and item["kind"] == "missingWikiProperty"], ["title"])
+        self.assertFalse(any(item["sourcePath"] == yaml and item["kind"] == "missingWikiProperty"
+                             for item in report["wikiFindings"]))
+        self.assertEqual(self.project_snapshot(cli, root), before)
+
+        operation_id = str(uuid.uuid4())
+        _, observed, record = self.navigation(cli, root, operation_id, index, "Repair index reference")
+        recent = root + "/_wiki/recent.md"
+        proposed = [
+            self.proposed_note(index, before[index]["body"].replace(f"[[{missing}]]", f"[[{path}]]"), before[index]),
+            self.proposed_note(recent, before[recent]["body"] + f"\n- [[{record}]]\n", before[recent]),
+            self.proposed_note(record, f"# Repair index reference\n\nCorrected one stale entry in [[{index}]].\n"),
+        ]
+        preview = self.inspect_operation(cli, root, operation_id, proposed)
+        self.assert_observed_targets(preview, observed)
+        self.assertEqual(self.project_snapshot(cli, root), before)
+        self.apply_preview(cli, preview)
+        remaining = self.skill_script("lint", "lint.py", *args)["wikiFindings"]
+        self.assertEqual({item["link"]["destination"] for item in remaining
+                          if item["kind"] == "staleIndexEntry"}, {path + "#missing"})
+        self.assertEqual(self.mb(cli, "get", path), before[path])
+
+    def test_mode_suggestion_and_reviewed_config_change(self):
+        info, common = self.fixture("initialized")
+        cli = [*common, "--no-server"]
+        root = info["project"]
+        config_path = root + "/_wiki/config.json"
+        extra = {"version": 1, "mode": "generic", "policy": {"owner": "research"}}
+        self.mb(cli, "put", config_path, json.dumps(extra), "--if-version", "1")
+        before = self.project_snapshot(cli, root)
+        options = ("--project", root, "--slug", "offline-storage", "--kind", "concept")
+
+        def suggest(config, *arguments, check=True):
+            return self.skill_script("mode", "suggest.py", *options, "--config-stdin", *arguments,
+                                     stdin=config, check=check)
+
+        old = suggest(before[config_path]["body"])
+        self.assertEqual(old, {"mode": "generic", "path": root + "/concepts/offline-storage.md"})
+        self.assertEqual(self.skill_script("mode", "suggest.py", *options, "--absent-config"), old)
+        for invalid in ('{"version":1,"mode":"unknown"}', '{"version":true,"mode":"generic"}', "broken"):
+            self.assertNotEqual(suggest(invalid, check=False).returncode, 0)
+        lyt = suggest('{"version":1,"mode":"lyt"}')
+        self.assertEqual(lyt["path"], root + "/notes/offline-storage.md")
+        zettels = [suggest('{"version":1,"mode":"zettelkasten"}')["path"] for _ in range(2)]
+        self.assertNotEqual(*zettels)
+        self.assertRegex(zettels[0], r"/zettels/\d{8}T\d{12}Z-[0-9a-f]{32}-offline-storage\.md$")
+
+        operation_id = str(uuid.uuid4())
+        recent = root + "/_wiki/recent.md"
+        record = root + "/_wiki/operations/" + operation_id + ".md"
+        replacement = {**extra, "mode": "para"}
+        documents = [
+            self.proposed_note(config_path, json.dumps(replacement), before[config_path]),
+            self.proposed_note(recent, before[recent]["body"] + f"\n- [[{record}]]\n", before[recent]),
+            self.proposed_note(record, f"# Change filing mode\n\nFrom generic to para in [[{config_path}]].\n"),
+        ]
+        observations = {config_path: before[config_path], recent: before[recent], record: None}
+        preview = self.inspect_operation(cli, root, operation_id, documents)
+        self.assert_observed_targets(preview, observations)
+        self.assertEqual(self.project_snapshot(cli, root), before)
+        self.apply_preview(cli, preview)
+        after = self.project_snapshot(cli, root)
+        self.assertEqual(json.loads(after[config_path]["body"]), replacement)
+        self.assertEqual(suggest(after[config_path]["body"], "--actionability", "resource"),
+                         {"mode": "para", "path": root + "/resources/offline-storage.md"})
+        self.assertEqual(set(after) - set(before), {record})
+        self.assertEqual({path: after[path] for path in before if path not in observations},
+                         {path: before[path] for path in before if path not in observations})
+
+    def test_fold_bounded_selection_idempotence_and_raw_versions(self):
+        info, common = self.fixture("initialized")
+        cli = [*common, "--no-server"]
+        root = info["project"]
+        args = ("--mb", MB, "--store", info["store"], "--no-server", "--project", root)
+
+        def fold(*bounds, check=True):
+            return self.skill_script("fold", "select-fold.py", *args, *bounds, check=check)
+
+        before = self.project_snapshot(cli, root)
+        default = fold()
+        self.assertEqual((default["state"], default["shortfall"]), ("shortfall", 15))
+        raw = default["entries"][0]["path"]
+        bounds = ("--from", raw, "--through", raw)
+        selected = fold(*bounds)
+        self.assertEqual(selected["state"], "new")
+        self.assertEqual(json.loads(selected["sources"]), [[before[raw]["documentID"], before[raw]["version"]]])
+        self.assertEqual(selected["digest"], hashlib.sha256(selected["sources"].encode()).hexdigest())
+        source = self.mb(cli, "get", "--id", before[raw]["documentID"], "--version", before[raw]["version"])
+        self.assertEqual(source["body"], selected["entries"][0]["body"])
+
+        destination, digest = selected["path"], selected["digest"]
+        operation_id = str(uuid.uuid4())
+        navigation, observed, record = self.navigation(cli, root, operation_id, destination, "Fold")
+        citation = f"[[{raw}]] at `{source['documentID']}` version {source['version']}"
+        navigation[-1]["metadata"] = {"wiki-operation": "fold", "wiki-fold": digest}
+        navigation[-1]["body"] += f"\nSource: {citation}\n"
+        summary = self.proposed_note(destination, f"# Fold\n\nSeeded the fixture.\n\n- {citation}\n",
+                                     metadata={"wiki-fold": digest, "wiki-fold-sources": selected["sources"]})
+        observed[destination] = None
+        preview = self.inspect_operation(cli, root, operation_id, [summary, *navigation])
+        self.assert_observed_targets(preview, observed)
+        self.assertNotIn(raw, observed)
+        self.assertEqual(self.project_snapshot(cli, root), before)
+        receipt = self.apply_preview(cli, preview)
+        self.assertEqual(self.apply_preview(cli, preview), receipt)
+        after = self.project_snapshot(cli, root)
+        repeated = fold(*bounds)
+        self.assertEqual((repeated["state"], repeated["path"], repeated["records"]),
+                         ("complete", destination, [record]))
+        self.assertEqual(fold(), default)
+        self.assertNotEqual(fold("--from", record, "--through", record, check=False).returncode, 0)
+        self.assertEqual(self.project_snapshot(cli, root), after)
+        self.assertEqual(after[raw], before[raw])
+        self.assertEqual(set(after) - set(before), {destination, record})
+        self.assertIn(citation, after[destination]["body"])
+        recent = root + "/_wiki/recent.md"
+        self.mb(cli, "put", "--body-only", "--if-version", after[recent]["version"], recent, before[recent]["body"])
+        self.assertEqual(fold(*bounds)["state"], "conflict")
+
     def test_ingest_conflicting_reviews_and_identical_replay(self):
         info, common = self.fixture("empty")
         cli = [*common, "--no-server"]

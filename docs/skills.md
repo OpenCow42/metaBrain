@@ -7,6 +7,9 @@
 | `metabrain-wiki-ingest` | Capture supplied originals and relate their evidence to project claims. |
 | `metabrain-wiki-retrieve` | Return ranked passages and versioned references under a budget. |
 | `metabrain-wiki-query` | Answer from the selected project at Quick, Standard, or Deep depth. |
+| `metabrain-wiki-lint` | Audit links, evidence, note properties, sections, and navigation. |
+| `metabrain-wiki-mode` | Suggest a destination or change the filing mode for future notes. |
+| `metabrain-wiki-fold` | Summarize a bounded range of past operations with versioned sources. |
 | `metabrain-save` | Preserve the selected answer or insight with its evidence. |
 
 See the [delivery plan](second-brain-plan.md) for the remaining workflow.
@@ -45,6 +48,12 @@ For read-only evidence, invoke the CLI skill and specify the same store and proj
 - **Retrieve** asks for terms, optional filters, and a budget. Native BM25 ranks lexical matches under the selected project. Results include paths, versioned references, and truncation status. The budget counts serialized UTF-8 bytes. Explicit references are reopened and checked against the project before their passages are returned. [Evidence reads](../README.md#find-and-reopen-evidence)
 - **Query** answers from the local project. Quick verifies direct evidence, Standard also searches related notes and link neighbors, and Deep probes competing evidence, distinct sources, and gaps. Answers show disagreements and cite retained passages. These reads leave project notes and the operation log untouched.
 - **Save** takes the exact answer or excerpt the user selected. It looks for an existing home, preserves the selected wording and evidence, and previews the note and navigation changes together. Applying the preview requires authorization. [Reviewed project operations](../README.md#commit-related-notes-together)
+
+## Maintain a project wiki
+
+- **Lint** runs native link, anchor, orphan, and claim-evidence checks, plus checks for missing wiki properties, empty sections, and unresolved links in known navigation documents. The report is read-only. Request a specific repair to preview it as a separate operation. [Lint skill](../skills/metabrain-wiki-lint/SKILL.md)
+- **Mode** suggests paths under Generic, LYT, PARA, or Zettelkasten. Generic is the default when config is absent. Review the old and new config and activity entries to change the mode. Existing notes keep their paths. [Mode skill](../skills/metabrain-wiki-mode/SKILL.md)
+- **Fold** defaults to the latest 16 raw operation entries. If fewer are available, it reports the shortfall without drafting a fold. You can specify a shorter inclusive range. The summary cites each source revision and gets a path derived from those revisions. Repeating a completed fold leaves it as-is. The index, recent activity, and a single new log entry accompany the summary in the reviewed operation. [Fold skill](../skills/metabrain-wiki-fold/SKILL.md)
 
 ## Try the disposable fixture
 

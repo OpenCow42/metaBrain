@@ -26,6 +26,9 @@ Use this skill for setup. Check the active host's available skills before handin
 - `metabrain-wiki-ingest` for supplied originals and claim evidence.
 - `metabrain-wiki-query` for an answer grounded in the selected project.
 - `metabrain-wiki-retrieve` for ranked passages and versioned references.
+- `metabrain-wiki-lint` for an audit or a selected repair.
+- `metabrain-wiki-mode` for a filing suggestion or a reviewed change to the filing mode.
+- `metabrain-wiki-fold` for a summary of raw operation-log entries.
 - `metabrain-save` for preserving the user's selected answer or insight.
 
 If the requested skill is unavailable, say so and identify any supported local read that matches the request.

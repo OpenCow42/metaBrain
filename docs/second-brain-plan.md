@@ -4,7 +4,7 @@
 
 ## Engineering status
 
-The core, CLI, and daemon support reviewed atomic writes, recovery of original file bytes, and claims with evidence pinned to retained revisions. MetaBrainExplorer can show the cited passage, open the source at its current path, and export the captured original. The dual-host installer ships wiki setup, CLI navigation, ingest, query, retrieval, and save. The remaining skills and the board and saved-table previews are planned. [Project wiki skills](skills.md) · [CLI workflows](../README.md#capture-and-recover-an-original-file) · [Worked decision example](claim-evidence.md)
+The core, CLI, and daemon support reviewed atomic writes, recovery of original file bytes, and claims with evidence pinned to retained revisions. MetaBrainExplorer can show the cited passage, open the source at its current path, and export the captured original. The dual-host installer ships wiki setup, CLI navigation, ingest, query, retrieval, save, lint, filing modes, and log folds. The remaining skills and the board and saved-table previews are planned. [Project wiki skills](skills.md) · [CLI workflows](../README.md#capture-and-recover-an-original-file) · [Worked decision example](claim-evidence.md)
 
 ## The first release scenario
 
