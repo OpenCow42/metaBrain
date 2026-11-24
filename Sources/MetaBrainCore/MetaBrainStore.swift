@@ -49,6 +49,8 @@ public enum MetaBrainStoreError: Error, Equatable, Sendable, CustomStringConvert
     case openFailed(path: String, message: String)
     case operationFailed(message: String)
     case documentNotFound(String)
+    case documentVersionNotFound(reference: String, version: UInt64)
+    case invalidDocumentVersion(UInt64)
     case pathAlreadyExists(DocumentPath, existingID: DocumentID)
     case documentVersionConflict(DocumentPath, expected: UInt64, actual: UInt64?)
     case documentVersionExhausted(DocumentPath)
@@ -67,6 +69,10 @@ public enum MetaBrainStoreError: Error, Equatable, Sendable, CustomStringConvert
             "LevelDB operation failed: \(message)"
         case .documentNotFound(let reference):
             "Document not found: \(reference)."
+        case .documentVersionNotFound(let reference, let version):
+            "Document version \(version) not found for \(reference). Check the document reference and retained versions."
+        case .invalidDocumentVersion(let version):
+            "Document version must be greater than zero, got \(version)."
         case .pathAlreadyExists(let path, let existingID):
             "Document path \(path.rawValue) already points to document \(existingID.rawValue)."
         case .documentVersionConflict(let path, let expected, let actual):
@@ -308,6 +314,42 @@ public final class MetaBrainStore: Sendable {
         return entry?.document
     }
 
+    /// Reads a retained revision without incrementing the document's read count.
+    /// A path resolves through the current index. Use the document ID to read revisions after a move.
+    /// The result uses the revision path, content, version, and update date. It preserves the original creation date.
+    /// An unavailable revision returns nil. A version of zero throws `MetaBrainStoreError.invalidDocumentVersion`.
+    public func getDocument(
+        _ reference: DocumentReference,
+        version: UInt64
+    ) async throws -> StoredDocument? {
+        guard version > 0 else { throw MetaBrainStoreError.invalidDocumentVersion(version) }
+
+        return try await writes.run {
+            guard let id = try await self.documentID(for: reference),
+                  let revision = try await self.compressedRecord(
+                      forKey: MetaBrainKeyspace.version(id: id, sequence: version),
+                      as: DocumentVersion.self
+                  ),
+                  let current = try await self.documentRecord(id: id) else {
+                return nil as StoredDocument?
+            }
+
+            let snapshot = revision.snapshot
+            return StoredDocument(
+                id: id,
+                path: snapshot.path,
+                title: snapshot.title,
+                body: snapshot.body,
+                tags: snapshot.tags,
+                metadata: snapshot.metadata,
+                references: snapshot.references,
+                currentVersion: revision.sequence,
+                createdAt: current.document.createdAt,
+                updatedAt: revision.createdAt
+            )
+        }
+    }
+
     public func getDocumentEntry(
         _ reference: DocumentReference,
         trackingRead: Bool = true
@@ -450,9 +492,63 @@ public final class MetaBrainStore: Sendable {
             return []
         }
 
+        var topCandidates = MetaBrainSearchTopCandidates(limit: query.limit)
+        try await forEachRankedSearchDocument(query, terms: queryTerms) { document, chunks, passages, _ in
+            for passage in passages {
+                let chunk = passage.chunk
+                topCandidates.insert(MetaBrainRankedSearchCandidate(
+                    documentID: document.id,
+                    path: document.path,
+                    title: document.title,
+                    chunkOrdinal: chunk.ordinal,
+                    snippet: chunk.text.isEmpty ? document.title ?? document.path.rawValue : chunk.text,
+                    context: Self.contextChunks(around: chunk.ordinal, in: chunks),
+                    score: passage.score
+                ))
+            }
+        }
+        return try await searchResults(from: topCandidates.sortedCandidates(), query: query)
+    }
+
+    /// Returns current document citations and compact body passages within a JSON UTF-8 byte budget.
+    /// The budget includes a trailing newline and the query limit counts distinct documents.
+    public func recall(_ query: SearchQuery, maxBytes: Int = RecallResult.defaultMaxBytes) async throws -> [RecallResult] {
+        guard maxBytes >= RecallResult.minimumMaxBytes else {
+            throw RecallError.invalidByteBudget(maxBytes)
+        }
+        guard query.limit > 0 else {
+            throw RecallError.invalidDocumentLimit(query.limit)
+        }
+        let terms = Set(Self.tokenize(query.text)).sorted()
+        guard !terms.isEmpty, maxBytes > RecallResult.minimumMaxBytes else {
+            return []
+        }
+
+        let candidates = try await writes.run {
+            var candidates: [MetaBrainRecallCandidate] = []
+            try await self.forEachRankedSearchDocument(query, terms: terms) { document, _, passages, weights in
+                if let candidate = try MetaBrainRecallCandidate(
+                    document: document,
+                    passages: passages,
+                    weights: weights,
+                    maxBytes: maxBytes
+                ) {
+                    candidates.append(candidate)
+                }
+            }
+            return candidates
+        }
+        return try MetaBrainRecallCandidate.select(candidates, limit: query.limit, maxBytes: maxBytes)
+    }
+
+    private func forEachRankedSearchDocument(
+        _ query: SearchQuery,
+        terms queryTerms: [String],
+        visit: (StoredDocument, [UInt32: MetaBrainChunkRecord], [MetaBrainRankedPassage], [String: Double]) throws -> Void
+    ) async throws {
         let allowedIDs = try await filteredDocumentIDs(for: query)
         if allowedIDs?.isEmpty == true {
-            return []
+            return
         }
 
         let corpusSize = try await searchCorpusDocumentCount()
@@ -479,7 +575,6 @@ public final class MetaBrainStore: Sendable {
         }
 
         let ranking = MetaBrainSearchRanking(terms: queryTerms, weights: weights)
-        var topCandidates = MetaBrainSearchTopCandidates(limit: query.limit)
         for (id, bodyOrdinals) in bodyOrdinalsByDocument {
             guard let document = try await documentRecord(id: id)?.document,
                   Self.path(document.path, matchesPrefix: query.pathPrefix) else {
@@ -511,25 +606,21 @@ public final class MetaBrainStore: Sendable {
                 continue
             }
             let documentScore = ranking.score(fields: fields, body: documentFrequencies)
+            var passages: [MetaBrainRankedPassage] = []
             for (ordinal, frequencies) in passageFrequencies {
                 guard let chunk = chunks[ordinal] else {
                     continue
                 }
 
                 let passageScore = ranking.score(fields: fields, body: frequencies)
-                topCandidates.insert(MetaBrainRankedSearchCandidate(
-                    documentID: document.id,
-                    path: document.path,
-                    title: document.title,
-                    chunkOrdinal: ordinal,
-                    snippet: chunk.text.isEmpty ? document.title ?? document.path.rawValue : chunk.text,
-                    context: Self.contextChunks(around: ordinal, in: chunks),
+                passages.append(MetaBrainRankedPassage(
+                    chunk: chunk,
+                    hasBodyMatch: !frequencies.isEmpty,
                     score: documentScore + 0.1 * passageScore
                 ))
             }
+            try visit(document, chunks, passages, weights)
         }
-
-        return try await searchResults(from: topCandidates.sortedCandidates(), query: query)
     }
 
     private func searchChunks(

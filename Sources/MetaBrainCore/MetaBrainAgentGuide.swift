@@ -5,14 +5,16 @@ enum MetaBrainAgentGuide {
         body: """
         # Working with metaBrain
 
-        Search before writing. Use `mb search "release decision"` or `mb tree --max-depth 2` to find related notes. Read the relevant entries with `mb get` and update an existing note when the evidence changes.
+        Search before writing. Use `mb recall "release decision" --tag release --max-bytes 4096` to find passages you can cite. Cite the path, version, and passage offsets from the result. Set `document_id` and `cited_version` from recall. Before editing, set `current_version` from the current `mb get` result.
 
         Prefer Markdown for prose and use descriptive virtual paths such as `/notes/release.md`. Record durable findings, their date and sources, and enough context to verify them. Reuse tags and metadata keys that help you retrieve related work. Keep credentials and transient logs out of the store.
 
         ```sh
         mb put /notes/release.md --body-file release.md --tag release --meta date=2026-01-15
-        mb search "release decision" --tag release
+        mb recall "release decision" --tag release --max-bytes 4096
+        mb get --id "$document_id" --version "$cited_version"
         mb get /notes/release.md
+        mb put /notes/release.md --body-file revised.md --body-only --if-version "$current_version"
         ```
 
         Use descriptive Markdown links such as `[Release notes](/notes/release.md)` in the body. Add an indexed reference with `--ref-id` for relationships that should survive a move. Get the stable `documentID` from `mb get`. Use `--ref-path` for a relationship to a location and `--ref-url` for an external source. Indexed document references support backlinks. Markdown links by themselves are body text.

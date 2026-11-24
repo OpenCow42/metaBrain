@@ -345,6 +345,21 @@ public struct ServerGetRequest: Codable, Equatable, Sendable {
     }
 }
 
+/// Request for a single retained revision, independent of the current-document route.
+public struct ServerGetDocumentVersionRequest: Codable, Equatable, Sendable {
+    public var reference: DocumentReferenceDTO
+    public var version: UInt64
+
+    public init(reference: DocumentReferenceDTO, version: UInt64) {
+        self.reference = reference
+        self.version = version
+    }
+
+    public func documentReference() throws -> DocumentReference {
+        try reference.documentReference()
+    }
+}
+
 public struct ServerPatchRequest: Codable, Equatable, Sendable {
     public var reference: DocumentReferenceDTO
     public var unifiedDiff: String

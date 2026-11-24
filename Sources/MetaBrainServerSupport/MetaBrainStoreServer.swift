@@ -59,6 +59,17 @@ public actor MetaBrainStoreServer {
         return GetOutput(document)
     }
 
+    public func getVersion(_ request: ServerGetDocumentVersionRequest) async throws -> GetOutput {
+        let reference = try request.documentReference()
+        guard let document = try await store.getDocument(reference, version: request.version) else {
+            throw MetaBrainStoreError.documentVersionNotFound(
+                reference: Self.referenceDescription(reference),
+                version: request.version
+            )
+        }
+        return GetOutput(document)
+    }
+
     public func list(_ request: ServerListRequest) async throws -> [ListOutput] {
         try await store.listDirectory(
             path: request.documentPath(),
@@ -75,6 +86,10 @@ public actor MetaBrainStoreServer {
 
     public func search(_ request: ServerSearchRequest) async throws -> [SearchOutput] {
         try await store.search(request.searchQuery()).map(SearchOutput.init)
+    }
+
+    func recall(_ query: SearchQuery, maxBytes: Int) async throws -> [RecallResult] {
+        try await store.recall(query, maxBytes: maxBytes)
     }
 
     public func versions(_ request: ServerVersionsRequest) async throws -> [VersionsOutput] {

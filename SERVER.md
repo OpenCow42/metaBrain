@@ -280,9 +280,11 @@ POST /v1/put-conditional
 POST /v1/patch
 POST /v1/move
 POST /v1/get
+POST /v1/get-version
 POST /v1/list
 POST /v1/tree
 POST /v1/search
+POST /v1/recall
 POST /v1/dump
 POST /v1/versions
 POST /v1/prune
@@ -400,6 +402,21 @@ Response mirrors `MoveOutput`.
 
 Response mirrors `GetOutput`.
 
+`POST /v1/get-version`
+
+```json
+{
+  "reference": {"kind": "documentID", "value": "abc123"},
+  "version": 2
+}
+```
+
+The version must be a positive retained sequence. The response uses
+`GetOutput` with the snapshot body, path, fields, and version. A historical
+read leaves the document's read counter unchanged. A missing or pruned
+sequence returns HTTP 404 with `document_version_not_found`. Use the document
+ID to reopen a citation after a move.
+
 `POST /v1/list`
 
 ```json
@@ -440,6 +457,28 @@ CLI JSON would include it.
 ```
 
 Response is an array of `SearchOutput`.
+
+`POST /v1/recall`
+
+```json
+{
+  "query": "release rollback",
+  "pathPrefix": "/notes",
+  "tags": ["release"],
+  "metadata": {"state": "current"},
+  "limit": 5,
+  "maxBytes": 8192
+}
+```
+
+The response is a compact JSON array of recall results with document ID, path,
+version, optional title, sources, and passages. Each passage has `text` and
+half-open `start` and `end` character offsets into the cited body. Title and
+path matches can return the opening excerpt. Empty bodies can return an empty
+passages array. The default `limit` is five distinct documents. The default `maxBytes` is
+8,192, with a supported range of 3 to 1,048,576. The daemon reserves a byte for
+the newline the CLI appends. An invalid budget or nonpositive document limit
+returns HTTP 400 with `invalid_request`.
 
 `POST /v1/dump`
 

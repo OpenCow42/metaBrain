@@ -26,6 +26,7 @@ contributors toward the calls that can become expensive as a store grows.
 - `G`: number of tag and metadata filters on a search query.
 - `F`: total tag and metadata filter postings scanned.
 - `B_match`: total text bytes decoded or tokenized while scoring search candidates.
+- `J_recall`: total encoded bytes processed while measuring recall citations and fitting passage drafts.
 - `C_match`: total current chunk records scanned while scoring matched candidates.
 - `R`: number of references on a document.
 - `E`: number of reference edges scanned for linked-document or backlink output.
@@ -90,12 +91,14 @@ and [LevelDB options](https://github.com/google/leveldb/blob/main/include/leveld
 | `patch` | `checkDocumentPatch`/`patchDocument`, unified diff parsing, `writeDocumentUpdate`, `writeDocumentBatch`, retention helpers | `O(P_patch + B_old + B + T + T_old + R + R_old + V log V + H + L * seek(S) + X_tree + D)` for writes; `O(P_patch + B_old)` for `--check` | Patch is partial at the CLI layer, but writes still store a full next document snapshot and rebuild current chunks/indexes. |
 | `move` | `moveDocument`, `writeDocumentUpdate`, `writeDocumentBatch`, retention helpers | `O(B + B_old + T + T_old + R + R_old + V log V + H + L * seek(S) + X_tree + D)` | Resolves an existing document, preserves its stable ID and content fields, writes a new path alias, removes the old path alias, and updates affected tree branches. |
 | `get` | `getDocument`, `documentID(for:)`, `documentRecord(id:)`, `printDocument` | `O(seek(S) + B)` | Decoding and printing the stored document body dominate once the point lookup succeeds. |
+| `get --version` | `getDocument(_:version:)`, document reference resolution, version lookup | `O(seek(S) + B_version)` | Point-reads one retained version and prints its snapshot. |
 | `list` non-recursive | `listDirectory`, `childTreeEntries`, `formatListEntry` | `O(seek(S) + K log K)` | Scans one tree prefix, decodes child records, sorts by display path, and prints them. |
 | `list --recursive` | `listDirectory`, `flattenedTreeEntries`, `childTreeEntries` | `O(A * seek(S) + A log A)` typical, with extra recursive array-copy overhead | Walks directories with many separate prefix scans and materializes the whole subtree. `--directories-only` filters output but still traverses descendants. |
 | `tree` | `tree`, `flattenedTreeEntries`, `printTree` | `O(A * seek(S) + A log A)` typical for an unbounded tree | `--max-depth 0` is `O(1)`. Larger depths scan and materialize the requested subtree, then group and sort for printing. |
 | `dump` current | `dump`, `listDirectory`, `getDocument`, optional `DocumentDumpFileWriter.write` | `O(A * seek(S) + D_dump * B + H_dump)` for the requested subtree | Includes the exact path document plus descendant documents, emits JSONL, and optionally writes UTF-8 body copies. |
 | `dump --versions` | `dump`, `versionRecords`, optional `DocumentDumpFileWriter.write` | `O(A * seek(S) + D_dump * (seek(S) + V log V + H) + H_dump)` | Selects current documents by path, then scans retained full-snapshot versions for each selected document. |
 | `search` | `search`, filter and term postings, `searchChunks`, ranking, optional edge scans | `O((Q + G + D_match + D_limit) * seek(S) + Q log Q + F log F + P + B_match + C_match + M * (Q + K_limit) + E)` | Uses corpus IDF and saturated field-weighted frequencies. The limit bounds retained candidates and reference enrichment. |
+| `recall` | `recall`, ranked document traversal, passage drafting, JSON budget selection | `O((Q + G + D_match) * seek(S) + Q log Q + F log F + P + B_match + C_match + M * Q + M log M + D_match log D_match + J_recall)` | Selects distinct documents from the matched pool and fits their citations to a serialized byte budget. |
 | `versions` | `listVersions`, `versionRecords` | `O(seek(S) + V log V + H)` | Scans, decodes, sorts, and prints every full-snapshot version for the document. |
 | `prune` | `prune`, `pruneVersions`, `versionRecords`, retention helpers | `O(seek(S) + V log V + H + P_delete)` | Scans and decodes all versions before deciding which version keys to delete. |
 | `delete` | `deleteDocument`, `deleteDocumentRecord`, cleanup helpers | `O((C + R + E + L) * seek(S) + T + V + H + X_tree + P_delete + K_delete)` | Resolves one explicit document, checks retained version envelopes for compatible mutation, then cleans current chunks, lexical/tag/metadata indexes, references/backlinks, retained versions, and affected tree entries. |
@@ -208,6 +211,11 @@ indexes. `POST /v1/get` delegates to `MetaBrainStore.getDocument(_:trackingRead:
 with tracking reads enabled it follows the core read-metadata mutation path,
 and with tracking disabled it follows the non-mutating lookup path.
 
+`POST /v1/get-version` point-reads a retained snapshot after resolving its
+document identity. `POST /v1/recall` uses the same document and byte limits
+as the CLI and reserves one byte for the CLI's final line feed. Both paths
+use existing-only store opens.
+
 `POST /v1/list`, `POST /v1/tree`, `POST /v1/search`, `POST /v1/dump`, and
 `POST /v1/versions` delegate to the corresponding `MetaBrainStore` read
 methods. Their complexity matches the core scan/search/dump/version listing
@@ -319,6 +327,10 @@ cost about the same as whole-body updates.
 and prints it. Complexity is `O(seek(S) + B)` because outputting the body
 dominates once the point lookup succeeds.
 
+`get --version` resolves the current path or ID and reads the known version key
+directly, without scanning history or updating read metadata. The body decode
+and output are `O(B_version)` in addition to point lookups.
+
 ### `move`
 
 `move` resolves an existing path or ID with `moveDocument(_:to:)`, then writes a
@@ -403,6 +415,24 @@ The document score uses the maximum body term frequency from its candidate
 passages to avoid double-counting overlapping text. The passage contribution
 uses the local body frequency. Scoring uses no document or passage length
 normalization (`b = 0`).
+
+### `recall`
+
+`recall` uses the search filters, postings, and ranking to score the full
+matching pool. It holds the store's write coordinator during that traversal
+and drafts citations from the same revisions as their body passages. Per
+document, passage ordering and bounded evidence drafting add up to
+`O(M log M + B_match)` across the candidate pool. Drafts are centered on a
+query term or start at the opening of a field-only match. Overlapping
+windows merge and each document retains up to three drafts.
+
+After releasing the write coordinator, recall sorts document candidates in
+`O(D_match log D_match)` and budgets a first passage per fitting document
+before adding context and extra passages. Measuring citation headers and
+fitting short body windows uses `O(J_recall)` encoded-byte work. The direct
+and daemon-backed CLI use the same compact JSON encoding and append one line
+feed. The configured 3 to 1,048,576 byte CLI budget bounds final output
+encoding and output size. The CLI opens an existing store for recall.
 
 ### `versions`
 

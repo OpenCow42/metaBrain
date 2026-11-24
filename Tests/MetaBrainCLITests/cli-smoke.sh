@@ -227,6 +227,7 @@ assert_remove_version_json() {
 "${METABRAIN[@]}" | rg -q 'Agent discovery:'
 "${METABRAIN[@]}" --help | rg -q 'Common workflow:'
 "${METABRAIN[@]}" help | rg -q 'mb help search'
+"${METABRAIN[@]}" help | rg -q 'mb help recall'
 "${METABRAIN[@]}" help | rg -q 'mb help list'
 "${METABRAIN[@]}" help | rg -q 'mb help tree'
 "${METABRAIN[@]}" help | rg -q 'mb help dump'
@@ -243,6 +244,7 @@ assert_remove_version_json() {
 "${METABRAIN[@]}" help list | rg -q 'List stored document paths in a folder'
 "${METABRAIN[@]}" help tree | rg -q 'Show the stored document path tree'
 "${METABRAIN[@]}" help search | rg -q 'Search current document content'
+"${METABRAIN[@]}" help recall | rg -q 'byte-budgeted JSON array'
 "${METABRAIN[@]}" help dump | rg -q 'Dump stored documents as JSONL'
 "${METABRAIN[@]}" help versions | rg -q 'List stored versions for a document'
 "${METABRAIN[@]}" help prune | rg -q 'Prune document versions using a retention policy'
@@ -399,7 +401,7 @@ PHYSICAL_WORKSPACE="$(cd "$WORKSPACE" && pwd -P)"
 (
     unset METABRAIN_STORE
     cd "$WORKSPACE_CHILD"
-    for read_command in get list tree search dump versions; do
+    for read_command in get list tree search recall dump versions; do
         assert_missing_store "$PHYSICAL_WORKSPACE/sub/deeper/.metabrain/store.leveldb" \
             "${METABRAIN[@]}" --no-server "$read_command" /needle
     done
@@ -517,6 +519,7 @@ GUIDED_LIST="$("${METABRAIN[@]}" list --no-server --store "$GUIDED_STORE")"
 assert_line_count "$GUIDED_LIST" 1
 printf '%s\n' "$GUIDED_LIST" | rg -F -q '"path":"/AGENTS.md"'
 "${METABRAIN[@]}" get --no-server --store "$GUIDED_STORE" /AGENTS.md --format text | rg -F -q 'Working with metaBrain'
+"${METABRAIN[@]}" get --no-server --store "$GUIDED_STORE" /AGENTS.md --format text | rg -F -q 'mb recall'
 
 IMPLICIT_STORE="$TMP_DIR/implicit.leveldb"
 "${METABRAIN[@]}" put --no-server --store "$IMPLICIT_STORE" /first.md "First note" >/dev/null
@@ -524,6 +527,108 @@ IMPLICIT_STORE="$TMP_DIR/implicit.leveldb"
 IMPLICIT_LIST="$("${METABRAIN[@]}" list --no-server --store "$IMPLICIT_STORE")"
 assert_line_count "$IMPLICIT_LIST" 1
 printf '%s\n' "$IMPLICIT_LIST" | rg -F -q '"path":"/first.md"'
+
+check_recall() {
+    local store="$1"
+    shift
+    local command=("$@" --store "$store")
+    local output="$TMP_DIR/recall.out" original="$TMP_DIR/recall-original.json"
+    local historical="$TMP_DIR/recall-historical.json" body_file="$TMP_DIR/recall-body.txt"
+    local body='A “café” corpus recall note cites evidence and contains a slash / here.'
+    local citations="$TMP_DIR/recall-citations.json"
+    local selected_id selected_version budget
+
+    printf '%s\n' "$body" >"$body_file"
+    "${command[@]}" put /cases/first --body-file "$body_file" --keep-all \
+        --title 'First note' --tag recall --meta state=current --ref-url https://example.com/evidence >/dev/null
+    "${command[@]}" put /cases/second 'Another corpus recall note.' --tag recall --meta state=current >/dev/null
+    "${command[@]}" put /cases/stale 'Corpus recall stale.' --tag recall --meta state=old >/dev/null
+    "${command[@]}" put /cases-other/outside 'Corpus recall outside.' --tag recall --meta state=current >/dev/null
+
+    "${command[@]}" recall 'corpus recall' --tag RECALL --meta STATE=Current --path-prefix /cases \
+        --limit 2 --max-bytes 2048 >"$citations"
+    python3 - "$citations" <<'PYRECALL'
+import json
+from pathlib import Path
+import sys
+
+data = Path(sys.argv[1]).read_bytes()
+assert len(data) <= 2048 and data.endswith(b"\n") and data.count(b"\n") == 1, data
+hits = json.loads(data)
+assert len(hits) == 2 and {hit["path"] for hit in hits} == {"/cases/first", "/cases/second"}, hits
+assert all(hit["version"] == 1 and hit["passages"] for hit in hits), hits
+first = next(hit for hit in hits if hit["path"] == "/cases/first")
+assert first["title"] == "First note" and "https://example.com/evidence" in first["sources"], first
+assert any("café" in passage["text"] for passage in first["passages"]), first
+PYRECALL
+
+    "${command[@]}" recall 'corpus recall' --path-prefix /cases --limit 1 >"$output"
+    python3 - "$output" <<'PYRECALL'
+import json
+from pathlib import Path
+import sys
+
+data = Path(sys.argv[1]).read_bytes()
+assert len(data) <= 8192 and len(json.loads(data)) == 1, data
+PYRECALL
+
+    for budget in 3 64 192 384 8192; do
+        "${command[@]}" recall 'corpus recall' --max-bytes "$budget" >"$output"
+        python3 - "$output" "$budget" <<'PYRECALL'
+import json
+from pathlib import Path
+import sys
+
+data = Path(sys.argv[1]).read_bytes()
+assert len(data) <= int(sys.argv[2]) and data.endswith(b"\n"), data
+assert isinstance(json.loads(data), list), data
+if int(sys.argv[2]) == 3:
+    assert data == b"[]\n", data
+PYRECALL
+    done
+
+    for budget in 2 1048577; do
+        if "${command[@]}" recall corpus --max-bytes "$budget" >"$output" 2>"$TMP_DIR/recall.err"; then
+            echo "Expected recall to reject byte budget $budget" >&2
+            exit 1
+        fi
+        [[ ! -s "$output" ]]
+        rg -F -q -- '--max-bytes must be between 3 and 1048576' "$TMP_DIR/recall.err"
+    done
+
+    read -r selected_id selected_version < <(python3 - "$citations" <<'PYRECALL'
+import json
+from pathlib import Path
+import sys
+
+first = next(hit for hit in json.loads(Path(sys.argv[1]).read_bytes()) if hit["path"] == "/cases/first")
+print(first["documentID"], first["version"])
+PYRECALL
+    )
+    "${command[@]}" get /cases/first --version "$selected_version" >"$original"
+    "${command[@]}" put /cases/first 'Revised document.' --body-only --if-version "$selected_version" >/dev/null
+    "${command[@]}" get --id "$selected_id" --version "$selected_version" >"$historical"
+    cmp "$original" "$historical"
+    python3 - "$citations" "$historical" <<'PYRECALL'
+import json
+from pathlib import Path
+import sys
+
+historical = json.loads(Path(sys.argv[2]).read_bytes())
+first = next(hit for hit in json.loads(Path(sys.argv[1]).read_bytes()) if hit["documentID"] == historical["documentID"])
+assert first["version"] == historical["version"]
+assert all(historical["body"][passage["start"]:passage["end"]] == passage["text"] for passage in first["passages"])
+PYRECALL
+    assert_get_json "$("${command[@]}" get /cases/first)" /cases/first 'Revised document.' 2
+    if "${command[@]}" get --id "$selected_id" --version 3 >"$output" 2>"$TMP_DIR/recall.err"; then
+        echo "Expected an unretained version lookup to fail" >&2
+        exit 1
+    fi
+    [[ ! -s "$output" ]]
+    rg -F -q "$selected_id" "$TMP_DIR/recall.err"
+}
+
+check_recall "$TMP_DIR/recall-direct/store.leveldb" "${METABRAIN[@]}" --no-server
 
 INIT_DEFAULT_JSON="$("${METABRAIN[@]}" init --store "$STORE" --empty)"
 EXPECTED_INIT_JSON="{\"operation\":\"init\",\"status\":\"initialized\",\"storePath\":\"$STORE\"}"
@@ -1027,7 +1132,7 @@ if "${METABRAIN[@]}" get --store "$STORE" --id abc --path /notes/today 2>"$TMP_D
     exit 1
 fi
 rg -q 'Provide exactly one of --id, --path, or a positional path' "$TMP_DIR/double-reference.err"
-rg -F -q 'Usage: mb get [--store <store>] [--server <server>] [--no-server] [--id <id>] [--path <path>] [<path>] [--format <format>]' "$TMP_DIR/double-reference.err"
+rg -F -q 'Usage: mb get [--store <store>] [--server <server>] [--no-server] [--id <id>] [--path <path>] [<path>] [--format <format>] [--version <version>]' "$TMP_DIR/double-reference.err"
 
 if "${METABRAIN[@]}" get --store "$STORE" --path /notes/today /notes/file 2>"$TMP_DIR/path-and-positional-reference.err"; then
     echo "Expected option path plus positional path to fail" >&2
@@ -1172,7 +1277,7 @@ if "${METABRAIN[@]}" get --store "$STORE" 2>"$TMP_DIR/missing-reference.err"; th
     exit 1
 fi
 rg -q 'Provide exactly one of --id, --path, or a positional path' "$TMP_DIR/missing-reference.err"
-rg -F -q 'Usage: mb get [--store <store>] [--server <server>] [--no-server] [--id <id>] [--path <path>] [<path>] [--format <format>]' "$TMP_DIR/missing-reference.err"
+rg -F -q 'Usage: mb get [--store <store>] [--server <server>] [--no-server] [--id <id>] [--path <path>] [<path>] [--format <format>] [--version <version>]' "$TMP_DIR/missing-reference.err"
 
 SERVER_STORE="$TMP_DIR/server-store.leveldb"
 SERVER_SOCKET="$TMP_DIR/mbd.sock"
@@ -1205,7 +1310,7 @@ server_mb() {
     unset METABRAIN_STORE
     cd "$WORKSPACE_CHILD"
     SERVER_MISSING_STORE="$TMP_DIR/server-missing/store.leveldb"
-    for read_command in get list tree search dump versions; do
+    for read_command in get list tree search recall dump versions; do
         assert_missing_store "$SERVER_MISSING_STORE" \
             "${METABRAIN[@]}" --server "$SERVER_SOCKET" --store="$SERVER_MISSING_STORE" "$read_command" /needle
     done
@@ -1221,6 +1326,8 @@ server_mb() {
 )
 
 check_guarded_put "$TMP_DIR/guarded-daemon/store.leveldb" "${METABRAIN[@]}" --server "$SERVER_SOCKET"
+
+check_recall "$TMP_DIR/recall-daemon/store.leveldb" "${METABRAIN[@]}" --server "$SERVER_SOCKET"
 
 SERVER_INIT_JSON="$(server_mb init)"
 SERVER_EXPECTED_INIT_JSON="{\"operation\":\"init\",\"status\":\"initialized\",\"storePath\":\"$SERVER_STORE\"}"

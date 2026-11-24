@@ -1,5 +1,11 @@
 import Foundation
 
+struct MetaBrainRankedPassage: Sendable {
+    let chunk: MetaBrainChunkRecord
+    let hasBodyMatch: Bool
+    let score: Double
+}
+
 struct MetaBrainSearchRanking: Sendable {
     let terms: [String]
     let weights: [String: Double]

@@ -192,11 +192,12 @@ mb help dump
 - `put` creates or updates a document at a path.
 - `patch` applies a single-file unified diff to an existing document body.
 - `move` relocates an existing document to a new path without changing its ID.
-- `get` reads a document by path or stable document ID.
+- `get` reads the current document or a retained `--version` by path or stable document ID.
 - `list` lists stored document paths in a virtual folder.
 - `tree` prints the stored document path tree.
 - `search` ranks current documents using their titles, paths, and body passages
   with optional filters.
+- `recall` returns relevant passages with versioned citations in a byte-budgeted JSON array.
 - `dump` exports documents as JSONL and optional body files.
 - `versions` lists retained snapshots for a document.
 - `prune` applies a retention policy to document versions.
@@ -223,12 +224,45 @@ mutation. When using a daemon, upgrade both `mb` and `mbd` to get the new
 ranking. The daemon version determines the ranking and index used for
 daemon-backed searches.
 
+## Recall and citations
+
+Use `recall` to retrieve compact evidence for a question. It uses the same
+path-prefix, tag, and metadata filters as `search`.
+
+```bash
+mb recall "release rollback" --path-prefix /notes --tag release --meta state=current --limit 3 --max-bytes 4096
+```
+
+The output is one compact JSON array. Each item has a `documentID`, `path`,
+`version`, `sources`, and `passages`, plus a `title` when present. A passage
+contains `text` and half-open `start` and `end` offsets measured in characters
+in that version's body. A title or path match can return an opening excerpt.
+An empty body can return a citation without passages. Sources come from
+external URL references and the `source` metadata field. Cite the path,
+version, and passage range. Keep the
+document ID so you can reopen the same retained version after a path changes.
+Use the recalled ID and version for `document_id` and `cited_version`. Before
+editing, read the latest version and use it for `current_version`.
+
+```bash
+mb get --id "$document_id" --version "$cited_version"
+mb get /notes/release.md
+mb put /notes/release.md --body-file revised.md --body-only --if-version "$current_version"
+```
+
+Recall defaults to at most five distinct documents and 8,192 UTF-8 output
+bytes. The byte limit includes the final newline and accepts values from
+3 to 1,048,576. A budget that fits only an empty array returns `[]` and a
+newline. Historical reads require the cited version to be retained.
+When using a daemon, update `mbd` for recall and historical reads, or use
+`mb --no-server` for direct access.
+
 ## Daemon
 
 `mbd` runs the local daemon surface. The daemon listens on one local endpoint,
 serves `/health` with daemon version metadata, and exposes store-backed JSON
-endpoints for version, init, put, patch, move, get, list, tree, search, dump,
-versions, prune, delete, and remove-version.
+endpoints for version, init, put, patch, move, get, historical get, list, tree,
+search, recall, dump, versions, prune, delete, and remove-version.
 
 ```bash
 mbd serve --store .metabrain/store.leveldb --socket ~/.metabrain/mbd.sock

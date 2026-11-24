@@ -102,6 +102,13 @@ public struct ServerRouter: Sendable {
             }
         case (_, "/v1/get"):
             return methodNotAllowed(request, allowedMethod: "POST")
+        case (.post, "/v1/get-version"):
+            return await routeStoreOperation(request) { storeServer in
+                let decoded = try decode(ServerGetDocumentVersionRequest.self, from: request)
+                return try await storeServer.getVersion(decoded)
+            }
+        case (_, "/v1/get-version"):
+            return methodNotAllowed(request, allowedMethod: "POST")
         case (.post, "/v1/list"):
             return await routeStoreOperation(request) { storeServer in
                 let decoded = try decode(ServerListRequest.self, from: request)
@@ -122,6 +129,19 @@ public struct ServerRouter: Sendable {
                 return try await storeServer.search(decoded)
             }
         case (_, "/v1/search"):
+            return methodNotAllowed(request, allowedMethod: "POST")
+        case (.post, "/v1/recall"):
+            do {
+                let decoded = try decode(ServerRecallRequest.self, from: request)
+                let query = try decoded.searchQuery()
+                let maxBytes = try decoded.validatedMaxBytes()
+                return await routeStoreOperation(request) { storeServer in
+                    try await storeServer.recall(query, maxBytes: maxBytes)
+                }
+            } catch {
+                return errorResponse(for: error)
+            }
+        case (_, "/v1/recall"):
             return methodNotAllowed(request, allowedMethod: "POST")
         case (.post, "/v1/dump"):
             return await routeStoreOperation(request) { storeServer in
@@ -292,6 +312,22 @@ public struct ServerRouter: Sendable {
                 statusCode: 404,
                 payload: ServerErrorPayload(
                     error: "document_not_found",
+                    message: error.description
+                )
+            )
+        case .documentVersionNotFound:
+            return jsonResponse(
+                statusCode: 404,
+                payload: ServerErrorPayload(
+                    error: "document_version_not_found",
+                    message: error.description
+                )
+            )
+        case .invalidDocumentVersion:
+            return jsonResponse(
+                statusCode: 400,
+                payload: ServerErrorPayload(
+                    error: "invalid_request",
                     message: error.description
                 )
             )

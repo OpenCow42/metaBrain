@@ -1,4 +1,5 @@
 import Foundation
+import MetaBrainCore
 
 #if canImport(Darwin)
 import Darwin
@@ -14,6 +15,8 @@ public enum ServerClientError: Error, Equatable, Sendable, CustomStringConvertib
     case serverError(statusCode: Int, error: String, message: String)
     case unexpectedStatusCode(Int)
     case conditionalPutUnsupported
+    case recallUnsupported
+    case historicalGetUnsupported
 
     public var description: String {
         switch self {
@@ -27,6 +30,10 @@ public enum ServerClientError: Error, Equatable, Sendable, CustomStringConvertib
             return "server returned unexpected HTTP \(statusCode)"
         case .conditionalPutUnsupported:
             return "The daemon does not support --if-version or --body-only. Upgrade mbd or use mb --no-server."
+        case .recallUnsupported:
+            return "The daemon does not support recall. Upgrade mbd or use mb --no-server recall."
+        case .historicalGetUnsupported:
+            return "The daemon does not support get --version. Upgrade mbd or use mb get --version with --no-server."
         }
     }
 }
@@ -97,6 +104,26 @@ public struct MetaBrainServerClient: Sendable {
             throw ServerClientError.conditionalPutUnsupported
         } catch ServerClientError.unexpectedStatusCode(404) {
             throw ServerClientError.conditionalPutUnsupported
+        }
+    }
+
+    public func getVersion(_ request: ServerGetDocumentVersionRequest) throws -> GetOutput {
+        do {
+            return try post("/v1/get-version", request: request)
+        } catch ServerClientError.serverError(statusCode: 404, error: "not_found", message: _) {
+            throw ServerClientError.historicalGetUnsupported
+        } catch ServerClientError.unexpectedStatusCode(404) {
+            throw ServerClientError.historicalGetUnsupported
+        }
+    }
+
+    public func recall(_ request: ServerRecallRequest) throws -> [RecallResult] {
+        do {
+            return try post("/v1/recall", request: request)
+        } catch ServerClientError.serverError(statusCode: 404, error: "not_found", message: _) {
+            throw ServerClientError.recallUnsupported
+        } catch ServerClientError.unexpectedStatusCode(404) {
+            throw ServerClientError.recallUnsupported
         }
     }
 

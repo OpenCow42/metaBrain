@@ -23,6 +23,7 @@ struct MetaBrainCommand: AsyncParsableCommand {
           mb help list
           mb help tree
           mb help search
+          mb help recall
           mb help dump
           mb help move
           mb help delete
@@ -40,7 +41,8 @@ struct MetaBrainCommand: AsyncParsableCommand {
           mb list /notes --recursive --dates
           mb tree --max-depth 2
           mb search "Important context" --tag planning
-          mb get /notes/today
+          mb recall "Important context" --tag planning --max-bytes 4096
+          mb get /notes/today --version 1
           mb dump /notes --output-dir ./metabrain-dump
           mb delete /notes/today
           mb remove-version /notes/today --sequence 1
@@ -70,6 +72,7 @@ struct MetaBrainCommand: AsyncParsableCommand {
             List.self,
             Tree.self,
             Search.self,
+            Recall.self,
             Dump.self,
             Versions.self,
             Prune.self,
@@ -289,7 +292,7 @@ extension MetaBrainCommand {
             abstract: "Show metaBrain CLI help."
         )
 
-        @Argument(help: "Optional command to inspect: init, put, patch, move, get, list, tree, search, dump, versions, prune, delete, remove-version, or version.")
+        @Argument(help: "Optional command to inspect: init, put, patch, move, get, list, tree, search, recall, dump, versions, prune, delete, remove-version, or version.")
         var command: String?
 
         func validate() throws {
@@ -298,10 +301,10 @@ extension MetaBrainCommand {
             }
 
             switch command {
-            case "init", "put", "patch", "move", "get", "list", "tree", "search", "dump", "versions", "prune", "delete", "remove-version", "version":
+            case "init", "put", "patch", "move", "get", "list", "tree", "search", "recall", "dump", "versions", "prune", "delete", "remove-version", "version":
                 return
             default:
-                throw ValidationError("Unknown help topic '\(command)'. Use one of: init, put, patch, move, get, list, tree, search, dump, versions, prune, delete, remove-version, version.")
+                throw ValidationError("Unknown help topic '\(command)'. Use one of: init, put, patch, move, get, list, tree, search, recall, dump, versions, prune, delete, remove-version, version.")
             }
         }
 
@@ -603,26 +606,49 @@ extension MetaBrainCommand {
         @OptionGroup var referenceOptions: ReferenceOptions
         @OptionGroup var output: OutputFormatOptions
 
+        @Option(help: "Read a retained version sequence instead of the current document.")
+        var version: UInt64?
+
+        func validate() throws {
+            try referenceOptions.validate()
+            if version == 0 {
+                throw ValidationError("--version must be greater than zero.")
+            }
+        }
+
         func run() async throws {
+            let reference = try referenceOptions.reference()
+            let outputResult: GetOutput
             if let client = try storeOptions.serverClient() {
-                let result: GetOutput = try client.post(
-                    "/v1/get",
-                    request: ServerGetRequest(reference: DocumentReferenceDTO(try referenceOptions.reference())),
-                    response: GetOutput.self
-                )
-                try printGetOutput(result, format: output.format)
-                return
+                if let version {
+                    outputResult = try client.getVersion(ServerGetDocumentVersionRequest(
+                        reference: DocumentReferenceDTO(reference), version: version
+                    ))
+                } else {
+                    outputResult = try client.post(
+                        "/v1/get", request: ServerGetRequest(reference: DocumentReferenceDTO(reference))
+                    )
+                }
+            } else {
+                let document = try await storeOptions.withOpenStore { store in
+                    if let version {
+                        guard let snapshot = try await store.getDocument(reference, version: version) else {
+                            throw MetaBrainStoreError.documentVersionNotFound(
+                                reference: DocumentReferenceDTO(reference).value,
+                                version: version
+                            )
+                        }
+                        return snapshot
+                    }
+                    guard let current = try await store.getDocument(reference) else {
+                        throw ValidationError("Document not found.")
+                    }
+                    return current
+                }
+                outputResult = GetOutput(document)
             }
 
-            let document = try await storeOptions.withOpenStore { store in
-                try await store.getDocument(referenceOptions.reference())
-            }
-
-            guard let document else {
-                throw ValidationError("Document not found.")
-            }
-
-            try printGetOutput(GetOutput(document), format: output.format)
+            try printGetOutput(outputResult, format: output.format)
         }
     }
 
@@ -813,6 +839,71 @@ extension MetaBrainCommand {
             }
 
             try printSearchOutputs(outputResults, format: output.format)
+        }
+    }
+
+    struct Recall: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "recall",
+            abstract: "Retrieve relevant passages in a byte-budgeted JSON array.",
+            discussion: "Each result identifies a document and retained version. Passage offsets count characters in that version's body."
+        )
+
+        @OptionGroup var storeOptions: StoreOptions
+
+        @Argument(help: "Search terms to recall.")
+        var query: String
+
+        @Option(name: .customLong("path-prefix"), help: "Limit results to this path prefix.")
+        var pathPrefix: String?
+
+        @Option(name: .customLong("tag"), help: "Require a tag. Repeat to intersect tags.")
+        var tags: [String] = []
+
+        @Option(name: .customLong("meta"), help: "Require metadata as key=value. Repeat to intersect filters.")
+        var metadataPairs: [String] = []
+
+        @Option(help: "Maximum number of distinct documents.")
+        var limit = ServerRecallRequest.defaultLimit
+
+        @Option(name: .customLong("max-bytes"), help: "Maximum UTF-8 output bytes including the final newline (3–1048576).")
+        var maxBytes = RecallResult.defaultMaxBytes
+
+        func validate() throws {
+            guard limit > 0 else {
+                throw ValidationError("--limit must be greater than zero.")
+            }
+            guard (RecallResult.minimumMaxBytes...ServerRecallRequest.maximumOutputBytes).contains(maxBytes) else {
+                throw ValidationError("--max-bytes must be between \(RecallResult.minimumMaxBytes) and \(ServerRecallRequest.maximumOutputBytes).")
+            }
+            _ = try pathPrefix.map(DocumentPath.init)
+            _ = try parseMetadata(metadataPairs)
+        }
+
+        func run() async throws {
+            let request = ServerRecallRequest(
+                query: query,
+                pathPrefix: pathPrefix,
+                tags: tags,
+                metadata: try parseMetadata(metadataPairs),
+                limit: limit,
+                maxBytes: maxBytes
+            )
+            let results: [RecallResult]
+            if let client = try storeOptions.serverClient() {
+                results = try client.recall(request)
+            } else {
+                let searchQuery = try request.searchQuery()
+                results = try await storeOptions.withOpenStore { store in
+                    try await store.recall(searchQuery, maxBytes: maxBytes)
+                }
+            }
+            var output = try RecallResult.jsonData(results)
+            output.append(10)
+            guard output.count <= maxBytes else {
+                throw ValidationError("Recall response exceeded --max-bytes \(maxBytes).")
+            }
+            try FileHandle.standardOutput.write(contentsOf: output)
         }
     }
 
@@ -1632,6 +1723,7 @@ private func commandHelpMessage(for command: String?) -> String {
             "list": MetaBrainCommand.List.helpMessage(),
             "tree": MetaBrainCommand.Tree.helpMessage(),
             "search": MetaBrainCommand.Search.helpMessage(),
+            "recall": MetaBrainCommand.Recall.helpMessage(),
             "dump": MetaBrainCommand.Dump.helpMessage(),
             "versions": MetaBrainCommand.Versions.helpMessage(),
             "prune": MetaBrainCommand.Prune.helpMessage(),
@@ -1654,6 +1746,7 @@ private let daemonBackedCommands: Set<String> = [
     "list",
     "tree",
     "search",
+    "recall",
     "dump",
     "versions",
     "prune",
