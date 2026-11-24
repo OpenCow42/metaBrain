@@ -16,6 +16,10 @@ Before cutting a new release, update the bundled version returned by
 This keeps `mb version` and `mbd version` accurate before the tag exists and in
 installed builds.
 
+Build each platform from the same reviewed release commit. Verify both binaries
+and the artifact checksums before publishing. Install the project skills from the
+tagged source checkout using the [skill installation guide](docs/skills.md#install-into-a-project).
+
 ## macOS Release
 
 The release helper builds universal macOS binaries named `mb` and `mbd` for
@@ -24,7 +28,7 @@ archive to Apple's notary service:
 
 ~~~bash
 Scripts/build-release.sh \
-  --version 1.1.2 \
+  --version 1.3.0 \
   --identity <developer-id-sha-or-name> \
   --notary-profile metabrain-notary
 ~~~
@@ -106,13 +110,13 @@ Verify the uploaded macOS asset:
 ~~~bash
 tmp="$(mktemp -d)"
 cd "$tmp"
-gh release download 1.1.2 --repo OpenCow42/metaBrain --pattern 'mb-1.1.2-macos-universal.zip*'
-shasum -a 256 -c mb-1.1.2-macos-universal.zip.sha256
-unzip -q mb-1.1.2-macos-universal.zip
-codesign --verify --verbose mb-1.1.2-macos-universal/bin/mb
-codesign --verify --verbose mb-1.1.2-macos-universal/bin/mbd
-mb-1.1.2-macos-universal/bin/mb --help
-mb-1.1.2-macos-universal/bin/mbd --help
+gh release download 1.3.0 --repo OpenCow42/metaBrain --pattern 'mb-1.3.0-macos-universal.zip*'
+shasum -a 256 -c mb-1.3.0-macos-universal.zip.sha256
+unzip -q mb-1.3.0-macos-universal.zip
+codesign --verify --verbose mb-1.3.0-macos-universal/bin/mb
+codesign --verify --verbose mb-1.3.0-macos-universal/bin/mbd
+mb-1.3.0-macos-universal/bin/mb --help
+mb-1.3.0-macos-universal/bin/mbd --help
 ~~~
 
 ## macOS Helper Options
@@ -142,10 +146,10 @@ METABRAIN_RELEASE_BUILD_DIR
 Ubuntu release artifacts should be built on Ubuntu, using the Linux release
 helper. The `mb` and `mbd` binaries are built with a statically linked Swift
 standard library so the package does not require Swift to be installed on
-end-user machines.
+end-user machines. Run the helper on both amd64 and arm64 build hosts.
 
 ~~~bash
-Scripts/build-linux-release.sh --version 1.1.2
+Scripts/build-linux-release.sh --version 1.3.0
 ~~~
 
 This writes:
@@ -155,12 +159,16 @@ dist/mb-<version>-linux-x86_64.tar.gz
 dist/mb-<version>-linux-x86_64.tar.gz.sha256
 dist/metabrain_<version>_amd64.deb
 dist/metabrain_<version>_amd64.deb.sha256
+dist/mb-<version>-linux-aarch64.tar.gz
+dist/mb-<version>-linux-aarch64.tar.gz.sha256
+dist/metabrain_<version>_arm64.deb
+dist/metabrain_<version>_arm64.deb.sha256
 ~~~
 
 To create or update the GitHub release and upload artifacts, run:
 
 ~~~bash
-Scripts/build-linux-release.sh --version 1.1.2 --upload
+Scripts/build-linux-release.sh --version 1.3.0 --upload
 ~~~
 
 The upload mode requires GitHub CLI authentication and infers the repository
@@ -170,11 +178,11 @@ GitHub remote.
 Verify the generated artifacts before upload:
 
 ~~~bash
-sha256sum -c dist/mb-1.1.2-linux-x86_64.tar.gz.sha256
-sha256sum -c dist/metabrain_1.1.2_amd64.deb.sha256
-tar -tzf dist/mb-1.1.2-linux-x86_64.tar.gz
-dpkg-deb -I dist/metabrain_1.1.2_amd64.deb
-dpkg-deb -c dist/metabrain_1.1.2_amd64.deb | grep -E '/usr/bin/(mb|mbd)$'
+sha256sum -c dist/mb-1.3.0-linux-x86_64.tar.gz.sha256
+sha256sum -c dist/metabrain_1.3.0_amd64.deb.sha256
+tar -tzf dist/mb-1.3.0-linux-x86_64.tar.gz
+dpkg-deb -I dist/metabrain_1.3.0_amd64.deb
+dpkg-deb -c dist/metabrain_1.3.0_amd64.deb | grep -E '/usr/bin/(mb|mbd)$'
 ~~~
 
 The `.deb` installs `/usr/bin/mb` and `/usr/bin/mbd` plus documentation. It
@@ -222,12 +230,12 @@ sudo apt install metabrain
 
 To publish a new Ubuntu release to the existing APT repo:
 
-1. Build `metabrain_<version>_amd64.deb` with
-   `Scripts/build-linux-release.sh --version <version>`.
-2. Copy the `.deb` into `OpenCow42/apt-repo` under
+1. Build both Debian packages with `Scripts/build-linux-release.sh --version <version>`
+   on their respective amd64 and arm64 hosts.
+2. Copy both packages into `OpenCow42/apt-repo` under
    `pool/main/m/metabrain/`.
-3. Regenerate `Packages`, `Packages.gz`, and `Release` for each supported suite:
-   `ubuntu24.04`, `ubuntu26.04`, and `stable`.
+3. Regenerate `Packages` and `Packages.gz` for both architectures, then generate
+   `Release` for each suite (`ubuntu24.04`, `ubuntu26.04`, and `stable`).
 4. Commit and push the apt repo.
 5. Confirm GitHub Pages builds successfully.
 
@@ -235,13 +243,19 @@ Useful commands from inside `OpenCow42/apt-repo`:
 
 ~~~bash
 mkdir -p pool/main/m/metabrain
-cp /path/to/metabrain_<version>_amd64.deb pool/main/m/metabrain/
+cp /path/to/metabrain_1.3.0_{amd64,arm64}.deb pool/main/m/metabrain/
 
 for suite in ubuntu24.04 ubuntu26.04 stable; do
-  mkdir -p "dists/$suite/main/binary-amd64"
-  dpkg-scanpackages --arch amd64 pool > "dists/$suite/main/binary-amd64/Packages"
-  gzip -kf "dists/$suite/main/binary-amd64/Packages"
-  apt-ftparchive release "dists/$suite" > "dists/$suite/Release"
+  for arch in amd64 arm64; do
+    index_dir="dists/$suite/main/binary-$arch"
+    mkdir -p "$index_dir"
+    dpkg-scanpackages --arch "$arch" pool > "$index_dir/Packages"
+    gzip -kf "$index_dir/Packages"
+  done
+  release_file=$(mktemp)
+  apt-ftparchive release "dists/$suite" > "$release_file"
+  chmod 644 "$release_file"
+  mv "$release_file" "dists/$suite/Release"
 done
 ~~~
 
@@ -253,7 +267,9 @@ Verify the published APT metadata:
 ~~~bash
 for suite in ubuntu24.04 ubuntu26.04 stable; do
   curl -fsSL "https://opencow42.github.io/apt-repo/dists/$suite/Release"
-  curl -fsSL "https://opencow42.github.io/apt-repo/dists/$suite/main/binary-amd64/Packages"
+  for arch in amd64 arm64; do
+    curl -fsSL "https://opencow42.github.io/apt-repo/dists/$suite/main/binary-$arch/Packages"
+  done
 done
 ~~~
 
@@ -262,8 +278,8 @@ The repository currently uses `trusted=yes` until a signing key and signed
 
 ## Windows Release
 
-Windows releases are distributed as a portable zip containing the `mb.exe`
-binary and Swift runtime DLLs at the archive root. This layout works for manual
+Windows releases are distributed as a portable zip containing `mb.exe`,
+`mbd.exe`, and Swift runtime DLLs at the archive root. This layout works for manual
 installs, supports systems without the Swift toolchain installed, and maps
 cleanly to WinGet's portable zip manifest format.
 
@@ -271,7 +287,7 @@ Build and package on a Windows machine with Swift for Windows and Visual Studio
 2022 installed:
 
 ~~~powershell
-Scripts\windows\package.ps1 -Version 1.1.1
+Scripts\windows\package.ps1 -Version 1.3.0
 ~~~
 
 This writes:
@@ -279,6 +295,7 @@ This writes:
 ~~~text
 dist\metabrain-<version>-windows-x86_64\
 dist\metabrain-<version>-windows-x86_64\mb.exe
+dist\metabrain-<version>-windows-x86_64\mbd.exe
 dist\metabrain-<version>-windows-x86_64\swiftCore.dll
 dist\metabrain-<version>-windows-x86_64\*.dll
 dist\metabrain-<version>-windows-x86_64\README.md
@@ -288,15 +305,15 @@ dist\metabrain-<version>-windows-x86_64.zip.sha256
 ~~~
 
 The helper loads the Visual Studio developer environment, resolves packages,
-builds `mb` in release mode, stages the portable layout, copies Swift runtime
-DLLs from the active Swift toolchain, creates the zip, and writes a SHA-256
+builds `mb` and `mbd` in release mode, stages the portable layout, copies Swift
+runtime DLLs from the active Swift toolchain, creates the zip, and writes a SHA-256
 checksum file. Packaging fails if `swiftCore.dll` cannot be staged. If Visual
 Studio is installed somewhere unusual, pass the developer command prompt path
 explicitly:
 
 ~~~powershell
 Scripts\windows\package.ps1 `
-  -Version 1.1.1 `
+  -Version 1.3.0 `
   -VisualStudioDevCmd "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat"
 ~~~
 
@@ -310,7 +327,7 @@ To package an already-built binary:
 
 ~~~powershell
 Scripts\windows\package.ps1 `
-  -Version 1.1.1 `
+  -Version 1.3.0 `
   -SkipBuild `
   -BinaryPath .build\x86_64-unknown-windows-msvc\release\mb.exe
 ~~~
@@ -322,14 +339,15 @@ directories that contain `swiftCore.dll` and the other runtime DLLs.
 Manual install users can unzip the archive anywhere and add that directory to
 `PATH`.
 
-Verify the generated Windows artifact before upload:
+Verify the generated Windows artifact on a machine without Swift before upload:
 
 ~~~powershell
-Expand-Archive dist\metabrain-1.1.1-windows-x86_64.zip -DestinationPath $env:TEMP\metabrain-check -Force
+Expand-Archive dist\metabrain-1.3.0-windows-x86_64.zip -DestinationPath $env:TEMP\metabrain-check -Force
 if (-not (Test-Path $env:TEMP\metabrain-check\swiftCore.dll)) { throw "swiftCore.dll missing" }
 & $env:TEMP\metabrain-check\mb.exe --help
-Get-FileHash -Algorithm SHA256 dist\metabrain-1.1.1-windows-x86_64.zip
-Get-Content dist\metabrain-1.1.1-windows-x86_64.zip.sha256
+& $env:TEMP\metabrain-check\mbd.exe --help
+Get-FileHash -Algorithm SHA256 dist\metabrain-1.3.0-windows-x86_64.zip
+Get-Content dist\metabrain-1.3.0-windows-x86_64.zip.sha256
 ~~~
 
 ### WinGet
@@ -343,7 +361,7 @@ The installer manifest should use WinGet's portable zip support:
 
 ~~~yaml
 PackageIdentifier: OpenCow42.metaBrain
-PackageVersion: 1.1.1
+PackageVersion: 1.3.0
 InstallerType: zip
 NestedInstallerType: portable
 NestedInstallerFiles:
@@ -351,7 +369,7 @@ NestedInstallerFiles:
     PortableCommandAlias: mb
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/OpenCow42/metaBrain/releases/download/1.1.1/metabrain-1.1.1-windows-x86_64.zip
+    InstallerUrl: https://github.com/OpenCow42/metaBrain/releases/download/1.3.0/metabrain-1.3.0-windows-x86_64.zip
     InstallerSha256: <SHA256>
 ManifestType: installer
 ManifestVersion: 1.9.0
