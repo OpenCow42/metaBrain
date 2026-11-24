@@ -4,6 +4,8 @@ enum MetaBrainKeyspace {
     static let sequenceWidth = 20
     static let ordinalWidth = 10
     static let treeLayout = "meta/tree-layout"
+    static let searchFieldLayout = "meta/search-field-layout"
+    static let searchDocumentCount = "meta/search-document-count"
 
     static func document(id: DocumentID) -> String {
         "doc/id/\(id.rawValue)"
@@ -43,6 +45,14 @@ enum MetaBrainKeyspace {
 
     static func termPrefix(_ term: String) -> String {
         "idx/term/\(component(term))/"
+    }
+
+    static func searchFieldTerm(_ term: String, id: DocumentID) -> String {
+        searchFieldTermPrefix(term) + id.rawValue
+    }
+
+    static func searchFieldTermPrefix(_ term: String) -> String {
+        "\(prefix(.searchFieldTerm))\(component(term))/"
     }
 
     static func tag(_ tag: String, id: DocumentID) -> String {
@@ -130,6 +140,7 @@ extension MetaBrainKeyspace {
         case version = "ver/"
         case currentChunk = "chunk/current/"
         case term = "idx/term/"
+        case searchFieldTerm = "idx/field-term/"
         case tag = "idx/tag/"
         case metadata = "idx/meta/"
         case outboundReference = "idx/ref/out/"

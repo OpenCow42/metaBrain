@@ -140,6 +140,9 @@ Planned key families:
 - `ver/<id>/<sequence>`: compressed full document version
 - `chunk/current/<id>/<ordinal>`: compressed current-version search chunk
 - `idx/term/<term>/<id>/<ordinal>`: lexical search posting
+- `idx/field-term/<term>/<id>`: normalized title or path term in a current document
+- `meta/search-document-count`: number of current documents in the corpus
+- `meta/search-field-layout`: layout marker for the derived field index
 - `idx/tag/<tag>/<id>`: tag lookup
 - `idx/meta/<key>/<value>/<id>`: metadata lookup
 - `idx/ref/out/<source-id>/<target-id>`: outbound document reference
@@ -156,6 +159,14 @@ entries from `doc/id/` records. One batch publishes the changed tree entries
 and layout marker. The rebuild preserves compatible future tree records when
 their keys and decoded entries already agree with the rebuilt tree. An upgrade
 is required if rebuilding would delete or overwrite a future tree record.
+
+When a store first searches or changes documents, it builds missing field
+postings and the corpus count from `doc/id/` records. One batch publishes the
+postings, count, and layout marker. Compatible future document records can
+contribute terms. After backfill, document writes maintain field postings and
+the count in the same batch as the document change. Search reads the count
+directly and scans a term prefix for matching document IDs. All writers must
+support the field index to keep it current.
 
 ## Search
 

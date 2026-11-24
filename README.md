@@ -62,8 +62,8 @@ To run `mbd` automatically with a user systemd unit, see
   from the current directory or its nearest containing workspace.
 - **Filesystem-like paths.** Documents live at paths such as `/notes/today` or
   `/projects/metabrain/release-plan`, making memory easy to browse and explain.
-- **Searchable content.** Current document chunks are indexed for lexical search
-  with tag, metadata, and path filters.
+- **Searchable content.** Titles, paths, and current body passages are indexed for
+  lexical search with tag, metadata, and path filters.
 - **Versioned edits.** Updates keep full snapshots, and unified-diff patches can
   change stored documents without rewriting whole bodies by hand.
 - **Structured enough to grow.** Documents carry metadata, tags, references, and
@@ -195,12 +195,33 @@ mb help dump
 - `get` reads a document by path or stable document ID.
 - `list` lists stored document paths in a virtual folder.
 - `tree` prints the stored document path tree.
-- `search` searches current document content with optional filters.
+- `search` ranks current documents using their titles, paths, and body passages
+  with optional filters.
 - `dump` exports documents as JSONL and optional body files.
 - `versions` lists retained snapshots for a document.
 - `prune` applies a retention policy to document versions.
 - `delete` removes a current document and all retained versions.
 - `remove-version` removes one retained historical version.
+
+## Search relevance
+
+Search ranks lexical matches across title, path, and current body. Per
+occurrence, title matches carry four times the body weight and path matches
+carry twice the body weight before frequency saturation. A term found in fewer
+documents contributes more to the score. Repeated occurrences of the same term
+have diminishing weight.
+
+Document scores use the strongest body passage for each term. A smaller
+passage score orders matching excerpts within the document. Ranking uses
+`b = 0` in BM25 terms, so passage length does not affect the score. A title or
+path match with no matching body terms returns the first body passage, or its
+title or path when the body is empty. Path prefix, tag, and metadata filters
+restrict results while rarity still reflects the full store.
+
+An older store builds its title and path index on the first search or document
+mutation. When using a daemon, upgrade both `mb` and `mbd` to get the new
+ranking. The daemon version determines the ranking and index used for
+daemon-backed searches.
 
 ## Daemon
 
@@ -347,7 +368,7 @@ Implemented behavior includes:
 - Full-snapshot version history with keep-all, keep-last-N, and time-window
   retention policies.
 - Current-body chunking with overlap for search.
-- Lexical search ranked by term coverage, frequency, and locality.
+- Field-weighted lexical search using BM25-style rarity and frequency saturation.
 - Tag, metadata, and path-prefix search filters.
 - Internal reference indexes for resolved document links.
 - Virtual folder browsing through explicit `tree/` indexes.

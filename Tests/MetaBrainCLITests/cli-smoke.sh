@@ -987,14 +987,14 @@ TARGET_ID="$("${METABRAIN[@]}" get --store "$STORE" --format text --path /refs/t
 "${METABRAIN[@]}" put --store "$STORE" --format text /refs/source 'source needle reference' --ref-id "$TARGET_ID" --ref-path /refs/target --ref-url https://example.com/ref | rg -q '^version: 1$'
 "${METABRAIN[@]}" get --store "$STORE" --path /refs/source | rg -F -q '"references":[{"kind":"documentID","value":"'"$TARGET_ID"'"},{"kind":"path","value":"/refs/target"},{"kind":"externalURL","value":"https://example.com/ref"}]'
 "${METABRAIN[@]}" get --store "$STORE" --format text --path /refs/source | rg -q "references: $TARGET_ID, /refs/target, https://example.com/ref"
-SEARCH_LINKED_JSONL="$("${METABRAIN[@]}" search --store "$STORE" source --include-linked-documents)"
+SEARCH_LINKED_JSONL="$("${METABRAIN[@]}" search --store "$STORE" --path-prefix /refs source --include-linked-documents)"
 assert_search_jsonl_result "$SEARCH_LINKED_JSONL" /refs/source source
 printf '%s\n' "$SEARCH_LINKED_JSONL" | rg -F -q '"linkedDocuments":[{"kind":"documentID","value":"'"$TARGET_ID"'"}]'
-"${METABRAIN[@]}" search --store "$STORE" source --include-linked-documents --format text | rg -q '^linked: [0-9a-f-]+$'
-SEARCH_BACKLINKS_JSONL="$("${METABRAIN[@]}" search --store "$STORE" target --include-backlinks)"
+"${METABRAIN[@]}" search --store "$STORE" --path-prefix /refs source --include-linked-documents --format text | rg -q '^linked: [0-9a-f-]+$'
+SEARCH_BACKLINKS_JSONL="$("${METABRAIN[@]}" search --store "$STORE" --path-prefix /refs target --include-backlinks)"
 assert_search_jsonl_result "$SEARCH_BACKLINKS_JSONL" /refs/target target
 printf '%s\n' "$SEARCH_BACKLINKS_JSONL" | rg -q '"backlinks":\[\{"kind":"documentID","value":"[0-9a-f-]+"\}\]'
-"${METABRAIN[@]}" search --store "$STORE" target --include-backlinks --format text | rg -q '^backlinks: [0-9a-f-]+$'
+"${METABRAIN[@]}" search --store "$STORE" --path-prefix /refs target --include-backlinks --format text | rg -q '^backlinks: [0-9a-f-]+$'
 
 LONG_BODY="$TMP_DIR/long-body.txt"
 for _ in {1..650}; do

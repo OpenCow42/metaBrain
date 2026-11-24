@@ -16,12 +16,16 @@ contributors toward the calls that can become expensive as a store grows.
 - `C_old`: number of previous chunks for an updated document.
 - `T`: number of distinct indexed terms in a document or query context.
 - `Q`: number of distinct query terms.
-- `P`: total postings scanned for the query terms.
+- `P`: total body-chunk and title/path document postings scanned for the query terms.
 - `P_patch`: size of a unified diff patch.
 - `M`: number of unique matching document/chunk candidates before `--limit`.
+- `D_match`: number of candidate documents loaded for a search.
+- `K_limit`: maximum number of results requested by `--limit`.
+- `D_limit`: number of distinct documents in the retained results.
+- `P_fields`: total title/path field posting keys generated during backfill.
 - `G`: number of tag and metadata filters on a search query.
 - `F`: total tag and metadata filter postings scanned.
-- `B_match`: total body bytes decoded while scoring matched search candidates.
+- `B_match`: total text bytes decoded or tokenized while scoring search candidates.
 - `C_match`: total current chunk records scanned while scoring matched candidates.
 - `R`: number of references on a document.
 - `E`: number of reference edges scanned for linked-document or backlink output.
@@ -91,7 +95,7 @@ and [LevelDB options](https://github.com/google/leveldb/blob/main/include/leveld
 | `tree` | `tree`, `flattenedTreeEntries`, `printTree` | `O(A * seek(S) + A log A)` typical for an unbounded tree | `--max-depth 0` is `O(1)`. Larger depths scan and materialize the requested subtree, then group and sort for printing. |
 | `dump` current | `dump`, `listDirectory`, `getDocument`, optional `DocumentDumpFileWriter.write` | `O(A * seek(S) + D_dump * B + H_dump)` for the requested subtree | Includes the exact path document plus descendant documents, emits JSONL, and optionally writes UTF-8 body copies. |
 | `dump --versions` | `dump`, `versionRecords`, optional `DocumentDumpFileWriter.write` | `O(A * seek(S) + D_dump * (seek(S) + V log V + H) + H_dump)` | Selects current documents by path, then scans retained full-snapshot versions for each selected document. |
-| `search` | `search`, `filteredDocumentIDs`, `termPostings`, `currentChunkRecords`, scoring, optional edge scans | `O((Q + G + M) * seek(S) + F log F + P log P + B_match + C_match + M * (W^2 + E) + M log M)` | `W` is terms in a scored chunk. `--limit` is applied after collecting, scoring, and sorting all candidates, so it does not cap the initial scan. |
+| `search` | `search`, filter and term postings, `searchChunks`, ranking, optional edge scans | `O((Q + G + D_match + D_limit) * seek(S) + Q log Q + F log F + P + B_match + C_match + M * (Q + K_limit) + E)` | Uses corpus IDF and saturated field-weighted frequencies. The limit bounds retained candidates and reference enrichment. |
 | `versions` | `listVersions`, `versionRecords` | `O(seek(S) + V log V + H)` | Scans, decodes, sorts, and prints every full-snapshot version for the document. |
 | `prune` | `prune`, `pruneVersions`, `versionRecords`, retention helpers | `O(seek(S) + V log V + H + P_delete)` | Scans and decodes all versions before deciding which version keys to delete. |
 | `delete` | `deleteDocument`, `deleteDocumentRecord`, cleanup helpers | `O((C + R + E + L) * seek(S) + T + V + H + X_tree + P_delete + K_delete)` | Resolves one explicit document, checks retained version envelopes for compatible mutation, then cleans current chunks, lexical/tag/metadata indexes, references/backlinks, retained versions, and affected tree entries. |
@@ -105,6 +109,14 @@ tree with the existing tree. The rebuild materializes the document keys and
 tree entries, then applies edits and the marker together in one batch. Later
 operations on the same open store reuse the completed check. A reopened store
 with the marker needs one point lookup to skip the rebuild.
+
+The first search or document mutation on an older store checks the title/path
+index layout. The one-time backfill costs
+`O(N * seek(S) + B_store + P_fields)`, including decoding current documents
+and tokenizing their titles and paths. The field postings, corpus count,
+and layout marker are written together. The initialized store updates field
+postings and the count alongside each affected document write batch and
+reads the count with a point lookup at search time.
 
 ## Current Complex Calls To Treat Carefully
 
@@ -124,9 +136,9 @@ with the marker needs one point lookup to skip the rebuild.
 - Tree updates are branch-local now, but each affected branch entry still checks
   descendant document paths. Very deep paths or broad descendant sets can still
   make writes more expensive than the document body alone.
-- `search` scans all postings for every distinct query term and scores every
-  unique matched chunk before applying `--limit`. Queries for common terms can
-  therefore be expensive even with a small limit.
+- `search` scans body and field postings for every distinct query term and scores
+  every eligible candidate. Common terms can be expensive even with a small
+  `--limit`.
 - Prefix scans still materialize arrays. Key-only scans no longer copy values,
   and bulk scans use `fillCache = false`, but very broad scans still allocate
   memory proportional to the scan result.
@@ -367,25 +379,27 @@ cost grows with all emitted version bodies.
 
 The main work is:
 
-- tokenize and de-duplicate query terms: `O(Q)`;
-- scan tag and metadata filter indexes and intersect matching IDs:
+- tokenize and sort the distinct query terms;
+- scan tag and metadata filter indexes and intersect allowed document IDs:
   `O(G * seek(S) + F log F)`;
-- scan term posting prefixes for every query term: `O(Q * seek(S) + P log P)`;
-- OR-merge postings into unique document/chunk candidates: `O(P)`;
-- for every matched document, decode the document record once, scan current
-  chunks once in key order, and score each matched chunk:
-  `O(M * seek(S) + B_match + C_match + M * W^2)`;
-- keep only the best `L` scored candidates during traversal, where `L` is
-  `--limit`, using bounded insertion cost `O(M * L)` instead of a full
-  `O(M log M)` result sort;
-- materialize snippets, neighboring context, and optional reference edges only
-  for the retained top `L` results: `O(L * seek(S) + B_limit + L * E)`.
+- scan body-term and title/path-term prefixes and union distinct document IDs
+  per term for inverse document frequency: `O(Q * seek(S) + P)`;
+- load matching current documents and their chunks. Body matches scan the
+  current chunks once per document. Field-only matches read at most two chunks
+  to return the first passage and its neighbor:
+  `O(D_match * seek(S) + B_match + C_match)`;
+- count query terms in the candidate passages in one tokenization pass per
+  passage and score with saturated field frequencies and corpus IDF. Ranking
+  evaluates each query term for the document and each returned passage:
+  `O((D_match + M) * Q)` after tokenization;
+- find adjacent context chunks by ordinal and retain the best `K_limit`
+  results during traversal: `O(M * K_limit)`. Optional link and backlink scans
+  run once per unique retained document: `O(D_limit * seek(S) + E)`.
 
-The scoring locality helper can be `O(W^2)` for a chunk with many repeated query
-terms. This is usually hidden by small chunk sizes, but broad common-term
-queries can still create many candidates. Search remains exact, so broad
-queries still score every candidate before `--limit` is final; the limit now
-primarily bounds retained result records and reference/context enrichment.
+The document score uses the maximum body term frequency from its candidate
+passages to avoid double-counting overlapping text. The passage contribution
+uses the local body frequency. Scoring uses no document or passage length
+normalization (`b = 0`).
 
 ### `versions`
 

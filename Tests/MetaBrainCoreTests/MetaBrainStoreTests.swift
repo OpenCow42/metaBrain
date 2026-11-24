@@ -1715,7 +1715,7 @@ private func storeTestCodec<Value: Codable & Sendable>(
     }
 }
 
-@Test func searchRanksMultiTermMatchesByCoverageFrequencyAndLocality() async throws {
+@Test func searchRanksMultiTermMatchesByCoverageAndFrequency() async throws {
     try await withTemporaryStoreFixture { fixture in
         let store = try MetaBrainStore(url: fixture.storeURL)
         let strong = try await store.putDocument(DocumentInput(
@@ -2209,7 +2209,7 @@ private func storeTestCodec<Value: Codable & Sendable>(
     try await withTemporaryStoreFixture { fixture in
         let store = try MetaBrainStore(url: fixture.storeURL)
         let document = try await store.putDocument(DocumentInput(
-            path: try DocumentPath("/search/dangling-chunk"),
+            path: try DocumentPath("/search/missing-chunk"),
             body: "real content"
         ))
         try await store.writeRawValue(

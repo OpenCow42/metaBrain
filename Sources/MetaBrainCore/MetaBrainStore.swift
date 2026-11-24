@@ -95,12 +95,14 @@ public final class MetaBrainStore: Sendable {
 
     private let records: MetaBrainStoreDatabase
     private let writes = MetaBrainWriteCoordinator()
-    private let treeIndex = MetaBrainTreeIndex()
+    private let treeIndex = MetaBrainIndexPreparation()
+    private let searchFieldIndex = MetaBrainIndexPreparation()
     private static let chunkTargetCharacterCount = 4_000
     private static let chunkOverlapCharacterCount = 400
     private static let emptyIndexValue = Data()
     private static let bulkReadOptions = Database.ReadOptions(fillCache: false)
     private static let caseSensitiveTreeLayout = Data([1])
+    private static let currentSearchFieldLayout = Data([1])
 
     public convenience init(path: String, options: MetaBrainStoreOptions = .default) throws {
         try self.init(url: URL(fileURLWithPath: path, isDirectory: true), options: options)
@@ -443,76 +445,115 @@ public final class MetaBrainStore: Sendable {
     }
 
     public func search(_ query: SearchQuery) async throws -> [SearchResult] {
-        let queryTerms = Array(Set(Self.tokenize(query.text))).sorted()
+        let queryTerms = Set(Self.tokenize(query.text)).sorted()
         guard !queryTerms.isEmpty, query.limit > 0 else {
             return []
         }
 
         let allowedIDs = try await filteredDocumentIDs(for: query)
-        var matches: [MetaBrainSearchCandidate: Set<String>] = [:]
+        if allowedIDs?.isEmpty == true {
+            return []
+        }
+
+        let corpusSize = try await searchCorpusDocumentCount()
+        var weights: [String: Double] = [:]
+        var bodyOrdinalsByDocument: [DocumentID: Set<UInt32>] = [:]
 
         for term in queryTerms {
-            let postings = try await termPostings(for: term)
-            for posting in postings {
-                if let allowedIDs, !allowedIDs.contains(posting.documentID) {
-                    continue
-                }
-
-                var matchedTerms = matches[posting] ?? []
-                matchedTerms.insert(term)
-                matches[posting] = matchedTerms
+            var documentIDs = try await searchFieldDocumentIDs(matching: term)
+            for id in documentIDs where allowedIDs?.contains(id) != false {
+                bodyOrdinalsByDocument[id] = bodyOrdinalsByDocument[id] ?? []
             }
+
+            for posting in try await termPostings(for: term) {
+                documentIDs.insert(posting.documentID)
+                if allowedIDs?.contains(posting.documentID) != false {
+                    bodyOrdinalsByDocument[posting.documentID, default: []].insert(posting.chunkOrdinal)
+                }
+            }
+
+            weights[term] = MetaBrainSearchRanking.inverseDocumentFrequency(
+                corpusSize: corpusSize,
+                documentFrequency: documentIDs.count
+            )
         }
 
-        let candidatesByDocument = Dictionary(grouping: matches) { element in
-            element.key.documentID
-        }
-
+        let ranking = MetaBrainSearchRanking(terms: queryTerms, weights: weights)
         var topCandidates = MetaBrainSearchTopCandidates(limit: query.limit)
-        let groupedCandidates = candidatesByDocument.sorted { lhs, rhs in
-            lhs.key < rhs.key
-        }
-        for (documentID, documentCandidates) in groupedCandidates {
-            guard let record = try await documentRecord(id: documentID) else {
+        for (id, bodyOrdinals) in bodyOrdinalsByDocument {
+            guard let document = try await documentRecord(id: id)?.document,
+                  Self.path(document.path, matchesPrefix: query.pathPrefix) else {
                 continue
             }
-
-            let document = record.document
-            guard Self.path(document.path, matchesPrefix: query.pathPrefix) else {
-                continue
-            }
-
-            let chunks = try await currentChunkRecords(for: documentID)
-            let chunksByOrdinal = Dictionary(uniqueKeysWithValues: chunks.map { ($0.ordinal, $0) })
-
-            for (candidate, matchedTerms) in documentCandidates {
-                guard let chunk = chunksByOrdinal[candidate.chunkOrdinal] else {
+            let chunks = try await searchChunks(for: document, includeBodyMatches: !bodyOrdinals.isEmpty)
+            let fields = ranking.fieldFrequencies(title: document.title, path: document.path)
+            var passageFrequencies: [UInt32: [String: Int]] = [:]
+            var documentFrequencies: [String: Int] = [:]
+            for ordinal in bodyOrdinals {
+                guard let chunk = chunks[ordinal] else {
                     continue
                 }
 
-                let chunkTerms = Self.tokenize(chunk.text)
-                let score = Self.searchScore(
-                    queryTerms: queryTerms,
-                    matchedTerms: matchedTerms,
-                    chunkTerms: chunkTerms
-                )
+                let frequencies = ranking.termFrequencies(in: chunk.text)
+                if !frequencies.isEmpty {
+                    passageFrequencies[ordinal] = frequencies
+                    for (term, count) in frequencies {
+                        documentFrequencies[term] = max(documentFrequencies[term, default: 0], count)
+                    }
+                }
+            }
 
+            if passageFrequencies.isEmpty, !fields.isEmpty, chunks[0] != nil {
+                passageFrequencies[0] = [:]
+            }
+
+            guard !passageFrequencies.isEmpty else {
+                continue
+            }
+            let documentScore = ranking.score(fields: fields, body: documentFrequencies)
+            for (ordinal, frequencies) in passageFrequencies {
+                guard let chunk = chunks[ordinal] else {
+                    continue
+                }
+
+                let passageScore = ranking.score(fields: fields, body: frequencies)
                 topCandidates.insert(MetaBrainRankedSearchCandidate(
                     documentID: document.id,
                     path: document.path,
                     title: document.title,
-                    chunkOrdinal: chunk.ordinal,
-                    snippet: chunk.text,
-                    context: Self.contextChunks(around: chunk.ordinal, in: chunks),
-                    score: score
+                    chunkOrdinal: ordinal,
+                    snippet: chunk.text.isEmpty ? document.title ?? document.path.rawValue : chunk.text,
+                    context: Self.contextChunks(around: ordinal, in: chunks),
+                    score: documentScore + 0.1 * passageScore
                 ))
             }
         }
 
-        return try await searchResults(
-            from: topCandidates.sortedCandidates(),
-            query: query
-        )
+        return try await searchResults(from: topCandidates.sortedCandidates(), query: query)
+    }
+
+    private func searchChunks(
+        for document: StoredDocument,
+        includeBodyMatches: Bool
+    ) async throws -> [UInt32: MetaBrainChunkRecord] {
+        let records: [MetaBrainChunkRecord]
+        if includeBodyMatches {
+            records = try await currentChunkRecords(for: document.id)
+        } else {
+            var firstChunks: [MetaBrainChunkRecord] = []
+            for ordinal: UInt32 in [0, 1] {
+                if let chunk = try await compressedRecord(
+                    forKey: MetaBrainKeyspace.currentChunk(id: document.id, ordinal: ordinal),
+                    as: MetaBrainChunkRecord.self
+                ) {
+                    firstChunks.append(chunk)
+                }
+            }
+            records = firstChunks
+        }
+        return Dictionary(uniqueKeysWithValues: records
+            .filter { $0.versionSequence == document.currentVersion }
+            .map { ($0.ordinal, $0) })
     }
 
     @discardableResult
@@ -629,6 +670,20 @@ public final class MetaBrainStore: Sendable {
 
     func documentIDs(matchingTerm term: String) async throws -> [DocumentID] {
         try await documentIDs(forIndexPrefix: MetaBrainKeyspace.termPrefix(Self.normalizedTerm(term)))
+    }
+
+    func searchCorpusDocumentCount() async throws -> Int {
+        try await ensureSearchFieldIndex()
+        return try await indexedSearchDocumentCount()
+    }
+
+    func searchFieldDocumentIDs(matching term: String) async throws -> Set<DocumentID> {
+        try await ensureSearchFieldIndex()
+        let prefix = MetaBrainKeyspace.searchFieldTermPrefix(Self.normalizedTerm(term))
+        let keys = try await scanKeys(withPrefix: prefix)
+        return try Set(keys.map { key in
+            try DocumentID(rawValue: String(key.dropFirst(prefix.count)))
+        })
     }
 
     func documentIDs(tagged tag: String) async throws -> [DocumentID] {
@@ -910,6 +965,16 @@ public final class MetaBrainStore: Sendable {
             )
         }
         let indexKeys = try await currentIndexKeys(for: document, chunks: chunks)
+        try await ensureSearchFieldIndex()
+        let previousFieldKeys = previousRecord.map { Self.searchFieldKeys(for: $0.document) } ?? []
+        let fieldKeys = Self.searchFieldKeys(for: document)
+        let removedFieldKeys = previousFieldKeys.subtracting(fieldKeys)
+        let addedFieldKeys = fieldKeys.subtracting(previousFieldKeys)
+        let updatedDocumentCount = if previousRecord == nil {
+            try await updatedSearchDocumentCount(by: 1)
+        } else {
+            nil as Data?
+        }
 
         try await Self.mapLevelDBErrors(path: url.path) {
             let records = try await currentRecords()
@@ -932,6 +997,15 @@ public final class MetaBrainStore: Sendable {
 
                 for key in indexKeys {
                     try batch.put(Self.emptyIndexValue, forKey: key)
+                }
+                for key in removedFieldKeys {
+                    try batch.deleteValue(forKey: key)
+                }
+                for key in addedFieldKeys {
+                    try batch.put(Self.emptyIndexValue, forKey: key)
+                }
+                if let updatedDocumentCount {
+                    try batch.put(updatedDocumentCount, forKey: MetaBrainKeyspace.searchDocumentCount)
                 }
 
                 for key in treeUpdate.removedKeys {
@@ -973,6 +1047,9 @@ public final class MetaBrainStore: Sendable {
         let entryMetadata = try await entryMetadataStoredRecord(for: document)
         try entryMetadata?.requireCurrentSchemaVersion(operation: "delete document metadata")
         let treeUpdate = try await incrementalTreeUpdate(removing: document)
+        try await ensureSearchFieldIndex()
+        let fieldKeys = Self.searchFieldKeys(for: document)
+        let updatedDocumentCount = try await updatedSearchDocumentCount(by: -1)
 
         try await Self.mapLevelDBErrors(path: url.path) {
             let records = try await currentRecords()
@@ -988,6 +1065,10 @@ public final class MetaBrainStore: Sendable {
                 try batch.deleteValue(forKey: MetaBrainKeyspace.document(id: document.id))
                 try batch.deleteValue(forKey: MetaBrainKeyspace.documentMetadata(id: document.id))
                 try batch.deleteValue(forKey: MetaBrainKeyspace.documentPath(document.path))
+                for key in fieldKeys {
+                    try batch.deleteValue(forKey: key)
+                }
+                try batch.put(updatedDocumentCount, forKey: MetaBrainKeyspace.searchDocumentCount)
 
                 for key in treeUpdate.removedKeys {
                     try batch.deleteValue(forKey: key)
@@ -1241,6 +1322,75 @@ public final class MetaBrainStore: Sendable {
                     )
                 }
         }
+    }
+
+    private func ensureSearchFieldIndex() async throws {
+        try await searchFieldIndex.prepare {
+            try await self.backfillSearchFieldIndexIfNeeded()
+        }
+    }
+
+    private func backfillSearchFieldIndexIfNeeded() async throws {
+        try await Self.mapLevelDBErrors(path: url.path) {
+            let records = try await currentRecords()
+            if let layout = try await records.value(forKey: MetaBrainKeyspace.searchFieldLayout) {
+                guard layout == Self.currentSearchFieldLayout else {
+                    throw MetaBrainStoreError.operationFailed(
+                        message: "Unrecognized search field index layout. Upgrade metaBrain to use this store's search index."
+                    )
+                }
+                return
+            }
+
+            let fieldPrefix = Data(MetaBrainKeyspace.prefix(.searchFieldTerm).utf8)
+            guard try await records.value(forKey: MetaBrainKeyspace.searchDocumentCount) == nil,
+                  try await records.scanEncodedPrefixKeys(fieldPrefix, readOptions: Self.bulkReadOptions).isEmpty else {
+                throw MetaBrainStoreError.operationFailed(message: "Search field index exists without its layout marker.")
+            }
+
+            let documentPrefix = Data(MetaBrainKeyspace.prefix(.documentID).utf8)
+            let documentKeys = try await records.scanEncodedPrefixKeys(documentPrefix, readOptions: Self.bulkReadOptions)
+            var fieldKeys: [String] = []
+            var documentCount = 0
+            for key in documentKeys {
+                guard let data = try await records.value(forKey: key, readOptions: Self.bulkReadOptions) else {
+                    continue
+                }
+                let document = try decodeCompressedRecord(data, as: MetaBrainDocumentRecord.self).payload.document
+                fieldKeys.append(contentsOf: Self.searchFieldKeys(for: document))
+                documentCount += 1
+            }
+
+            try await records.write { [fieldKeys, documentCount] batch in
+                for key in fieldKeys {
+                    try batch.put(Self.emptyIndexValue, forKey: key)
+                }
+                try batch.put(Data(String(documentCount).utf8), forKey: MetaBrainKeyspace.searchDocumentCount)
+                try batch.put(Self.currentSearchFieldLayout, forKey: MetaBrainKeyspace.searchFieldLayout)
+            }
+        }
+    }
+
+    private func indexedSearchDocumentCount() async throws -> Int {
+        guard let data = try await rawValue(forKey: MetaBrainKeyspace.searchDocumentCount),
+              let text = String(data: data, encoding: .utf8),
+              let count = Int(text), count >= 0 else {
+            throw MetaBrainStoreError.operationFailed(message: "Missing or invalid search corpus document count.")
+        }
+        return count
+    }
+
+    private func updatedSearchDocumentCount(by change: Int) async throws -> Data {
+        let (count, overflow) = try await indexedSearchDocumentCount().addingReportingOverflow(change)
+        guard !overflow, count >= 0 else {
+            throw MetaBrainStoreError.operationFailed(message: "Invalid search corpus document count adjustment.")
+        }
+        return Data(String(count).utf8)
+    }
+
+    private static func searchFieldKeys(for document: StoredDocument) -> Set<String> {
+        let terms = Set(tokenize(document.path.rawValue) + tokenize(document.title ?? ""))
+        return Set(terms.map { MetaBrainKeyspace.searchFieldTerm($0, id: document.id) })
     }
 
     private func ensureTreeIndex() async throws {
@@ -1856,73 +2006,15 @@ public final class MetaBrainStore: Sendable {
         }
     }
 
-    private static func searchScore(
-        queryTerms: [String],
-        matchedTerms: Set<String>,
-        chunkTerms: [String]
-    ) -> Double {
-        let coverage = Double(matchedTerms.count) / Double(queryTerms.count)
-        let frequency = chunkTerms.reduce(into: 0) { count, term in
-            if matchedTerms.contains(term) {
-                count += 1
-            }
-        }
-        let locality = localityScore(for: queryTerms, in: chunkTerms)
-
-        return coverage * 100 + Double(frequency) * 5 + locality * 25
-    }
-
-    private static func localityScore(for queryTerms: [String], in chunkTerms: [String]) -> Double {
-        guard queryTerms.count > 1 else {
-            return 1
-        }
-
-        let requiredTerms = Set(queryTerms)
-        var bestSpan: Int?
-
-        for start in chunkTerms.indices {
-            guard requiredTerms.contains(chunkTerms[start]) else {
-                continue
-            }
-
-            var seen: Set<String> = []
-            for end in start..<chunkTerms.count {
-                if requiredTerms.contains(chunkTerms[end]) {
-                    seen.insert(chunkTerms[end])
-                }
-
-                if seen.count == requiredTerms.count {
-                    let span = end - start + 1
-                    if let currentBest = bestSpan {
-                        bestSpan = min(currentBest, span)
-                    } else {
-                        bestSpan = span
-                    }
-                    break
-                }
-            }
-        }
-
-        guard let bestSpan else {
-            return 0
-        }
-
-        return 1 / Double(bestSpan)
-    }
-
     private static func contextChunks(
         around ordinal: UInt32,
-        in chunks: [MetaBrainChunkRecord]
+        in chunks: [UInt32: MetaBrainChunkRecord]
     ) -> [SearchContextChunk] {
-        var context: [SearchContextChunk] = []
-        for chunk in chunks {
-            let distance = Int64(chunk.ordinal) - Int64(ordinal)
-            if distance != 0 && abs(distance) <= 1 {
-                context.append(SearchContextChunk(ordinal: chunk.ordinal, text: chunk.text))
-            }
+        let previous = ordinal > 0 ? chunks[ordinal - 1] : nil
+        let next = ordinal < .max ? chunks[ordinal + 1] : nil
+        return [previous, next].compactMap { chunk in
+            chunk.map { SearchContextChunk(ordinal: $0.ordinal, text: $0.text) }
         }
-
-        return context
     }
 
     private static func defaultEntryMetadata(
@@ -2256,7 +2348,7 @@ private actor MetaBrainWriteCoordinator {
     }
 }
 
-private actor MetaBrainTreeIndex {
+private actor MetaBrainIndexPreparation {
     private var preparation: Task<Void, Error>?
 
     func prepare(_ operation: @Sendable @escaping () async throws -> Void) async throws {
