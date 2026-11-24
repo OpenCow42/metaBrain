@@ -78,12 +78,14 @@ import Testing
     #expect(try MetaBrainJSON.decoder().decode(ServerErrorPayload.self, from: pastEnd.body).error == "invalid_request")
 }
 
-@Test func getOutputDecodesLegacyResponsesWithoutSourceCapture() throws {
+@Test func getOutputDecodesLegacyResponsesWithoutCaptureOrClaims() throws {
     let legacy = Data("""
     {"body":"Legacy note","createdAt":"2026-01-02T00:00:00Z","documentID":"legacy","metadata":{},"path":"/legacy.md","references":[],"tags":[],"title":null,"updatedAt":"2026-01-02T00:00:00Z","version":1}
     """.utf8)
     let output = try MetaBrainJSON.decoder().decode(GetOutput.self, from: legacy)
     #expect(output.sourceCapture == nil)
+    #expect(output.claims == nil)
+    #expect(output.sourceProfile == nil)
     #expect(try MetaBrainJSON.encoder().encode(output) == legacy)
 }
 

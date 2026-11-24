@@ -1,4 +1,6 @@
-/// Selects the current Markdown documents to audit. A nil path selects the whole store.
+import Foundation
+
+/// Selects the current documents to audit. A nil path selects the whole store.
 public struct DocumentLintQuery: Equatable, Sendable {
     public var path: DocumentPath?
     public var includeOrphans: Bool
@@ -15,6 +17,7 @@ public enum DocumentLintKind: String, CaseIterable, Codable, Equatable, Sendable
     case missingAnchor
     case ambiguousAnchor
     case orphan
+    case claimEvidence
 }
 
 /// A finding in a current revision. Citation offsets count Swift Characters and exclude the end.
@@ -29,6 +32,10 @@ public struct DocumentLintFinding: Codable, Equatable, Sendable {
     public let targetPath: String?
     public let fragment: String?
     public let candidatePaths: [String]?
+    public let claimID: UUID?
+    public let evidenceIssue: ClaimIssue.Kind?
+    public let evidenceRef: EvidenceReference?
+    public let message: String?
 
     init?(_ link: DocumentLinkOccurrence) {
         switch link.status {
@@ -48,6 +55,10 @@ public struct DocumentLintFinding: Codable, Equatable, Sendable {
         targetPath = link.targetPath?.rawValue
         fragment = link.fragment
         candidatePaths = link.candidates.isEmpty ? nil : link.candidates.map(\.path.rawValue)
+        claimID = nil
+        evidenceIssue = nil
+        evidenceRef = nil
+        message = nil
     }
 
     init(orphan document: StoredDocument) {
@@ -61,20 +72,43 @@ public struct DocumentLintFinding: Codable, Equatable, Sendable {
         targetPath = nil
         fragment = nil
         candidatePaths = nil
+        claimID = nil
+        evidenceIssue = nil
+        evidenceRef = nil
+        message = nil
+    }
+
+    init(claim: ProjectClaim, issue: ClaimIssue, owner: StoredDocument) {
+        kind = .claimEvidence
+        sourceID = owner.id.rawValue
+        sourcePath = owner.path.rawValue
+        sourceVersion = owner.currentVersion
+        start = nil
+        end = nil
+        destination = nil
+        targetPath = nil
+        fragment = nil
+        candidatePaths = nil
+        claimID = claim.id
+        evidenceIssue = issue.kind
+        evidenceRef = issue.ref
+        message = issue.message
     }
 }
 
 public struct DocumentLintReport: Codable, Equatable, Sendable {
     public let path: String
     public let documentsChecked: Int
-    /// Counts keyed by `DocumentLintKind.rawValue`, including zero counts.
+    /// Counts keyed by `DocumentLintKind.rawValue`. Link and orphan checks include zero counts.
     public let counts: [String: Int]
     public let findings: [DocumentLintFinding]
 
     init(path: String, documentsChecked: Int, findings: [DocumentLintFinding]) {
         self.path = path
         self.documentsChecked = documentsChecked
-        var counts = Dictionary(uniqueKeysWithValues: DocumentLintKind.allCases.map { ($0.rawValue, 0) })
+        var counts = Dictionary(uniqueKeysWithValues: DocumentLintKind.allCases
+            .filter { $0 != .claimEvidence }
+            .map { ($0.rawValue, 0) })
         for finding in findings { counts[finding.kind.rawValue, default: 0] += 1 }
         self.counts = counts
         self.findings = findings

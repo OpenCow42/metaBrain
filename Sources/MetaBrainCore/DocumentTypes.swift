@@ -126,6 +126,8 @@ public struct DocumentInput: Codable, Equatable, Sendable {
     /// A replacement with `nil` preserves the prior setting.
     public var markdown: Bool?
     public var sourceCapture: SourceCapture?
+    public var claims: [ProjectClaim]?
+    public var sourceProfile: ClaimSourceProfile?
 
     public var isMarkdown: Bool { markdown == true || path.hasMarkdownExtension }
 
@@ -138,7 +140,9 @@ public struct DocumentInput: Codable, Equatable, Sendable {
         references: [DocumentReference] = [],
         retention: VersionRetentionPolicy? = nil,
         markdown: Bool? = nil,
-        sourceCapture: SourceCapture? = nil
+        sourceCapture: SourceCapture? = nil,
+        claims: [ProjectClaim]? = nil,
+        sourceProfile: ClaimSourceProfile? = nil
     ) {
         self.path = path
         self.title = title
@@ -149,6 +153,8 @@ public struct DocumentInput: Codable, Equatable, Sendable {
         self.retention = retention
         self.markdown = markdown
         self.sourceCapture = sourceCapture
+        self.claims = claims
+        self.sourceProfile = sourceProfile
     }
 }
 
@@ -165,6 +171,8 @@ public struct StoredDocument: Codable, Equatable, Sendable, Identifiable {
     public var updatedAt: Date
     public var markdown: Bool?
     public var sourceCapture: SourceCapture?
+    public var claims: [ProjectClaim]?
+    public var sourceProfile: ClaimSourceProfile?
 
     public var isMarkdown: Bool { markdown == true || path.hasMarkdownExtension }
 
@@ -180,7 +188,9 @@ public struct StoredDocument: Codable, Equatable, Sendable, Identifiable {
         createdAt: Date,
         updatedAt: Date,
         markdown: Bool? = nil,
-        sourceCapture: SourceCapture? = nil
+        sourceCapture: SourceCapture? = nil,
+        claims: [ProjectClaim]? = nil,
+        sourceProfile: ClaimSourceProfile? = nil
     ) {
         self.id = id
         self.path = path
@@ -194,6 +204,8 @@ public struct StoredDocument: Codable, Equatable, Sendable, Identifiable {
         self.updatedAt = updatedAt
         self.markdown = markdown
         self.sourceCapture = sourceCapture
+        self.claims = claims
+        self.sourceProfile = sourceProfile
     }
 }
 
@@ -292,6 +304,9 @@ public struct DocumentVersion: Codable, Equatable, Sendable, Identifiable {
     public var id: String {
         "\(documentID.rawValue):\(sequence)"
     }
+
+    /// Store-assigned review scope for the claims in this snapshot.
+    var claimProject: DocumentPath? = nil
 
     public var documentID: DocumentID
     public var sequence: UInt64

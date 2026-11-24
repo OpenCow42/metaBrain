@@ -266,6 +266,7 @@ public final class MetaBrainStore: Sendable {
         ifVersion: UInt64? = nil,
         bodyOnly: Bool = false
     ) async throws -> DocumentWriteResult {
+        try Self.validateUnreviewedInput(input)
         if bodyOnly, ifVersion == 0 {
             throw MetaBrainStoreError.bodyOnlyCannotCreate
         }
@@ -312,6 +313,10 @@ public final class MetaBrainStore: Sendable {
         try operation.validate()
         return try await writes.run {
             let current = try await self.operationState(for: operation)
+            if operation.documents.contains(where: { $0.claims?.isEmpty == false }) {
+                let prepared = try await self.prepareProjectOperation(operation, current: current.records)
+                try await self.validateOperationClaims(operation, prepared: prepared)
+            }
             return try OperationPreview.make(
                 operation: operation, storePath: self.canonicalOperationStorePath,
                 storeIdentity: try self.operationStoreIdentity.get(), targets: current.targets
@@ -343,7 +348,9 @@ public final class MetaBrainStore: Sendable {
                 throw ProjectOperationError.conflict("A target document changed after inspection. Inspect the operation again.")
             }
 
-            return try await self.commitOperation(preview, current: current.records, receiptKey: receiptKey)
+            let prepared = try await self.prepareProjectOperation(operation, current: current.records)
+            try await self.validateOperationClaims(operation, prepared: prepared)
+            return try await self.commitOperation(preview, prepared: prepared, receiptKey: receiptKey)
         }
     }
 
@@ -353,6 +360,7 @@ public final class MetaBrainStore: Sendable {
         var targets: [OperationTarget] = []
         var records: [DocumentPath: MetaBrainDocumentRecord] = [:]
         for input in operation.documents {
+            try input.sourceProfile?.validate()
             try await validateSourceCapture(input.sourceCapture)
             let id = try await documentID(forPath: input.path)
             let version: UInt64
@@ -364,6 +372,10 @@ public final class MetaBrainStore: Sendable {
                 records[input.path] = record
                 version = record.document.currentVersion
             } else {
+                let plannedID = operation.creationID(for: input.path)
+                guard try await rawValue(forKey: MetaBrainKeyspace.document(id: plannedID)) == nil else {
+                    throw ProjectOperationError.conflict("A planned creation ID already belongs to a document.")
+                }
                 version = 0
             }
             targets.append(OperationTarget(path: input.path, documentID: id, version: version))
@@ -371,56 +383,131 @@ public final class MetaBrainStore: Sendable {
         return (targets, records)
     }
 
-    private func commitOperation(
-        _ preview: OperationPreview,
-        current: [DocumentPath: MetaBrainDocumentRecord],
-        receiptKey: String
-    ) async throws -> OperationReceipt {
+    private func prepareProjectOperation(
+        _ operation: ProjectOperation,
+        current: [DocumentPath: MetaBrainDocumentRecord]
+    ) async throws -> PreparedProjectOperation {
         var prepared: [PreparedDocumentWrite] = []
         var unchanged: [StoredDocument] = []
         var results: [OperationResult] = []
-        for input in preview.operation.documents {
+        var seenIDs: Set<DocumentID> = []
+        for input in operation.documents {
             let document: StoredDocument
             let status: DocumentWriteStatus
             if let existing = current[input.path] {
-                if existing.matches(input) {
+                if existing.matches(input, claimProject: operation.project) {
                     document = existing.document
                     status = .unchanged
                     unchanged.append(document)
                 } else {
                     let write = try await prepareDocumentUpdate(
-                        id: existing.document.id, existingRecord: existing, input: input
+                        id: existing.document.id, existingRecord: existing, input: input, claimProject: operation.project
                     )
                     prepared.append(write)
                     document = write.record.document
                     status = .updated
                 }
             } else {
-                let write = Self.prepareNewDocument(input)
+                let id = operation.creationID(for: input.path)
+                let write = Self.prepareNewDocument(input, id: id, claimProject: operation.project)
                 prepared.append(write)
                 document = write.record.document
                 status = .created
+            }
+            guard seenIDs.insert(document.id).inserted else {
+                throw ProjectOperationError.conflict("Two project targets refer to the same document ID.")
             }
             results.append(OperationResult(
                 path: document.path, documentID: document.id, version: document.currentVersion, status: status
             ))
         }
 
-        let receipt = OperationReceipt(operationID: preview.operation.operationID, digest: preview.digest, results: results)
+        return PreparedProjectOperation(writes: prepared, unchanged: unchanged, results: results)
+    }
+
+    private static func validateUnreviewedInput(_ input: DocumentInput) throws {
+        guard input.claims == nil else {
+            throw ProjectOperationError.invalid("Write claims through a reviewed project operation.")
+        }
+        try input.sourceProfile?.validate()
+    }
+
+    private func validateOperationClaims(
+        _ operation: ProjectOperation,
+        prepared: PreparedProjectOperation
+    ) async throws {
+        guard operation.documents.contains(where: { $0.claims?.isEmpty == false }) else { return }
+
+        let projected = Dictionary(uniqueKeysWithValues: prepared.writes.map { write in
+            (write.record.document.id, write.record.document)
+        })
+        let pruned = Set(prepared.writes.flatMap(\.prunedVersions).map {
+            MetaBrainKeyspace.version(id: $0.documentID, sequence: $0.sequence)
+        })
+        let asOf = Date()
+        for input in operation.documents {
+            var ids: Set<UUID> = []
+            for claim in input.claims ?? [] {
+                guard ids.insert(claim.id).inserted else {
+                    throw ProjectOperationError.invalid("Duplicate claim ID \(claim.id) in \(input.path).")
+                }
+                let issues = try await ClaimAssessment.evaluate(claim, asOf: asOf, project: operation.project) { reference in
+                    try await self.claimEvidence(
+                        reference, projected: projected, pruned: pruned
+                    )
+                }
+                if let issue = issues.first(where: \.isWriteError) {
+                    throw ProjectOperationError.invalid("Claim \(claim.id) in \(input.path): \(issue.message)")
+                }
+            }
+        }
+    }
+
+    private func claimEvidence(
+        _ reference: EvidenceReference,
+        projected: [DocumentID: StoredDocument] = [:],
+        pruned: Set<String> = []
+    ) async throws -> (retained: StoredDocument?, current: StoredDocument?) {
+        let id = reference.documentID
+        let current: StoredDocument?
+        if let staged = projected[id] {
+            current = staged
+        } else {
+            current = try await documentRecord(id: id)?.document
+        }
+
+        let retained: StoredDocument?
+        if let staged = projected[id], staged.currentVersion == reference.version {
+            retained = staged
+        } else if pruned.contains(MetaBrainKeyspace.version(id: id, sequence: reference.version)) {
+            retained = nil
+        } else {
+            retained = try await retainedDocument(.documentID(id), version: reference.version)
+        }
+
+        return (retained, current)
+    }
+
+    private func commitOperation(
+        _ preview: OperationPreview,
+        prepared: PreparedProjectOperation,
+        receiptKey: String
+    ) async throws -> OperationReceipt {
+        let receipt = OperationReceipt(operationID: preview.operation.operationID, digest: preview.digest, results: prepared.results)
         var edit = MetaBrainRecordEdit()
-        let stagedIDs = Dictionary(uniqueKeysWithValues: results.map { ($0.path, $0.documentID) })
-        for write in prepared {
+        let stagedIDs = Dictionary(uniqueKeysWithValues: prepared.results.map { ($0.path, $0.documentID) })
+        for write in prepared.writes {
             edit.merge(try await documentRecordEdit(for: write, stagedIDs: stagedIDs))
         }
-        for document in unchanged {
+        for document in prepared.unchanged {
             edit.merge(try await pathReferenceEdit(for: document, stagedIDs: stagedIDs))
         }
 
-        if !prepared.isEmpty {
-            edit.merge(try await operationCitationEdit(for: prepared))
-            edit.merge(try await operationTreeEdit(for: prepared.map { $0.record.document }))
+        if !prepared.writes.isEmpty {
+            edit.merge(try await operationCitationEdit(for: prepared.writes))
+            edit.merge(try await operationTreeEdit(for: prepared.writes.map { $0.record.document }))
             try await ensureSearchFieldIndex()
-            let newDocumentCount = prepared.filter { $0.previousRecord == nil }.count
+            let newDocumentCount = prepared.writes.filter { $0.previousRecord == nil }.count
             if newDocumentCount > 0 {
                 edit.put(
                     try await updatedSearchDocumentCount(by: newDocumentCount), for: MetaBrainKeyspace.searchDocumentCount
@@ -439,7 +526,8 @@ public final class MetaBrainStore: Sendable {
         _ reference: DocumentReference,
         with input: DocumentInput
     ) async throws -> StoredDocument {
-        try await writes.run {
+        try Self.validateUnreviewedInput(input)
+        return try await writes.run {
             guard let id = try await self.documentID(for: reference) else {
                 return try await self.writeNewDocument(input)
             }
@@ -538,7 +626,9 @@ public final class MetaBrainStore: Sendable {
             createdAt: current.document.createdAt,
             updatedAt: revision.createdAt,
             markdown: snapshot.markdown,
-            sourceCapture: snapshot.sourceCapture
+            sourceCapture: snapshot.sourceCapture,
+            claims: snapshot.claims,
+            sourceProfile: snapshot.sourceProfile
         )
     }
 
@@ -1131,9 +1221,12 @@ public final class MetaBrainStore: Sendable {
         return write.record.document
     }
 
-    private static func prepareNewDocument(_ input: DocumentInput) -> PreparedDocumentWrite {
+    private static func prepareNewDocument(
+        _ input: DocumentInput,
+        id: DocumentID = DocumentID.generate(),
+        claimProject: DocumentPath? = nil
+    ) -> PreparedDocumentWrite {
         let now = Date()
-        let id = DocumentID.generate()
         let document = StoredDocument(
             id: id,
             path: input.path,
@@ -1146,18 +1239,22 @@ public final class MetaBrainStore: Sendable {
             createdAt: now,
             updatedAt: now,
             markdown: input.markdown,
-            sourceCapture: input.sourceCapture
+            sourceCapture: input.sourceCapture,
+            claims: input.claims,
+            sourceProfile: input.sourceProfile
         )
         let record = MetaBrainDocumentRecord(
             document: document,
-            retention: input.retention ?? .keepAll
+            retention: input.retention ?? .keepAll,
+            claimProject: input.claims?.isEmpty == false ? claimProject : nil
         )
-        let version = DocumentVersion(
+        var version = DocumentVersion(
             documentID: id,
             sequence: document.currentVersion,
             snapshot: input,
             createdAt: now
         )
+        version.claimProject = record.claimProject
 
         return PreparedDocumentWrite(
             record: record,
@@ -1210,7 +1307,8 @@ public final class MetaBrainStore: Sendable {
         id: DocumentID,
         existingRecord: MetaBrainDocumentRecord,
         input: DocumentInput,
-        accessMutation: EntryAccessMutation = .fullWrite
+        accessMutation: EntryAccessMutation = .fullWrite,
+        claimProject: DocumentPath? = nil
     ) async throws -> PreparedDocumentWrite {
         if let existingPathID = try await documentID(forPath: input.path),
            existingPathID != id {
@@ -1223,9 +1321,12 @@ public final class MetaBrainStore: Sendable {
             throw MetaBrainStoreError.documentVersionExhausted(existing.path)
         }
 
+        let updatedClaimProject = existingRecord.claimProject(after: input, in: claimProject)
         var input = input
         input.markdown = input.markdown ?? existing.markdown
         input.sourceCapture = input.sourceCapture ?? existing.sourceCapture
+        input.claims = input.claims ?? existing.claims
+        input.sourceProfile = input.sourceProfile ?? existing.sourceProfile
         if existing.path.hasMarkdownExtension, !input.path.hasMarkdownExtension, input.markdown == nil {
             input.markdown = true
         }
@@ -1242,18 +1343,22 @@ public final class MetaBrainStore: Sendable {
             createdAt: existing.createdAt,
             updatedAt: now,
             markdown: input.markdown,
-            sourceCapture: input.sourceCapture
+            sourceCapture: input.sourceCapture,
+            claims: input.claims,
+            sourceProfile: input.sourceProfile
         )
         let record = MetaBrainDocumentRecord(
             document: document,
-            retention: input.retention ?? existingRecord.retention
+            retention: input.retention ?? existingRecord.retention,
+            claimProject: updatedClaimProject
         )
-        let version = DocumentVersion(
+        var version = DocumentVersion(
             documentID: id,
             sequence: document.currentVersion,
             snapshot: input,
             createdAt: now
         )
+        version.claimProject = record.claimProject
         let removedPath: DocumentPath?
         if existing.path == input.path {
             removedPath = nil
@@ -2736,6 +2841,12 @@ private actor MetaBrainIndexPreparation {
     }
 }
 
+private struct PreparedProjectOperation: Sendable {
+    let writes: [PreparedDocumentWrite]
+    let unchanged: [StoredDocument]
+    let results: [OperationResult]
+}
+
 private struct PreparedDocumentWrite: Sendable {
     let record: MetaBrainDocumentRecord
     let version: DocumentVersion
@@ -2753,6 +2864,12 @@ private enum EntryAccessMutation: Sendable {
 private struct MetaBrainDocumentRecord: Codable, Equatable, Sendable {
     var document: StoredDocument
     var retention: VersionRetentionPolicy
+    var claimProject: DocumentPath? = nil
+
+    func claimProject(after input: DocumentInput, in reviewProject: DocumentPath?) -> DocumentPath? {
+        guard let claims = input.claims else { return claimProject }
+        return claims.isEmpty ? nil : reviewProject
+    }
 
     func bodyReplacement(_ body: String) -> DocumentInput {
         DocumentInput(
@@ -2766,12 +2883,15 @@ private struct MetaBrainDocumentRecord: Codable, Equatable, Sendable {
         )
     }
 
-    func matches(_ input: DocumentInput) -> Bool {
+    func matches(_ input: DocumentInput, claimProject reviewProject: DocumentPath? = nil) -> Bool {
         document.path == input.path && document.title == input.title && document.tags == input.tags
             && document.metadata == input.metadata && document.references == input.references
             && retention == (input.retention ?? retention) && document.body.utf8.elementsEqual(input.body.utf8)
             && document.markdown == (input.markdown ?? document.markdown)
             && document.sourceCapture == (input.sourceCapture ?? document.sourceCapture)
+            && document.claims == (input.claims ?? document.claims)
+            && claimProject == claimProject(after: input, in: reviewProject)
+            && document.sourceProfile == (input.sourceProfile ?? document.sourceProfile)
     }
 }
 
@@ -2936,16 +3056,28 @@ extension MetaBrainStore {
             var findings: [DocumentLintFinding] = []
             var documentsChecked = 0
             var cache = CitationReadCache()
+            let asOf = Date()
             for id in ids {
-                guard let source = try await self.documentRecord(id: id)?.document, source.isMarkdown else { continue }
+                guard let record = try await self.documentRecord(id: id) else { continue }
+                let source = record.document
+                let claims = source.claims ?? []
+                guard source.isMarkdown || !claims.isEmpty else { continue }
                 documentsChecked += 1
-                let citations = try await self.outgoingCitationRecords(from: id)
-                for citation in citations.sorted(by: { $0.link.start < $1.link.start }) where citation.status != .external {
-                    let link = try await self.linkOccurrence(citation, cache: &cache)
-                    if let finding = DocumentLintFinding(link) { findings.append(finding) }
+                if source.isMarkdown {
+                    let citations = try await self.outgoingCitationRecords(from: id)
+                    for citation in citations.sorted(by: { $0.link.start < $1.link.start }) where citation.status != .external {
+                        let link = try await self.linkOccurrence(citation, cache: &cache)
+                        if let finding = DocumentLintFinding(link) { findings.append(finding) }
+                    }
+                    if query.includeOrphans, try await self.inboundReferences(to: id).allSatisfy({ $0 == id }) {
+                        findings.append(DocumentLintFinding(orphan: source))
+                    }
                 }
-                if query.includeOrphans, try await self.inboundReferences(to: id).allSatisfy({ $0 == id }) {
-                    findings.append(DocumentLintFinding(orphan: source))
+                for claim in claims {
+                    let issues = try await ClaimAssessment.evaluate(claim, asOf: asOf, project: record.claimProject) { reference in
+                        try await self.claimEvidence(reference)
+                    }
+                    findings += issues.map { DocumentLintFinding(claim: claim, issue: $0, owner: source) }
                 }
             }
             return DocumentLintReport(path: scope.rawValue, documentsChecked: documentsChecked, findings: findings)

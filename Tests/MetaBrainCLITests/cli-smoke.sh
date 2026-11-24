@@ -595,6 +595,7 @@ PYOPERATION
 
 check_project_operation "$TMP_DIR/operations-direct/store.leveldb" "${METABRAIN[@]}" --no-server
 python3 Tests/MetaBrainCLITests/source-capture.py "$TMP_DIR/capture-direct/store.leveldb" "${METABRAIN[@]}" --no-server
+python3 Tests/MetaBrainCLITests/claim-evidence.py "$TMP_DIR/claims-direct/store.leveldb" "${METABRAIN[@]}" --no-server
 
 GUIDED_STORE="$TMP_DIR/guided.leveldb"
 "${METABRAIN[@]}" init --no-server --store "$GUIDED_STORE" >/dev/null
@@ -1412,6 +1413,7 @@ server_mb() {
 check_guarded_put "$TMP_DIR/guarded-daemon/store.leveldb" "${METABRAIN[@]}" --server "$SERVER_SOCKET"
 check_project_operation "$TMP_DIR/operations-daemon/store.leveldb" "${METABRAIN[@]}" --server "$SERVER_SOCKET"
 python3 Tests/MetaBrainCLITests/source-capture.py "$TMP_DIR/capture-daemon/store.leveldb" "${METABRAIN[@]}" --server "$SERVER_SOCKET"
+python3 Tests/MetaBrainCLITests/claim-evidence.py "$TMP_DIR/claims-daemon/store.leveldb" "${METABRAIN[@]}" --server "$SERVER_SOCKET"
 
 check_recall "$TMP_DIR/recall-daemon/store.leveldb" "${METABRAIN[@]}" --server "$SERVER_SOCKET"
 python3 Tests/MetaBrainCLITests/citation-search.py "$TMP_DIR/citations-daemon/store.leveldb" "${METABRAIN[@]}" --server "$SERVER_SOCKET"

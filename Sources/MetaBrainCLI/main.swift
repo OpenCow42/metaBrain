@@ -1002,7 +1002,7 @@ extension MetaBrainCommand {
     struct Lint: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "lint",
-            abstract: "Audit current Markdown citations.",
+            abstract: "Audit current Markdown citations and claim evidence.",
             discussion: """
             Omit the path to audit the whole store. A path selects that document and its descendants.
             Citations resolve against the whole store. JSONL prints one finding per line.
@@ -1039,14 +1039,21 @@ extension MetaBrainCommand {
                     if let start = finding.start, let end = finding.end {
                         location += ":\(start)-\(end)"
                     }
+                    if let claimID = finding.claimID, let issue = finding.evidenceIssue, let message = finding.message {
+                        let reference = finding.evidenceRef.map { "\t\($0)" } ?? ""
+                        print("\(location)\t\(finding.kind.rawValue)\t\(claimID.uuidString)\t\(issue.rawValue)\(reference)\t\(message)")
+                        continue
+                    }
                     var details = finding.destination.map { "\t\($0)" } ?? ""
                     if let target = finding.targetPath { details += "\tresolved document \(target)" }
                     if let candidates = finding.candidatePaths { details += "\t\(candidates.joined(separator: ", "))" }
                     print("\(location)\t\(finding.kind.rawValue)\(details)")
                 }
                 let noun = report.documentsChecked == 1 ? "document" : "documents"
-                print("Checked \(report.documentsChecked) Markdown \(noun) under \(report.path).")
-                let counts = DocumentLintKind.allCases.map { "\($0.rawValue)=\(report.counts[$0.rawValue, default: 0])" }
+                print("Checked \(report.documentsChecked) \(noun) under \(report.path).")
+                let counts = DocumentLintKind.allCases.compactMap { kind in
+                    report.counts[kind.rawValue].map { "\(kind.rawValue)=\($0)" }
+                }
                 print(counts.joined(separator: " "))
             case .json:
                 try printJSON(report)

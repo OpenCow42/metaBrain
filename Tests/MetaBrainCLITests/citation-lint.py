@@ -45,7 +45,7 @@ def main():
         assert [json.loads(line) for line in jsonl.splitlines()] == [finding]
         text = run(mode, "lint", "/decisions", "--format", "text").stdout
         assert "/decisions/backups.md@1:7-" in text and "missingAnchor=1" in text, text
-        assert "Checked 1 Markdown document under /decisions." in text, text
+        assert "Checked 1 document under /decisions." in text, text
         error = run(mode, "lint", "/decision", "--strict", status=1)
         assert "No document or descendants found at lint path /decision." in error.stderr, error
         run(mode, "lint", "/policies", "--strict")

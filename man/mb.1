@@ -73,6 +73,16 @@ Review the preview, then pass that file to
 The operation commits all proposed notes in one batch.
 On a conflict, inspect the changed notes and generate a new preview.
 After a lost response, submit the original preview again to retrieve its receipt.
+.Sh CLAIMS
+Project inspection reports the document IDs it will assign to new paths.
+Use those IDs in versioned evidence references on the decision's claims, then inspect and apply the completed operation.
+Each claim has a stable UUID within its note, a state, and supporting or contradicting evidence.
+The JSON form of
+.Cm mb get
+includes stored claims and source assessments.
+Run
+.Cm mb lint Ar project Fl Fl format Cm text
+to report changed, unavailable, or insufficient evidence.
 .Sh ORIGINAL FILES
 .Cm mb source stage Ar file Fl Fl origin Ar origin
 reads one local file and prints capture JSON.

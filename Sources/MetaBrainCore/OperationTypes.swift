@@ -13,6 +13,18 @@ public struct ProjectOperation: Codable, Equatable, Sendable {
         self.documents = documents
     }
 
+    /// Stable ID used if this operation creates the path. Inspect reports it for each absent target.
+    public func creationID(for path: DocumentPath) -> DocumentID {
+        let name = operationID.uuidString.lowercased() + "/" + path.rawValue
+        // Preserve the UUID spelling exposed by normal document creation. Version 8 is application-defined.
+        var bytes = Array(SHA256.hash(data: Data(name.utf8)).prefix(16))
+        bytes[6] = (bytes[6] & 0x0f) | 0x80
+        bytes[8] = (bytes[8] & 0x3f) | 0x80
+        let uuid = UUID(uuid: (bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+                               bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]))
+        return try! DocumentID(rawValue: uuid.uuidString)
+    }
+
     func validate() throws {
         guard project != (try DocumentPath("/")), try DocumentPath(project.rawValue) == project,
               !documents.isEmpty else {
@@ -49,12 +61,19 @@ public struct OperationTarget: Codable, Equatable, Sendable {
     public let version: UInt64
 }
 
+public struct OperationCreation: Codable, Equatable, Sendable {
+    public let path: DocumentPath
+    public let documentID: DocumentID
+}
+
 public struct OperationPreview: Codable, Equatable, Sendable {
     public let operation: ProjectOperation
     public let storePath: String
     public let storeIdentity: UUID
     public let targets: [OperationTarget]
     public let digest: String
+    /// Derived from the reviewed operation and absent targets; older previews may omit it.
+    public private(set) var creations: [OperationCreation]? = nil
 
     static func make(
         operation: ProjectOperation,
@@ -68,10 +87,15 @@ public struct OperationPreview: Codable, Equatable, Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         let digest = SHA256.hash(data: try encoder.encode(payload))
-        return Self(
+        var preview = Self(
             operation: operation, storePath: storePath, storeIdentity: storeIdentity, targets: targets,
             digest: digest.hexString
         )
+        preview.creations = targets.compactMap { target in
+            guard target.documentID == nil else { return nil }
+            return OperationCreation(path: target.path, documentID: operation.creationID(for: target.path))
+        }
+        return preview
     }
 
     func verify() throws {
@@ -83,7 +107,7 @@ public struct OperationPreview: Codable, Equatable, Sendable {
         let expected = try Self.make(
             operation: operation, storePath: storePath, storeIdentity: storeIdentity, targets: targets
         )
-        guard digest == expected.digest else {
+        guard digest == expected.digest, creations == nil || creations == expected.creations else {
             throw ProjectOperationError.invalid("The operation differs from the inspected preview.")
         }
     }
