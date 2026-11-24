@@ -1,5 +1,5 @@
 {
-  "originHash" : "61715b9887480c2718357919f5aedb56188044858ec85d364b06bb849302b503",
+  "originHash" : "cc8621112ecfbbb54ab68c14867f6995fd79c727060911c56fcfaf1ef87ceaf7",
   "pins" : [
     {
       "identity" : "hdrhistogram-swift",
@@ -80,6 +80,15 @@
       "state" : {
         "revision" : "a27a07300cf4ae322e0079ca0a475c5583dd575f",
         "version" : "0.0.2"
+      }
+    },
+    {
+      "identity" : "yams",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/jpsim/Yams.git",
+      "state" : {
+        "revision" : "a27b21e0c81c5bf42049b897a62aaf387e80f279",
+        "version" : "6.2.2"
       }
     },
     {

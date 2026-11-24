@@ -40,6 +40,7 @@ benchmarkTargets = [
 #endif
 
 let packageDependencies: [Package.Dependency] = [
+    .package(url: "https://github.com/jpsim/Yams.git", from: "6.2.2"),
     .package(
         url: "https://github.com/apple/swift-argument-parser.git",
         from: "1.5.0"
@@ -78,6 +79,7 @@ let package = Package(
         .target(
             name: "MetaBrainCore",
             dependencies: [
+                .product(name: "Yams", package: "Yams"),
                 .product(name: "swift-leveldb-zstd", package: "swift-leveldb")
             ]
         ),
