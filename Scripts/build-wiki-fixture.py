@@ -90,7 +90,8 @@ views:
         note("decision.md", "---\nstatus: contested\n---\n\n# Storage decision\n\n"
              f"[[{PROJECT}/reviews/field-review.md#^result]] supports an offline copy. "
              f"[[{PROJECT}/reviews/security-review.md#^result]] favors server-only storage.\n",
-             tags=["decision"], metadata={"status": "contested"}),
+             tags=["decision"], metadata={"status": "contested"},
+             references=[{"path": {"_0": {"rawValue": f"{PROJECT}/reviews/field-review.md"}}}]),
         note("storage.canvas", json.dumps(board, indent=2) + "\n"),
         note("decisions.base", saved_view),
     ])

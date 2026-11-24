@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the portable skill bundle and its CLI acceptance fixture."""
 
+import hashlib
 import json
 import os
 import subprocess
@@ -202,6 +203,246 @@ class SkillsTest(unittest.TestCase):
                 self.assertIn(record, self.mb(cli, "get", root + "/_wiki/recent.md")["body"])
                 self.assertEqual(sum(entry.get("documentID") is not None for entry in
                                      self.mb(cli, "list", root + "/_wiki/operations", "--format", "json")), 1)
+
+    def inspect_operation(self, cli, project, operation_id, documents):
+        draft = self.work / "workflow-draft.json"
+        draft.write_text(json.dumps({
+            "operationID": operation_id, "project": {"rawValue": project}, "documents": documents,
+        }), encoding="utf-8")
+        return self.mb(cli, "operation", "inspect", draft)
+
+    def assert_observed_targets(self, preview, observations):
+        actual = {target["path"]["rawValue"]: (target.get("documentID", {}).get("rawValue"), target["version"])
+                  for target in preview["targets"]}
+        expected = {path: ((document["documentID"], document["version"]) if document else (None, 0))
+                    for path, document in observations.items()}
+        self.assertEqual(actual, expected)
+
+    def apply_preview(self, cli, preview, *, check=True):
+        reviewed = self.work / "workflow-preview.json"
+        reviewed.write_text(json.dumps(preview), encoding="utf-8")
+        return self.mb(cli, "operation", "apply", reviewed, check=check)
+
+    def proposed_note(self, path, body, existing=None, **updates):
+        fields = {key: existing[key] for key in (
+            "title", "tags", "metadata", "markdown", "sourceCapture", "claims", "sourceProfile"
+        ) if existing and key in existing}
+        references = []
+        for reference in existing["references"] if existing else []:
+            kind, value = reference["kind"], reference["value"]
+            references.append({kind: {"_0": value if kind == "externalURL" else {"rawValue": value}}})
+        return {"path": {"rawValue": path}, "body": body, "tags": [], "metadata": {},
+                "references": references, **fields, **updates}
+
+    def navigation(self, cli, root, operation_id, destination, purpose):
+        index = root + "/index.md"
+        recent = root + "/_wiki/recent.md"
+        record = f"{root}/_wiki/operations/{operation_id}.md"
+        observed = {path: self.mb(cli, "get", path) for path in (index, recent)}
+        observed[record] = None
+        link = f"[[{destination}]]"
+        index_body = observed[index]["body"]
+        if link not in index_body:
+            index_body += f"\n- {link}\n"
+        docs = [
+            self.proposed_note(index, index_body, observed[index]),
+            self.proposed_note(recent, observed[recent]["body"] + f"\n- [[{record}]]\n", observed[recent]),
+            self.proposed_note(record, f"# {purpose}\n\n{link}\n"),
+        ]
+        return docs, observed, record
+
+    def project_snapshot(self, cli, root):
+        return {item["path"]: self.mb(cli, "get", item["path"]) for item in
+                self.mb(cli, "list", root, "--recursive", "--format", "json") if "documentID" in item}
+
+    def test_ingest_conflicting_reviews_and_identical_replay(self):
+        info, common = self.fixture("empty")
+        cli = [*common, "--no-server"]
+        root = info["project"]
+        setup, _ = self.setup_preview(info, cli, include_index=True)
+        self.apply_preview(cli, setup)
+        decision_path = root + "/decision.md"
+        index_path = root + "/index.md"
+        index_id = self.mb(cli, "get", index_path)["documentID"]
+        self.mb(cli, "put", "--title", "Storage choice", "--tag", "decision", "--meta", "owner=UX",
+                "--keep-last", "3", "--ref-id", index_id, "--ref-path", index_path,
+                "--ref-url", "https://example.invalid/charter", "--if-version", "0",
+                "--", decision_path, "---\nowner: UX\n---\n# Storage decision\n")
+        decision = self.mb(cli, "get", decision_path)
+        initial = self.project_snapshot(cli, root)
+        originals = self.work / "empty/originals"
+        inputs = []
+        for name in ("field-review", "security-review"):
+            original = originals / (name + ".md")
+            digest = hashlib.sha256(original.read_bytes()).hexdigest()
+            inputs.append((original, digest, "Design review: " + name, f"{root}/reviews/{name}.md"))
+        self.assertEqual(self.project_snapshot(cli, root), initial)
+        documents = [
+            self.proposed_note(path, original.read_text(encoding="utf-8"), sourceCapture=self.mb(
+                cli, "source", "stage", original, "--origin", origin, "--media-type", "text/markdown"
+            ))
+            for original, _, origin, path in inputs
+        ]
+        self.assertEqual([doc["sourceCapture"]["blob"]["sha256"] for doc in documents],
+                         [digest for _, digest, _, _ in inputs])
+        self.assertEqual(self.project_snapshot(cli, root), initial)
+        operation_id = str(uuid.uuid4())
+        navigation, observed, record = self.navigation(cli, root, operation_id, decision_path, "Ingest reviews")
+        observed.update({path: None for _, _, _, path in inputs})
+        observed[decision_path] = decision
+        links = "\n".join(f"- [[{path}#^result]]" for _, _, _, path in inputs)
+        edited_decision = self.proposed_note(decision_path, decision["body"] + "\n" + links + "\n", decision)
+        documents += [edited_decision, *navigation]
+        first = self.inspect_operation(cli, root, operation_id, documents)
+        self.assert_observed_targets(first, observed)
+        ids = {item["path"]["rawValue"]: item["documentID"]["rawValue"] for item in first["creations"]}
+        edited_decision["claims"] = [{
+            "id": str(uuid.uuid4()).upper(), "text": "The client should keep an offline copy.",
+            "state": "contested", "highRisk": False,
+            "evidence": [{"relation": relation, "ref": f"{ids[path]}@1#^result"}
+                         for (_, _, _, path), relation in zip(inputs, ("supports", "contradicts"))],
+        }]
+        final = self.inspect_operation(cli, root, operation_id, documents)
+        self.assert_observed_targets(final, observed)
+        self.assertEqual(first["creations"], final["creations"])
+        self.assertEqual(self.project_snapshot(cli, root), initial)
+        receipt = self.apply_preview(cli, final)
+        self.assertEqual(self.apply_preview(cli, final), receipt)
+        self.assertEqual({result["path"]["rawValue"] for result in receipt["results"]}, set(observed))
+        after = self.project_snapshot(cli, root)
+        stored = after[decision_path]
+        for key in ("documentID", "title", "tags", "metadata", "references"):
+            self.assertEqual(stored[key], decision[key])
+        self.assertTrue(stored["body"].startswith(decision["body"]))
+        self.assertEqual(stored["claims"], edited_decision["claims"])
+        self.assertIn(record, after[root + "/_wiki/recent.md"]["body"])
+        self.assertIn(decision_path, after[root + "/index.md"]["body"])
+        self.assertIn(decision_path, after[record]["body"])
+        for source, entry in zip(inputs, stored["claims"][0]["evidence"]):
+            original, _, _, path = source
+            excerpt = self.mb(cli, "get", "--ref", entry["ref"])["items"][0]
+            self.assertEqual(excerpt["path"], path)
+            self.assertIn(excerpt["text"], original.read_text(encoding="utf-8"))
+            recovered = self.work / original.name
+            subprocess.run([*cli, "source", "export", path, "--output", str(recovered)], check=True,
+                           capture_output=True)
+            self.assertEqual(recovered.read_bytes(), original.read_bytes())
+
+        # Repeat planning against project-scoped provenance, independently of the original preview.
+        captures = {(doc["sourceCapture"]["blob"]["sha256"], doc["sourceCapture"]["origin"]): doc
+                    for doc in after.values() if "sourceCapture" in doc}
+        repeated = [item for item in inputs if (item[1], item[2]) not in captures]
+        self.assertEqual(repeated, [])
+        self.assertEqual(len(captures), 2)
+        self.assertEqual(self.project_snapshot(cli, root), after)
+
+    def test_budgeted_retrieval_and_query_depths(self):
+        info, common = self.fixture("initialized")
+        cli = [*common, "--no-server"]
+        root = info["project"]
+        decision = root + "/decision.md"
+        extra = root + "/constraints.md"
+        counter = root + "/threats.md"
+        self.mb(cli, "put", extra, f"Offline storage exception: no sync without consent. [[{decision}]]",
+                "--tag", "review", "--meta", "status=current", "--if-version", "0")
+        self.mb(cli, "put", counter, "Credential theft exposes cached records. ^counter",
+                "--if-version", "0")
+        before = self.project_snapshot(cli, root)
+        direct = [entry["ref"] for entry in before[decision]["claims"][0]["evidence"]]
+        quick = [self.mb(cli, "get", "--ref", ref)["items"][0] for ref in direct]
+        self.assertEqual([item["ref"] for item in quick], direct)
+        self.assertIn("readable off-network", quick[0]["text"])
+        self.assertIn("persistent client exposure", quick[1]["text"])
+
+        neighbors = self.mb(cli, "links", decision, "--incoming")
+        self.assertIn(extra, {link["sourcePath"] for link in neighbors})
+        standard = self.mb(cli, "search", "offline storage exception", "--path-prefix", root + "/",
+                           "--tag", "review", "--meta", "status=current", "--view", "evidence")
+        self.assertEqual({item["path"] for item in standard["items"]}, {extra})
+        self.assertIn("no sync without consent", self.mb(cli, "get", "--ref",
+                      standard["items"][0]["ref"], "--context", "section")["items"][0]["text"])
+
+        deep = self.mb(cli, "search", "credential theft", "--path-prefix", root + "/", "--view", "evidence")
+        self.assertEqual(deep["items"][0]["path"], counter)
+        self.assertIn("exposes cached records", self.mb(cli, "get", "--ref",
+                      deep["items"][0]["ref"])["items"][0]["text"])
+        origins = {before[item["path"]]["sourceCapture"]["origin"] for item in quick}
+        self.assertEqual(len(origins), 2)
+        lint = self.mb(cli, "lint", root, "--format", "json")
+        self.assertTrue(all(finding["evidenceIssue"] == "ineligible" for finding in lint["findings"]))
+        self.assertEqual({finding["evidenceRef"] for finding in lint["findings"]}, set(direct))
+
+        budget = 360
+        response = self.mb(cli, "search", "offline storage", "--path-prefix", root + "/",
+                           "--view", "evidence", "--max-tokens", budget, check=False)
+        self.assertEqual(response.returncode, 0, response.stderr)
+        self.assertLessEqual(len(response.stdout.encode("utf-8")), budget)
+        limited = json.loads(response.stdout)
+        self.assertTrue(limited["truncated"])
+        self.assertTrue(limited["items"])
+        scoped_ids = {item["documentID"] for item in
+                      self.mb(cli, "list", root, "--recursive", "--format", "json")
+                      if "documentID" in item and item["path"].startswith(root + "/")}
+        for item in limited["items"]:
+            self.assertTrue(item["path"].startswith(root + "/"))
+            self.assertIn(item["ref"].split("@")[0], scoped_ids)
+            self.assertEqual(self.mb(cli, "get", "--ref", item["ref"])["items"][0], item)
+        decoy_row = self.mb(cli, "list", info["decoy"], "--format", "json")[0]
+        explicit = decoy_row["documentID"] + "@1#^result"
+        self.assertNotIn(explicit.split("@")[0], scoped_ids)
+        self.assertEqual(self.project_snapshot(cli, root), before)
+
+    def test_save_exact_selection_and_guard_against_unread_revisions(self):
+        info, common = self.fixture("initialized")
+        cli = [*common, "--no-server"]
+        root = info["project"]
+        decision_path = root + "/decision.md"
+        before = self.project_snapshot(cli, root)
+        decision = before[decision_path]
+        evidence = decision["claims"][0]["evidence"]
+        selection = "Offline reads matter, and persistent exposure remains unresolved."
+        conversation = ("Unrelated budget discussion.", selection, "Draft scheduling aside.")
+        citations = "\n".join(f"- {entry['relation']}: `{entry['ref']}`" for entry in evidence)
+        for entry in evidence:
+            self.assertTrue(self.mb(cli, "get", "--ref", entry["ref"])["items"])
+        candidates = self.mb(cli, "search", "Storage decision", "--path-prefix", root + "/",
+                             "--tag", "decision", "--view", "refs")
+        self.assertEqual({item["path"] for item in candidates["items"]}, {decision_path})
+        new_section = f"\n## Saved conclusion\n\n{conversation[1]}\n\n{citations}\n"
+        operation_id = str(uuid.uuid4())
+        navigation, observed, record = self.navigation(cli, root, operation_id, decision_path, "Save conclusion")
+        observed[decision_path] = decision
+        draft = [self.proposed_note(decision_path, decision["body"] + new_section, decision), *navigation]
+        preview = self.inspect_operation(cli, root, operation_id, draft)
+        self.assert_observed_targets(preview, observed)
+        self.assertEqual(self.project_snapshot(cli, root), before)
+
+        human_edit = "\nThe team will revisit this in December.\n"
+        self.mb(cli, "put", "--body-only", "--if-version", decision["version"],
+                "--", decision_path, decision["body"] + human_edit)
+        newer_preview = self.inspect_operation(cli, root, operation_id, draft)
+        with self.assertRaises(AssertionError):
+            self.assert_observed_targets(newer_preview, observed)
+        self.assertNotEqual(self.apply_preview(cli, preview, check=False).returncode, 0)
+        current = self.project_snapshot(cli, root)
+        self.assertEqual({path: doc for path, doc in current.items() if path != decision_path},
+                         {path: doc for path, doc in before.items() if path != decision_path})
+
+        observed[decision_path] = current[decision_path]
+        draft[0] = self.proposed_note(decision_path, current[decision_path]["body"] + new_section,
+                                      current[decision_path])
+        revised = self.inspect_operation(cli, root, operation_id, draft)
+        self.assert_observed_targets(revised, observed)
+        self.apply_preview(cli, revised)
+        after = self.project_snapshot(cli, root)
+        self.assertEqual(after[decision_path]["body"], decision["body"] + human_edit + new_section)
+        self.assertEqual(after[decision_path]["claims"], decision["claims"])
+        self.assertEqual(after[decision_path]["metadata"], decision["metadata"])
+        self.assertTrue(decision["references"])
+        self.assertEqual(after[decision_path]["references"], decision["references"])
+        self.assertIn(record, after[root + "/_wiki/recent.md"]["body"])
+        self.assertIn(decision_path, after[root + "/index.md"]["body"])
+        self.assertEqual(set(after) - set(before), {record})
 
     def test_reserved_target_collision_and_stale_preview(self):
         info, common = self.fixture()

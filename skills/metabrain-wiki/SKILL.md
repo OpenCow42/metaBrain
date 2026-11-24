@@ -20,4 +20,12 @@ description: Preview setup or adoption of a metaBrain project wiki, load its rul
 
 # Route a request
 
-Use this skill for setup and `metabrain-wiki-cli` for local inspection and read-only navigation. Check the active host's available skills before handing off. Other planned routes include `metabrain-wiki-ingest`, `metabrain-wiki-query`, `metabrain-save`, `metabrain-wiki-lint`, `metabrain-wiki-mode`, `metabrain-wiki-retrieve`, `metabrain-wiki-fold`, `metabrain-autoresearch`, `metabrain-defuddle`, `metabrain-canvas`, `metabrain-markdown`, `metabrain-bases`, and `metabrain-think`. If the requested skill is unavailable, say so and identify any supported local read that matches the request.
+Use this skill for setup. Check the active host's available skills before handing off.
+
+- `metabrain-wiki-cli` for inspection and navigation.
+- `metabrain-wiki-ingest` for supplied originals and claim evidence.
+- `metabrain-wiki-query` for an answer grounded in the selected project.
+- `metabrain-wiki-retrieve` for ranked passages and versioned references.
+- `metabrain-save` for preserving the user's selected answer or insight.
+
+If the requested skill is unavailable, say so and identify any supported local read that matches the request.
