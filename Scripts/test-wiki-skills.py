@@ -4,12 +4,14 @@
 import hashlib
 import json
 import os
+import socket
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
 import uuid
+from html.parser import HTMLParser
 from pathlib import Path
 
 
@@ -257,7 +259,7 @@ class SkillsTest(unittest.TestCase):
 
     def skill_script(self, skill, script, *args, stdin=None, check=True):
         result = subprocess.run(
-            [sys.executable, str(REPO / "skills" / ("metabrain-wiki-" + skill) / "scripts" / script),
+            [sys.executable, str(REPO / "skills" / ("metabrain-" + skill) / "scripts" / script),
              *map(str, args)], input=stdin, capture_output=True, text=True,
         )
         if not check:
@@ -284,8 +286,8 @@ class SkillsTest(unittest.TestCase):
                 f"- [[{info['decoy']}/review.md]]\n")
         before = self.project_snapshot(cli, root)
         args = ("--mb", MB, "--store", info["store"], "--no-server", "--project", root)
-        report = self.skill_script("lint", "lint.py", *args)
-        self.assertEqual(self.skill_script("lint", "lint.py", *args), report)
+        report = self.skill_script("wiki-lint", "lint.py", *args)
+        self.assertEqual(self.skill_script("wiki-lint", "lint.py", *args), report)
         self.assertEqual(report["native"], self.mb(cli, "lint", root, "--orphans"))
         self.assertEqual({item["link"]["destination"] for item in report["wikiFindings"]
                           if item["kind"] == "staleIndexEntry"}, {missing, path + "#missing"})
@@ -309,7 +311,7 @@ class SkillsTest(unittest.TestCase):
         self.assert_observed_targets(preview, observed)
         self.assertEqual(self.project_snapshot(cli, root), before)
         self.apply_preview(cli, preview)
-        remaining = self.skill_script("lint", "lint.py", *args)["wikiFindings"]
+        remaining = self.skill_script("wiki-lint", "lint.py", *args)["wikiFindings"]
         self.assertEqual({item["link"]["destination"] for item in remaining
                           if item["kind"] == "staleIndexEntry"}, {path + "#missing"})
         self.assertEqual(self.mb(cli, "get", path), before[path])
@@ -325,12 +327,12 @@ class SkillsTest(unittest.TestCase):
         options = ("--project", root, "--slug", "offline-storage", "--kind", "concept")
 
         def suggest(config, *arguments, check=True):
-            return self.skill_script("mode", "suggest.py", *options, "--config-stdin", *arguments,
+            return self.skill_script("wiki-mode", "suggest.py", *options, "--config-stdin", *arguments,
                                      stdin=config, check=check)
 
         old = suggest(before[config_path]["body"])
         self.assertEqual(old, {"mode": "generic", "path": root + "/concepts/offline-storage.md"})
-        self.assertEqual(self.skill_script("mode", "suggest.py", *options, "--absent-config"), old)
+        self.assertEqual(self.skill_script("wiki-mode", "suggest.py", *options, "--absent-config"), old)
         for invalid in ('{"version":1,"mode":"unknown"}', '{"version":true,"mode":"generic"}', "broken"):
             self.assertNotEqual(suggest(invalid, check=False).returncode, 0)
         lyt = suggest('{"version":1,"mode":"lyt"}')
@@ -368,7 +370,7 @@ class SkillsTest(unittest.TestCase):
         args = ("--mb", MB, "--store", info["store"], "--no-server", "--project", root)
 
         def fold(*bounds, check=True):
-            return self.skill_script("fold", "select-fold.py", *args, *bounds, check=check)
+            return self.skill_script("wiki-fold", "select-fold.py", *args, *bounds, check=check)
 
         before = self.project_snapshot(cli, root)
         default = fold()
@@ -599,6 +601,149 @@ class SkillsTest(unittest.TestCase):
         self.assertIn(record, after[root + "/_wiki/recent.md"]["body"])
         self.assertIn(decision_path, after[root + "/index.md"]["body"])
         self.assertEqual(set(after) - set(before), {record})
+
+    def url_plan(self, url, *, check=True):
+        return self.skill_script("defuddle", "plan-url.py", "--", url, check=check)
+
+    def test_url_preview_keeps_supplied_origin(self):
+        origin = "https://example.invalid/page%20name?q=a%2Bb#evidence"
+        self.assertEqual(self.url_plan(origin), {
+            "origin": origin, "state": "requires-original",
+            "acceptedMediaTypes": ["text/html", "text/markdown"],
+        })
+        for invalid in ("file:///tmp/example", "example.invalid", "https://", "https://a:65536",
+                        "https://user:secret@example.invalid", " https://example.invalid",
+                        "https://example.invalid/\t", "https://[broken",
+                        "https://example.invalid/?%61ccess_token=secret",
+                        "https://example.invalid/?X-Amz-Signature=secret"):
+            with self.subTest(url=invalid):
+                result = self.url_plan(invalid, check=False)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, "")
+                self.assertNotIn("secret", result.stderr)
+        self.assertEqual(list(self.work.iterdir()), [])
+
+    @unittest.skipUnless(os.environ.get("MB_TEST_SOCKET") == "1", "Set MB_TEST_SOCKET=1 where sockets are allowed")
+    def test_url_preview_does_not_contact_loopback_origin(self):
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            origin = f"http://127.0.0.1:{listener.getsockname()[1]}/review"
+            self.assertEqual(self.url_plan(origin)["origin"], origin)
+            listener.setblocking(False)
+            with self.assertRaises(BlockingIOError):
+                listener.accept()
+
+    def test_capture_locally_supplied_pages_preserves_exact_bytes(self):
+        info, common = self.fixture("initialized")
+        cli = [*common, "--no-server"]
+        root = info["project"]
+        origin = "https://example.invalid/page"
+        html = self.work / "page.html"
+        html.write_bytes(b'<p>Offline storage caf\xe9.</p>\r\n<img src="http://127.0.0.1/image">\r\n')
+        markdown = self.work / "review.md"
+        markdown.write_bytes(b"\xef\xbb\xbf# Field review\r\n\r\nKeep reads available.\r\n")
+        before = self.project_snapshot(cli, root)
+        self.assertEqual(self.url_plan(origin)["state"], "requires-original")
+        self.assertEqual(self.project_snapshot(cli, root), before)
+
+        class TextParser(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.text = []
+
+            def handle_data(self, data):
+                if data.strip():
+                    self.text.append(data)
+
+        parser = TextParser()
+        parser.feed(html.read_bytes().decode("latin-1"))
+        parser.close()
+        extraction = "Python html.parser handle_data on Latin-1 HTML"
+        html_path = root + "/sources/page.md"
+        markdown_path = root + "/sources/field.md"
+        captures = [
+            (html, html_path, "text/html", " ".join(parser.text), ["--extraction", extraction]),
+            (markdown, markdown_path, "text/markdown", markdown.read_bytes().decode("utf-8"), []),
+        ]
+        operation_id = str(uuid.uuid4())
+        navigation, observed, _ = self.navigation(cli, root, operation_id, html_path, "Capture supplied pages")
+        documents = []
+        for source, path, media_type, body, extraction_args in captures:
+            capture = self.mb(cli, "source", "stage", source, "--origin", origin,
+                              "--media-type", media_type, *extraction_args)
+            self.assertEqual(capture["blob"]["sha256"], hashlib.sha256(source.read_bytes()).hexdigest())
+            documents.append(self.proposed_note(path, body, sourceCapture=capture))
+            observed[path] = None
+        preview = self.inspect_operation(cli, root, operation_id, [*documents, *navigation])
+        self.assert_observed_targets(preview, observed)
+        self.assertEqual(self.project_snapshot(cli, root), before)
+        self.apply_preview(cli, preview)
+
+        for source, path, media_type, _, extraction_args in captures:
+            stored = self.mb(cli, "get", path)
+            self.assertEqual(stored["sourceCapture"]["origin"], origin)
+            self.assertEqual(stored["sourceCapture"]["mediaType"], media_type)
+            self.assertEqual(stored["sourceCapture"].get("extraction"),
+                             extraction_args[-1] if extraction_args else None)
+            restored = self.work / f"{source.name}.recovered"
+            subprocess.run([*cli, "source", "export", path, "--version", str(stored["version"]),
+                            "--output", str(restored)], check=True, capture_output=True)
+            self.assertEqual(restored.read_bytes(), source.read_bytes())
+        self.assertEqual(self.mb(cli, "get", html_path)["body"], "Offline storage café.")
+
+    def test_research_dossier_and_merge_use_distinct_reviewed_operations(self):
+        info, common = self.fixture("initialized")
+        cli = [*common, "--no-server"]
+        root = info["project"]
+        decision = root + "/decision.md"
+        before = self.project_snapshot(cli, root)
+        evidence = self.mb(cli, "search", "offline storage", "--path-prefix", root + "/reviews/",
+                           "--view", "evidence", "--limit", "2")
+        self.assertEqual(len(evidence["items"]), 2)
+        passages = [self.mb(cli, "get", "--ref", entry["ref"])["items"][0] for entry in evidence["items"]]
+        self.assertEqual({passage["path"] for passage in passages},
+                         {root + "/reviews/field-review.md", root + "/reviews/security-review.md"})
+        citations = "\n".join(f"- {passage['text']} ({passage['path']}, `{passage['ref']}`)"
+                              for passage in passages)
+        dossier = root + "/research/offline-storage.md"
+        report = (
+            "# Offline storage research\n\nLocal-only. Stopped after verifying both reviews.\n\n"
+            f"## Evidence and disagreement\n\n{citations}\n\n"
+            "## Interpretation and open question\n\n"
+            "Start with a limited pilot. The availability benefit may not outweigh exposure on a lost device. "
+            "Can a revoked account read persistent records after restart with the device offline? "
+            "If it can, keep server-only storage.\n"
+        )
+        self.assertEqual(self.project_snapshot(cli, root), before)
+
+        operation_id = str(uuid.uuid4())
+        navigation, observed, filing_record = self.navigation(cli, root, operation_id, dossier, "File dossier")
+        observed[dossier] = None
+        filing = self.inspect_operation(cli, root, operation_id, [self.proposed_note(dossier, report), *navigation])
+        self.assert_observed_targets(filing, observed)
+        self.assertEqual(self.project_snapshot(cli, root), before)
+        self.apply_preview(cli, filing)
+        filed = self.project_snapshot(cli, root)
+        self.assertEqual(filed[decision], before[decision])
+        self.assertEqual(filed[dossier]["body"], report)
+
+        operation_id = str(uuid.uuid4())
+        navigation, observed, merge_record = self.navigation(cli, root, operation_id, decision, "Merge conclusion")
+        observed[decision] = filed[decision]
+        edited = self.proposed_note(decision, filed[decision]["body"] + f"\nReview the pilot in [[{dossier}]].\n",
+                                    filed[decision])
+        merge = self.inspect_operation(cli, root, operation_id, [edited, *navigation])
+        self.assert_observed_targets(merge, observed)
+        self.assertEqual(self.project_snapshot(cli, root), filed)
+        self.apply_preview(cli, merge)
+        merged = self.project_snapshot(cli, root)
+        self.assertEqual(merged[dossier], filed[dossier])
+        self.assertEqual(merged[decision]["claims"], before[decision]["claims"])
+        self.assertIn(dossier, merged[decision]["body"])
+        self.assertNotEqual(filing_record, merge_record)
+        self.assertEqual(merged[filing_record], filed[filing_record])
+        self.assertIn(merge_record, merged)
 
     def test_reserved_target_collision_and_stale_preview(self):
         info, common = self.fixture()

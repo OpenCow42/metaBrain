@@ -7,6 +7,9 @@
 | `metabrain-wiki-ingest` | Capture supplied originals and relate their evidence to project claims. |
 | `metabrain-wiki-retrieve` | Return ranked passages and versioned references under a budget. |
 | `metabrain-wiki-query` | Answer from the selected project at Quick, Standard, or Deep depth. |
+| `metabrain-autoresearch` | Research an agreed question under a source and stopping budget. |
+| `metabrain-defuddle` | Plan URL capture offline or preserve supplied HTML or Markdown. |
+| `metabrain-think` | Review a decision, competing evidence, and a test that could change the recommendation. |
 | `metabrain-wiki-lint` | Audit links, evidence, note properties, sections, and navigation. |
 | `metabrain-wiki-mode` | Suggest a destination or change the filing mode for future notes. |
 | `metabrain-wiki-fold` | Summarize a bounded range of past operations with versioned sources. |
@@ -49,6 +52,12 @@ For read-only evidence, invoke the CLI skill and specify the same store and proj
 - **Query** answers from the local project. Quick verifies direct evidence, Standard also searches related notes and link neighbors, and Deep probes competing evidence, distinct sources, and gaps. Answers show disagreements and cite retained passages. These reads leave project notes and the operation log untouched.
 - **Save** takes the exact answer or excerpt the user selected. It looks for an existing home, preserves the selected wording and evidence, and previews the note and navigation changes together. Applying the preview requires authorization. [Reviewed project operations](../README.md#commit-related-notes-together)
 
+## Research, capture a page, or review a decision
+
+- **Autoresearch** agrees on the question, public-source scope or local-only scope, and stopping budget. It starts with local evidence, contacts public sources only with explicit authorization, and returns a dossier with provenance, disagreements, and gaps. Filing the dossier and merging conclusions into existing notes require separate reviewed operations. [Autoresearch skill](../skills/metabrain-autoresearch/SKILL.md)
+- **Defuddle** previews capture from a supplied HTTP or HTTPS URL with zero outgoing requests. Supply an HTML or Markdown original to capture locally. The wiki retains the original bytes, and extraction metadata records any requested extraction that actually ran. [Defuddle skill](../skills/metabrain-defuddle/SKILL.md) · [Original-byte recovery](../README.md#capture-and-recover-an-original-file)
+- **Think** weighs verified evidence and hypotheses, gives a recommendation and its strongest counterargument, and identifies a test and the result that would change the decision. A fresh request to save it leads to the usual reviewed write. [Think skill](../skills/metabrain-think/SKILL.md)
+
 ## Maintain a project wiki
 
 - **Lint** runs native link, anchor, orphan, and claim-evidence checks, plus checks for missing wiki properties, empty sections, and unresolved links in known navigation documents. The report is read-only. Request a specific repair to preview it as a separate operation. [Lint skill](../skills/metabrain-wiki-lint/SKILL.md)
@@ -70,6 +79,8 @@ The builder prints JSON with the selected store and project. Open the new direct
 To exercise the evidence workflow, build a separate fixture with `--state empty` and authorize wiki setup first. Ask ingest to preview the two review files from `originals/` and explain the disagreement in one decision. Authorize original staging and then the reviewed note operation. In a fresh session, ask each query depth whether the client should store an offline copy. Ask retrieve for `offline storage` with a small budget, then reopen a returned reference with a larger budget. Select one conclusion with its citations and preview saving it.
 
 The default fixture state, `adopt`, contains two opposing design reviews, a contested decision, the original source files including an opaque binary, a JSON Canvas board, a saved `.base` definition, and a similarly named sibling project. `--state empty` leaves the selected subtree empty and keeps the originals, global guide, and sibling project. `--state initialized` also seeds the configuration, recent summary, and an operation note. The fixture builder requires a new output directory.
+
+With the initialized fixture, ask autoresearch for a local-only dossier on offline storage with a two-source budget. Ask think whether to deploy offline storage and look for both reviews and a verification step. For defuddle, preview `https://example.invalid/field-review`, then supply `originals/field-review.md` as the original and review its proposed capture.
 
 ```sh
 python3 Scripts/test-wiki-skills.py

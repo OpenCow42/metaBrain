@@ -26,6 +26,9 @@ Use this skill for setup. Check the active host's available skills before handin
 - `metabrain-wiki-ingest` for supplied originals and claim evidence.
 - `metabrain-wiki-query` for an answer grounded in the selected project.
 - `metabrain-wiki-retrieve` for ranked passages and versioned references.
+- `metabrain-autoresearch` for a bounded research dossier that starts with project evidence.
+- `metabrain-defuddle` for an offline URL capture plan or capture of supplied HTML or Markdown.
+- `metabrain-think` for a recommendation that weighs evidence and states how to test the decision.
 - `metabrain-wiki-lint` for an audit or a selected repair.
 - `metabrain-wiki-mode` for a filing suggestion or a reviewed change to the filing mode.
 - `metabrain-wiki-fold` for a summary of raw operation-log entries.
