@@ -52,13 +52,13 @@ public struct ServerRouter: Sendable {
         case (_, "/v1/version"):
             return methodNotAllowed(request, allowedMethod: "GET")
         case (.post, "/v1/init"):
-            return await routeStoreOperation(request) { storeServer in
+            return await routeStoreOperation(request, createIfMissing: true) { storeServer in
                 await storeServer.initialize()
             }
         case (_, "/v1/init"):
             return methodNotAllowed(request, allowedMethod: "POST")
         case (.post, "/v1/put"):
-            return await routeStoreOperation(request) { storeServer in
+            return await routeStoreOperation(request, createIfMissing: true) { storeServer in
                 let decoded = try decode(ServerPutRequest.self, from: request)
                 return try await storeServer.put(decoded)
             }
@@ -177,6 +177,7 @@ public struct ServerRouter: Sendable {
 
     private func routeStoreOperation<T: Encodable & Sendable>(
         _ request: ServerHTTPRequest,
+        createIfMissing: Bool = false,
         _ operation: @escaping @Sendable (MetaBrainStoreServer) async throws -> T
     ) async -> ServerHTTPResponse {
         if let storeServer {
@@ -201,6 +202,7 @@ public struct ServerRouter: Sendable {
         do {
             let payload = try await storeRegistry.withStore(
                 at: try storePath(for: request),
+                createIfMissing: createIfMissing,
                 operation: operation
             )
             return jsonResponse(statusCode: 200, payload: payload)
@@ -258,6 +260,14 @@ public struct ServerRouter: Sendable {
 
     private func storeErrorResponse(_ error: MetaBrainStoreError) -> ServerHTTPResponse {
         switch error {
+        case .storeNotFound:
+            return jsonResponse(
+                statusCode: 404,
+                payload: ServerErrorPayload(
+                    error: "store_not_found",
+                    message: error.description
+                )
+            )
         case .documentNotFound:
             return jsonResponse(
                 statusCode: 404,

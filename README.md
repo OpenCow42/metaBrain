@@ -58,8 +58,8 @@ To run `mbd` automatically with a user systemd unit, see
 
 ## Why Try It
 
-- **One local memory per workspace.** The default store lives at
-  `.metabrain/store.leveldb`, so agents can find it without configuration.
+- **One local memory per workspace.** Commands discover `.metabrain/store.leveldb`
+  from the current directory or its nearest containing workspace.
 - **Filesystem-like paths.** Documents live at paths such as `/notes/today` or
   `/projects/metabrain/release-plan`, making memory easy to browse and explain.
 - **Searchable content.** Current document chunks are indexed for lexical search
@@ -93,8 +93,18 @@ mb search "lexical store" --tag planning
 mb get /notes/today
 ```
 
-The default store is `.metabrain/store.leveldb`. Pass `--store <path>` to any
-command when a workspace uses a different store location.
+Store-backed commands use the first applicable location in this order:
+
+1. The explicit `--store <path>` option, which can appear before or after the
+   subcommand.
+2. The `METABRAIN_STORE` environment variable, when set to a nonempty path.
+3. The nearest initialized `.metabrain/store.leveldb`, starting in the current
+   directory and walking up its ancestors.
+4. The current directory's `.metabrain/store.leveldb` when discovery finds no store.
+
+Relative paths are resolved from the current directory. `mb init` and `mb put`
+can create a store at the selected location. Other store-backed commands require
+an existing store and report the selected location when it is missing.
 
 ## Agent Workflow
 
@@ -181,8 +191,8 @@ mbd version
 
 One daemon process can serve multiple stores through the same socket or
 loopback port. The CLI sends the selected store path with each daemon-backed
-request, using either `--store <path>` or the default `.metabrain/store.leveldb`,
-and the daemon keeps one actor per active store path. Operations for different
+request after applying CLI store selection, and the daemon keeps one actor per
+active store path. Operations for different
 stores can proceed independently, while operations inside one store remain
 serialized at that store actor. Idle stores are closed after
 `--store-idle-timeout-seconds` seconds, defaulting to 30 seconds, which releases

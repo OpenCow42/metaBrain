@@ -38,10 +38,11 @@ public actor MetaBrainStoreRegistry {
 
     public func withStore<Result: Sendable>(
         at storePath: String,
+        createIfMissing: Bool = true,
         operation: @Sendable (MetaBrainStoreServer) async throws -> Result
     ) async throws -> Result {
         let key = Self.canonicalStorePath(storePath)
-        let storeServer = try await acquireStore(at: key)
+        let storeServer = try acquireStore(at: key, createIfMissing: createIfMissing)
 
         do {
             let result = try await operation(storeServer)
@@ -67,7 +68,7 @@ public actor MetaBrainStoreRegistry {
         }
     }
 
-    private func acquireStore(at key: String) async throws -> MetaBrainStoreServer {
+    private func acquireStore(at key: String, createIfMissing: Bool) throws -> MetaBrainStoreServer {
         if var entry = entries[key] {
             entry.activeRequestCount += 1
             entry.releaseGeneration &+= 1
@@ -75,7 +76,7 @@ public actor MetaBrainStoreRegistry {
             return entry.storeServer
         }
 
-        let storeServer = try MetaBrainStoreServer(storePath: key)
+        let storeServer = try MetaBrainStoreServer(storePath: key, createIfMissing: createIfMissing)
         entries[key] = Entry(
             storeServer: storeServer,
             activeRequestCount: 1,

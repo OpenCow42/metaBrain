@@ -115,9 +115,8 @@ This keeps ownership explicit and avoids a global daemon accidentally opening
 unrelated workspace stores. Multiple workspaces can run separate daemons on
 separate Unix socket paths.
 
-The server should open the configured store once at startup and keep it alive
-until shutdown. Requests should never open a second `MetaBrainStore` for the
-same path.
+The daemon opens stores on demand and shares one `MetaBrainStore` per active
+path. Registry entries close after the configured idle timeout.
 
 Per store:
 
@@ -256,7 +255,7 @@ Recommended status mapping:
 ```text
 400 invalid JSON, invalid arguments, invalid document paths
 401 missing or invalid loopback token
-404 missing document or route
+404 missing store, document, or route
 405 wrong HTTP method
 408 request timeout
 409 conflicting path or store state
@@ -290,8 +289,12 @@ POST /v1/delete
 POST /v1/remove-version
 ```
 
-`/health` must not touch the store. All other store endpoints operate on the
-daemon's configured store.
+`/health` and `/v1/version` work without a store. Store requests use the
+daemon's configured path unless the `X-MetaBrain-Store-Path` header supplies a
+base64-encoded UTF-8 path. Only `/v1/init` and `/v1/put` can create a store.
+Other store requests return HTTP 404 with `store_not_found` and the checked
+path if the selected store is missing. An existing store with a missing
+document can return `document_not_found`.
 
 ### Request Shapes
 

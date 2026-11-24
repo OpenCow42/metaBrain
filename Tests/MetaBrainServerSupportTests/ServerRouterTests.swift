@@ -165,6 +165,56 @@ import Testing
     #expect(await registry.openStoreCount == 2)
 }
 
+@Test func routerExistingOnlyRoutesReportTheCheckedStoreWithoutCreatingIt() async throws {
+    let root = try temporaryServerDirectory(prefix: "mbd-router-missing-store")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let registry = MetaBrainStoreRegistry()
+    defer { registry.closeAllBlocking() }
+    let missingParent = root.appendingPathComponent("missing")
+    let defaultStore = missingParent.appendingPathComponent("store.leveldb")
+    let emptyStore = root.appendingPathComponent("empty.leveldb")
+    try FileManager.default.createDirectory(at: emptyStore, withIntermediateDirectories: false)
+    let router = ServerRouter(storeRegistry: registry, defaultStorePath: defaultStore.path)
+    let header = [MetaBrainStoreRegistry.storePathHeader: MetaBrainStoreRegistry.storePathHeaderValue(for: emptyStore.path)]
+
+    let reference = #"{"kind":"path","value":"/note"}"#
+    let requests = [
+        ("get", #"{"reference":\#(reference)}"#),
+        ("list", "{}"),
+        ("tree", #"{"maxDepth":0}"#),
+        ("search", #"{"query":"term"}"#),
+        ("dump", "{}"),
+        ("versions", #"{"reference":\#(reference)}"#),
+        ("patch", #"{"reference":\#(reference),"unifiedDiff":"","check":true}"#),
+        ("move", #"{"reference":\#(reference),"destinationPath":"/moved"}"#),
+        ("prune", #"{"reference":\#(reference),"retention":{"kind":"keepAll"}}"#),
+        ("delete", #"{"reference":\#(reference)}"#),
+        ("remove-version", #"{"reference":\#(reference),"sequence":1}"#),
+    ]
+    for (route, body) in requests {
+        let response = await router.route(ServerHTTPRequest(method: .post, path: "/v1/\(route)", body: Data(body.utf8)))
+        let error = try MetaBrainJSON.decoder().decode(ServerErrorPayload.self, from: response.body)
+        #expect(response.statusCode == 404, "Route \(route) returned \(response.bodyText)")
+        #expect(error.error == "store_not_found")
+        #expect(error.message.contains(defaultStore.path))
+    }
+    let selected = await router.route(ServerHTTPRequest(method: .post, path: "/v1/list", headers: header))
+    let selectedError = try MetaBrainJSON.decoder().decode(ServerErrorPayload.self, from: selected.body)
+    #expect(selected.statusCode == 404)
+    #expect(selectedError.error == "store_not_found")
+    #expect(selectedError.message.contains(emptyStore.path))
+    #expect(await registry.openStoreCount == 0)
+    #expect(!FileManager.default.fileExists(atPath: missingParent.path))
+    #expect(try FileManager.default.contentsOfDirectory(atPath: emptyStore.path).isEmpty)
+
+    let initialized = await router.route(ServerHTTPRequest(method: .post, path: "/v1/init"))
+    #expect(initialized.statusCode == 200)
+    await registry.closeAll()
+    let list = await router.route(ServerHTTPRequest(method: .post, path: "/v1/list"))
+    #expect(list.statusCode == 200)
+    #expect(try MetaBrainJSON.decoder().decode([ListOutput].self, from: list.body).isEmpty)
+}
+
 @Test func routerRejectsInvalidStorePathHeader() async throws {
     let root = try temporaryServerDirectory(prefix: "mbd-router-bad-store-header")
     defer { try? FileManager.default.removeItem(at: root) }

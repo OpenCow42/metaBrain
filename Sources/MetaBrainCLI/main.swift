@@ -6,7 +6,7 @@ import MetaBrainServerSupport
 @main
 enum MetaBrainCommandMain {
     static func main() async {
-        await MetaBrainCommand.main(cliArgumentsWithGlobalServer(Array(CommandLine.arguments.dropFirst())))
+        await MetaBrainCommand.main(cliArgumentsWithGlobalOptions(Array(CommandLine.arguments.dropFirst())))
     }
 }
 
@@ -44,9 +44,13 @@ struct MetaBrainCommand: AsyncParsableCommand {
           mb delete /notes/today
           mb remove-version /notes/today --sequence 1
 
-        The default store is .metabrain/store.leveldb. Pass --store to any command
-        when a workspace uses a different location. Store-backed commands auto-use a
-        healthy local daemon at http://127.0.0.1:6374 when one is already running.
+        Store selection uses --store, then METABRAIN_STORE, then the nearest
+        ancestor .metabrain/store.leveldb, starting in the current directory.
+        When no store exists, init and put can create .metabrain/store.leveldb in
+        the current directory. Other store-backed commands require an existing
+        store. Pass --store before or after the subcommand.
+        Store-backed commands auto-use a healthy local daemon at
+        http://127.0.0.1:6374 when one is already running.
         Pass --server to force a daemon endpoint, or --no-server to force direct
         LevelDB access.
         """
@@ -84,7 +88,7 @@ struct StoreOptions: ParsableArguments {
     static let autoProbeTimeoutMilliseconds = 50
     static let daemonRequestTimeoutMilliseconds = 30_000
 
-    @Option(help: "Path to the LevelDB-backed metaBrain store.")
+    @Option(help: "Store path. Overrides METABRAIN_STORE and ancestor discovery.")
     var store: String?
 
     @Option(help: "Unix socket path, loopback HTTP URL such as http://127.0.0.1:6374, or auto for daemon mode.")
@@ -93,53 +97,81 @@ struct StoreOptions: ParsableArguments {
     @Flag(help: "Skip daemon auto-detection and open the LevelDB store directly.")
     var noServer = false
 
-    func serverClient() -> MetaBrainServerClient? {
+    func serverClient(createIfMissing: Bool = false) throws -> MetaBrainServerClient? {
         guard !noServer else {
             return nil
         }
+
+        let endpoint: String
         if let server, server != "auto" {
-            return MetaBrainServerClient(
-                socketPath: server,
-                storePath: effectiveStorePath,
-                requestTimeoutMilliseconds: Self.daemonRequestTimeoutMilliseconds
+            endpoint = server
+        } else {
+            let probe = MetaBrainServerClient(
+                socketPath: Self.defaultLoopbackServer,
+                requestTimeoutMilliseconds: Self.autoProbeTimeoutMilliseconds
             )
+            guard let health = try? probe.health(), health.service == "mbd", health.status == "ok" else {
+                return nil
+            }
+            endpoint = Self.defaultLoopbackServer
         }
 
-        let probe = MetaBrainServerClient(
-            socketPath: Self.defaultLoopbackServer,
-            requestTimeoutMilliseconds: Self.autoProbeTimeoutMilliseconds
-        )
-        guard let health = try? probe.health(), health.service == "mbd", health.status == "ok" else {
-            return nil
+        let url = resolvedStoreURL
+        if !createIfMissing {
+            // Older daemons can create a store when handling any request.
+            try MetaBrainStore.requireExistingStore(at: url)
         }
         return MetaBrainServerClient(
-            socketPath: Self.defaultLoopbackServer,
-            storePath: effectiveStorePath,
+            socketPath: endpoint,
+            storePath: url.path,
             requestTimeoutMilliseconds: Self.daemonRequestTimeoutMilliseconds
         )
     }
 
-    var effectiveStore: String {
-        store ?? ".metabrain/store.leveldb"
-    }
+    private var resolvedStoreURL: URL {
+        if let store {
+            return URL.expandingShellPath(store, isDirectory: true).standardizedFileURL
+        }
+        if let store = ProcessInfo.processInfo.environment["METABRAIN_STORE"], !store.isEmpty {
+            return URL.expandingShellPath(store, isDirectory: true).standardizedFileURL
+        }
 
-    private var effectiveStorePath: String {
-        URL.expandingShellPath(effectiveStore, isDirectory: true).standardizedFileURL.path
-    }
-
-    func openStore() throws -> MetaBrainStore {
-        let url = URL.expandingShellPath(effectiveStore, isDirectory: true)
-        try FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(),
-            withIntermediateDirectories: true
+        let currentDirectory = URL(
+            fileURLWithPath: FileManager.default.currentDirectoryPath,
+            isDirectory: true
         )
-        return try MetaBrainStore(url: url)
+        var directory = currentDirectory
+        while true {
+            let candidate = Self.workspaceStoreURL(in: directory)
+            if MetaBrainStore.exists(at: candidate) {
+                return candidate
+            }
+            let parent = directory.deletingLastPathComponent()
+            if parent.path == directory.path {
+                return Self.workspaceStoreURL(in: currentDirectory)
+            }
+            directory = parent
+        }
+    }
+
+    private static func workspaceStoreURL(in directory: URL) -> URL {
+        directory
+            .appendingPathComponent(".metabrain", isDirectory: true)
+            .appendingPathComponent("store.leveldb", isDirectory: true)
     }
 
     func withOpenStore<Result: Sendable>(
+        createIfMissing: Bool = false,
         _ operation: (MetaBrainStore) async throws -> Result
     ) async throws -> Result {
-        let store = try openStore()
+        let url = resolvedStoreURL
+        if createIfMissing {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+        }
+        let store = try MetaBrainStore(url: url, options: MetaBrainStoreOptions(createIfMissing: createIfMissing))
 
         do {
             let result = try await operation(store)
@@ -287,13 +319,13 @@ extension MetaBrainCommand {
         @OptionGroup var output: OutputFormatOptions
 
         func run() async throws {
-            if let client = storeOptions.serverClient() {
+            if let client = try storeOptions.serverClient(createIfMissing: true) {
                 let result: InitializeOutput = try client.post("/v1/init", response: InitializeOutput.self)
                 try printInitializeOutput(result, format: output.format)
                 return
             }
 
-            try await storeOptions.withOpenStore { store in
+            try await storeOptions.withOpenStore(createIfMissing: true) { store in
                 let result = InitializeOutput(
                     operation: "init",
                     status: "initialized",
@@ -362,7 +394,7 @@ extension MetaBrainCommand {
             let retentionPolicy = try retention.optionalPolicy()
             let metadata = try parseMetadata(metadataPairs)
 
-            if let client = storeOptions.serverClient() {
+            if let client = try storeOptions.serverClient(createIfMissing: true) {
                 let result: PutOutput = try client.post(
                     "/v1/put",
                     request: ServerPutRequest(
@@ -389,7 +421,7 @@ extension MetaBrainCommand {
                 references: documentReferences,
                 retention: retentionPolicy
             )
-            let document = try await storeOptions.withOpenStore { store in
+            let document = try await storeOptions.withOpenStore(createIfMissing: true) { store in
                 try await store.putDocument(input)
             }
             try printPutOutput(
@@ -431,7 +463,7 @@ extension MetaBrainCommand {
             let patchText = try readPatch(filePath: patchFile)
             let retentionPolicy = try retention.optionalPolicy()
 
-            if let client = storeOptions.serverClient() {
+            if let client = try storeOptions.serverClient() {
                 let request = ServerPatchRequest(
                     reference: DocumentReferenceDTO(reference),
                     unifiedDiff: patchText,
@@ -517,7 +549,7 @@ extension MetaBrainCommand {
             let reference = try sourceReference()
             let destination = try destinationPath()
 
-            if let client = storeOptions.serverClient() {
+            if let client = try storeOptions.serverClient() {
                 let result: MoveOutput = try client.post(
                     "/v1/move",
                     request: ServerMoveRequest(
@@ -560,7 +592,7 @@ extension MetaBrainCommand {
         @OptionGroup var output: OutputFormatOptions
 
         func run() async throws {
-            if let client = storeOptions.serverClient() {
+            if let client = try storeOptions.serverClient() {
                 let result: GetOutput = try client.post(
                     "/v1/get",
                     request: ServerGetRequest(reference: DocumentReferenceDTO(try referenceOptions.reference())),
@@ -611,7 +643,7 @@ extension MetaBrainCommand {
             let root = try DocumentPath(path)
             let outputEntries: [ListOutput]
 
-            if let client = storeOptions.serverClient() {
+            if let client = try storeOptions.serverClient() {
                 outputEntries = try client.post(
                     "/v1/list",
                     request: ServerListRequest(
@@ -671,7 +703,7 @@ extension MetaBrainCommand {
             let root = try DocumentPath(path)
             let outputEntries: [TreeOutput]
 
-            if let client = storeOptions.serverClient() {
+            if let client = try storeOptions.serverClient() {
                 outputEntries = try client.post(
                     "/v1/tree",
                     request: ServerTreeRequest(
@@ -747,7 +779,7 @@ extension MetaBrainCommand {
             )
             let outputResults: [SearchOutput]
 
-            if let client = storeOptions.serverClient() {
+            if let client = try storeOptions.serverClient() {
                 outputResults = try client.post(
                     "/v1/search",
                     request: ServerSearchRequest(
@@ -801,7 +833,7 @@ extension MetaBrainCommand {
             )
             var dumpOutputs: [DumpOutput]
 
-            if let client = storeOptions.serverClient() {
+            if let client = try storeOptions.serverClient() {
                 dumpOutputs = try client.post(
                     "/v1/dump",
                     request: ServerDumpRequest(path: query.path.rawValue, versions: versions),
@@ -835,7 +867,7 @@ extension MetaBrainCommand {
         func run() async throws {
             let outputVersions: [VersionsOutput]
 
-            if let client = storeOptions.serverClient() {
+            if let client = try storeOptions.serverClient() {
                 outputVersions = try client.post(
                     "/v1/versions",
                     request: ServerVersionsRequest(reference: DocumentReferenceDTO(try referenceOptions.reference())),
@@ -874,7 +906,7 @@ extension MetaBrainCommand {
                 policy: try retention.requiredPolicy()
             )
 
-            if let client = storeOptions.serverClient() {
+            if let client = try storeOptions.serverClient() {
                 let result: PruneOutput = try client.post(
                     "/v1/prune",
                     request: ServerPruneRequest(
@@ -912,7 +944,7 @@ extension MetaBrainCommand {
             let reference = try referenceOptions.reference()
             let formattedReference = formatReference(reference)
 
-            if let client = storeOptions.serverClient() {
+            if let client = try storeOptions.serverClient() {
                 let result: DeleteOutput = try client.post(
                     "/v1/delete",
                     request: ServerDeleteRequest(reference: DocumentReferenceDTO(reference)),
@@ -954,7 +986,7 @@ extension MetaBrainCommand {
             let reference = try referenceOptions.reference()
             let formattedReference = formatReference(reference)
 
-            if let client = storeOptions.serverClient() {
+            if let client = try storeOptions.serverClient() {
                 let result: RemoveVersionOutput = try client.post(
                     "/v1/remove-version",
                     request: ServerRemoveVersionRequest(
@@ -1615,30 +1647,29 @@ private let daemonBackedCommands: Set<String> = [
     "version",
 ]
 
-private func cliArgumentsWithGlobalServer(_ arguments: [String]) -> [String] {
-    var result = arguments
-    var movedOptions: [String] = []
+private func cliArgumentsWithGlobalOptions(_ arguments: [String]) -> [String] {
+    var index = 0
+    var hasStoreOption = false
 
-    if let optionIndex = result.firstIndex(of: "--no-server") {
-        result.remove(at: optionIndex)
-        movedOptions.append("--no-server")
+    while index < arguments.count {
+        let argument = arguments[index]
+        let option = argument.prefix(while: { $0 != "=" })
+        switch option {
+        case "--store", "--server":
+            hasStoreOption = hasStoreOption || option == "--store"
+            index += option.count == argument.count ? 2 : 1
+        case "--no-server":
+            index += 1
+        default:
+            guard index > 0, daemonBackedCommands.contains(argument),
+                  !hasStoreOption || argument != "version" else {
+                return arguments
+            }
+            return [argument] + arguments[..<index] + arguments[(index + 1)...]
+        }
     }
 
-    if let optionIndex = result.firstIndex(of: "--server"), optionIndex + 1 < result.endIndex {
-        let server = result.remove(at: optionIndex + 1)
-        result.remove(at: optionIndex)
-        movedOptions.append(contentsOf: ["--server", server])
-    }
-
-    guard !movedOptions.isEmpty else {
-        return result
-    }
-    guard let commandIndex = result.firstIndex(where: { daemonBackedCommands.contains($0) }) else {
-        return result
-    }
-
-    result.insert(contentsOf: movedOptions, at: commandIndex + 1)
-    return result
+    return arguments
 }
 
 extension URL {

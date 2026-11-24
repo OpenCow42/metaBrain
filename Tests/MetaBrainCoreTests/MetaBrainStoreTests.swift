@@ -99,10 +99,32 @@ private func storeTestCodec<Value: Codable & Sendable>(
     }
 }
 
+@Test func existingOnlyOpenDoesNotCreateMissingStoresOrLevelDBArtifacts() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let fileManager = FileManager.default
+        let options = MetaBrainStoreOptions(createIfMissing: false)
+        let url = fixture.storeURL
+        let error = MetaBrainStoreError.storeNotFound(path: url.path)
+
+        #expect(!MetaBrainStore.exists(at: url))
+        #expect(throws: error) {
+            try MetaBrainStore(url: url, options: options)
+        }
+        #expect(!fileManager.fileExists(atPath: url.path))
+
+        try fileManager.createDirectory(at: url, withIntermediateDirectories: true)
+        #expect(throws: error) {
+            try MetaBrainStore(url: url, options: options)
+        }
+        #expect(try fileManager.contentsOfDirectory(atPath: url.path).isEmpty)
+    }
+}
+
 @Test func storeErrorsHaveActionableDescriptions() async throws {
     let path = try DocumentPath("/taken")
     let id = try DocumentID(rawValue: "doc-1")
 
+    #expect(MetaBrainStoreError.storeNotFound(path: "/tmp/store").description == "No metaBrain store found at /tmp/store.")
     #expect(MetaBrainStoreError.openFailed(path: "/tmp/store", message: "locked").description == "Could not open metaBrain store at /tmp/store: locked")
     #expect(MetaBrainStoreError.operationFailed(message: "write failed").description == "LevelDB operation failed: write failed")
     #expect(MetaBrainStoreError.documentNotFound("/missing").description == "Document not found: /missing.")

@@ -31,7 +31,7 @@ trap cleanup EXIT
 if [[ -n "${METABRAIN_BIN:-}" ]]; then
     METABRAIN=("$METABRAIN_BIN")
 else
-    METABRAIN=(swift run mb)
+    METABRAIN=(swift run --package-path "$ROOT_DIR" mb)
 fi
 
 if [[ -n "${METABRAIN_DAEMON_BIN:-}" ]]; then
@@ -377,6 +377,76 @@ if "${METABRAIN[@]}" tree --max-depth=-1 2>"$TMP_DIR/tree-invalid-depth.err"; th
     exit 1
 fi
 rg -q -- '--max-depth must be zero or greater' "$TMP_DIR/tree-invalid-depth.err"
+
+assert_missing_store() {
+    local expected_store="$1"
+    shift
+    if "$@" >"$TMP_DIR/missing-store.out" 2>"$TMP_DIR/missing-store.err"; then
+        echo "Expected command to fail for missing store: $expected_store" >&2
+        exit 1
+    fi
+    rg -F -q "No metaBrain store found at $expected_store." "$TMP_DIR/missing-store.err"
+    [[ ! -s "$TMP_DIR/missing-store.out" ]]
+}
+
+WORKSPACE="$TMP_DIR/discovery workspace"
+WORKSPACE_CHILD="$WORKSPACE/sub/deeper"
+WORKSPACE_CHILD_STORE="$WORKSPACE/sub/.metabrain/store.leveldb"
+ENV_STORE="$TMP_DIR/env override/store.leveldb"
+EXPLICIT_STORE="$TMP_DIR/explicit override/store.leveldb"
+mkdir -p "$WORKSPACE_CHILD"
+PHYSICAL_WORKSPACE="$(cd "$WORKSPACE" && pwd -P)"
+(
+    unset METABRAIN_STORE
+    cd "$WORKSPACE_CHILD"
+    for read_command in get list tree search dump versions; do
+        assert_missing_store "$PHYSICAL_WORKSPACE/sub/deeper/.metabrain/store.leveldb" \
+            "${METABRAIN[@]}" --no-server "$read_command" /needle
+    done
+    [[ ! -e "$WORKSPACE_CHILD/.metabrain" ]]
+    assert_missing_store "$EXPLICIT_STORE" \
+        "${METABRAIN[@]}" --no-server --store "$EXPLICIT_STORE" list
+    [[ ! -e "$(dirname "$EXPLICIT_STORE")" ]]
+    METABRAIN_STORE="$ENV_STORE" assert_missing_store "$ENV_STORE" \
+        "${METABRAIN[@]}" --no-server list
+    [[ ! -e "$(dirname "$ENV_STORE")" ]]
+
+    cd "$WORKSPACE"
+    "${METABRAIN[@]}" --no-server init >"$TMP_DIR/workspace-init.json"
+    rg -F -q "\"storePath\":\"$PHYSICAL_WORKSPACE/.metabrain/store.leveldb\"" "$TMP_DIR/workspace-init.json"
+    "${METABRAIN[@]}" --no-server put /needle 'workspace ancestor' >/dev/null
+    cd "$WORKSPACE_CHILD"
+    assert_get_json "$("${METABRAIN[@]}" --no-server get /needle)" /needle 'workspace ancestor' 1
+    [[ ! -e "$WORKSPACE_CHILD/.metabrain" ]]
+
+    "${METABRAIN[@]}" --no-server --store="$WORKSPACE_CHILD_STORE" put /needle 'nearest ancestor' >/dev/null
+    assert_get_json "$("${METABRAIN[@]}" --no-server get /needle)" /needle 'nearest ancestor' 1
+    "${METABRAIN[@]}" --no-server put /nearest 'added from child' >/dev/null
+    assert_get_json "$("${METABRAIN[@]}" --no-server get --store "$WORKSPACE_CHILD_STORE" /nearest)" \
+        /nearest 'added from child' 1
+    [[ ! -e "$WORKSPACE_CHILD/.metabrain" ]]
+
+    METABRAIN_STORE='../../env override/store.leveldb' \
+        assert_missing_store "$PHYSICAL_WORKSPACE/env override/store.leveldb" "${METABRAIN[@]}" --no-server list
+    METABRAIN_STORE="$ENV_STORE" "${METABRAIN[@]}" --no-server put /needle 'environment override' >/dev/null
+    "${METABRAIN[@]}" --store "$EXPLICIT_STORE" --no-server put /needle 'explicit override' >/dev/null
+    assert_get_json "$(METABRAIN_STORE="$ENV_STORE" "${METABRAIN[@]}" --no-server get /needle)" \
+        /needle 'environment override' 1
+    assert_get_json "$(METABRAIN_STORE="$ENV_STORE" "${METABRAIN[@]}" --store "$EXPLICIT_STORE" --no-server get /needle)" \
+        /needle 'explicit override' 1
+    assert_get_json "$(METABRAIN_STORE="$ENV_STORE" "${METABRAIN[@]}" --no-server get --store "$EXPLICIT_STORE" /needle)" \
+        /needle 'explicit override' 1
+
+    assert_missing_store "$PHYSICAL_WORKSPACE/missing-store/store.leveldb" \
+        "${METABRAIN[@]}" --no-server --store ../../missing-store/store.leveldb get /needle
+    [[ ! -e "$WORKSPACE/missing-store" ]]
+
+    mkdir -p "$TMP_DIR/put-workspace/sub"
+    cd "$TMP_DIR/put-workspace/sub"
+    "${METABRAIN[@]}" --no-server put /first 'created by put' >/dev/null
+    [[ -f .metabrain/store.leveldb/CURRENT ]]
+    [[ ! -e ../.metabrain ]]
+)
 
 INIT_DEFAULT_JSON="$("${METABRAIN[@]}" init --store "$STORE")"
 EXPECTED_INIT_JSON="{\"operation\":\"init\",\"status\":\"initialized\",\"storePath\":\"$STORE\"}"
@@ -1052,6 +1122,25 @@ server_mb() {
     shift
     "${METABRAIN[@]}" "$command" --server "$SERVER_SOCKET" --store "$SERVER_STORE" "$@"
 }
+
+(
+    unset METABRAIN_STORE
+    cd "$WORKSPACE_CHILD"
+    SERVER_MISSING_STORE="$TMP_DIR/server-missing/store.leveldb"
+    for read_command in get list tree search dump versions; do
+        assert_missing_store "$SERVER_MISSING_STORE" \
+            "${METABRAIN[@]}" --server "$SERVER_SOCKET" --store="$SERVER_MISSING_STORE" "$read_command" /needle
+    done
+    [[ ! -e "$(dirname "$SERVER_MISSING_STORE")" ]]
+    assert_get_json "$("${METABRAIN[@]}" --server="$SERVER_SOCKET" get /needle)" /needle 'nearest ancestor' 1
+    assert_get_json "$("${METABRAIN[@]}" --store "$PHYSICAL_WORKSPACE/sub/.metabrain/store.leveldb" \
+        --server "$SERVER_SOCKET" get /needle)" /needle 'nearest ancestor' 1
+    assert_get_json "$(METABRAIN_STORE="$ENV_STORE" "${METABRAIN[@]}" --server "$SERVER_SOCKET" get /needle)" \
+        /needle 'environment override' 1
+    assert_get_json "$(METABRAIN_STORE="$ENV_STORE" "${METABRAIN[@]}" --store "$EXPLICIT_STORE" --server "$SERVER_SOCKET" get /needle)" \
+        /needle 'explicit override' 1
+    [[ ! -e "$WORKSPACE_CHILD/.metabrain" ]]
+)
 
 SERVER_INIT_JSON="$(server_mb init)"
 SERVER_EXPECTED_INIT_JSON="{\"operation\":\"init\",\"status\":\"initialized\",\"storePath\":\"$SERVER_STORE\"}"

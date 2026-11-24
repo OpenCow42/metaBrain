@@ -7,14 +7,16 @@ public actor MetaBrainStoreServer {
 
     private let store: MetaBrainStore
 
-    public init(storePath: String) throws {
+    public init(storePath: String, createIfMissing: Bool = true) throws {
         let url = Self.storeURL(for: storePath)
-        try FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
+        if createIfMissing {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+        }
         self.storePath = url.path
-        self.store = try MetaBrainStore(url: url)
+        self.store = try MetaBrainStore(url: url, options: MetaBrainStoreOptions(createIfMissing: createIfMissing))
     }
 
     public func initialize() -> InitializeOutput {

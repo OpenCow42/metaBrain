@@ -80,7 +80,7 @@ and [LevelDB options](https://github.com/google/leveldb/blob/main/include/leveld
 | --- | --- | --- | --- |
 | `metabrain` / `help` | ArgumentParser help generation, `commandHelpMessage` | `O(1)` relative to store size | Does not open or scan the store. |
 | `version` | `MetaBrainVersion.currentSoftwareTag`, optional local daemon probe, optional GitHub latest release request | `O(1)` relative to store size | Does not open the store. By default it performs one short local daemon version probe; with the default release check, it also performs one bounded HTTP request to GitHub's latest release API. |
-| `init` | `StoreOptions.openStore`, `MetaBrainStore.init` | `O(1)` relative to documents, plus LevelDB open/recovery work | Creates the parent directory and opens LevelDB. Recovery can replay logs and clean stale files. |
+| `init` | `StoreOptions.withOpenStore`, `MetaBrainStore.init` | `O(1)` relative to documents, plus LevelDB open/recovery work | Creates the parent directory and opens LevelDB. Recovery can replay logs and clean stale files. |
 | `put` new document | `putDocument`, `writeNewDocument`, `writeDocumentBatch` | `O(B + T + R + L * seek(S) + X_tree + D)` | Body chunking now advances indices incrementally. Tree maintenance touches only the new path branch instead of rebuilding the whole tree index. |
 | `put` existing document | `putDocument`, `writeDocumentUpdate`, `writeDocumentBatch`, retention helpers | `O(B + B_old + T + T_old + R + R_old + V log V + H + L * seek(S) + X_tree + D)` | Updates delete stale chunks/indexes/references, may scan all versions for retention, and update only old/new tree branches. |
 | `patch` | `checkDocumentPatch`/`patchDocument`, unified diff parsing, `writeDocumentUpdate`, `writeDocumentBatch`, retention helpers | `O(P_patch + B_old + B + T + T_old + R + R_old + V log V + H + L * seek(S) + X_tree + D)` for writes; `O(P_patch + B_old)` for `--check` | Patch is partial at the CLI layer, but writes still store a full next document snapshot and rebuild current chunks/indexes. |
@@ -209,32 +209,31 @@ server-side patch file for this endpoint.
 
 ### Daemon-backed CLI and auto probe
 
-Default-store-backed `mb` commands first make a short `/health` probe to
-`http://127.0.0.1:6374`. A healthy response selects daemon-backed execution;
-connection refusal, timeout, or an invalid health payload falls back to direct
-LevelDB access. Commands with explicit `--store` skip this probe unless the user
-passes `--server auto`, while `--no-server` disables daemon detection entirely.
-Every store-backed command can still force a daemon with `--server
-<socket-or-url>`, either before the command name or on the command itself. The
-default loopback endpoint is `127.0.0.1:6374`, with `6374` chosen as a
-leetspeak `META` port.
+The CLI resolves `--store` or `METABRAIN_STORE` in O(1) filesystem operations.
+Otherwise, it checks for an initialized `.metabrain/store.leveldb` in the
+current directory and along its ancestor chain, with O(h) marker checks for
+directory depth h. The selected path is used for both direct and daemon-backed
+commands. Only `init` and `put` permit creating the selected store. Existing-only
+opens check the LevelDB marker before opening the database. The client performs
+the same marker check before sending an existing-only command to a daemon, so
+older daemon versions cannot create a store for that command.
 
-In daemon-backed mode the CLI does not open LevelDB. It validates command-line
-options, performs client-side file work such as `--body-file`, `--patch-file`,
-and `--output-dir`, sends compact JSON over the Unix socket or loopback HTTP
-endpoint, includes the explicit `--store` path as request metadata when one is
-provided, decodes the response, and formats output locally.
+Store-backed `mb` commands make a short `/health` probe to
+`http://127.0.0.1:6374` by default. A healthy response selects daemon-backed
+execution. Connection refusal, timeout, or an invalid health payload falls
+back to direct LevelDB access. `--no-server` selects direct access and
+`--server <socket-or-url>` selects a daemon endpoint.
 
-The probe is O(1) bounded local I/O. The selected command complexity is
-therefore the local CLI preprocessing and output cost plus the matching
-`/v1/...` endpoint cost described above. The store scan/write behavior remains
-the same as the direct command because both paths delegate to `MetaBrainCore`;
-the process-level difference is that active LevelDB handles are owned by the
-daemon registry and reused until they go idle.
+The probe is O(1) bounded local I/O. In daemon-backed mode the CLI validates
+command-line options, performs client-side file work, and sends compact JSON
+over the Unix socket or loopback HTTP endpoint with the resolved store path in
+request metadata. The matching `/v1/...` handler delegates to `MetaBrainCore`
+and the CLI formats the response locally. The daemon registry owns active
+LevelDB handles and reuses them until they go idle.
 
 ### `init`
 
-`init` opens the store through `StoreOptions.openStore()` and
+`init` opens the store through `StoreOptions.withOpenStore()` and
 `MetaBrainStore.init(url:options:)`.
 
 Complexity is `O(1)` with respect to stored documents. It may still do filesystem

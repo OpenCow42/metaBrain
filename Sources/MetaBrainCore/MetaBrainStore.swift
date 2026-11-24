@@ -45,6 +45,7 @@ public struct MetaBrainStoreOptions: Equatable, Sendable {
 }
 
 public enum MetaBrainStoreError: Error, Equatable, Sendable, CustomStringConvertible {
+    case storeNotFound(path: String)
     case openFailed(path: String, message: String)
     case operationFailed(message: String)
     case documentNotFound(String)
@@ -55,6 +56,8 @@ public enum MetaBrainStoreError: Error, Equatable, Sendable, CustomStringConvert
 
     public var description: String {
         switch self {
+        case .storeNotFound(let path):
+            "No metaBrain store found at \(path)."
         case .openFailed(let path, let message):
             "Could not open metaBrain store at \(path): \(message)"
         case .operationFailed(let message):
@@ -90,7 +93,27 @@ public final class MetaBrainStore: Sendable {
         try self.init(url: URL(fileURLWithPath: path, isDirectory: true), options: options)
     }
 
+    /// Returns whether the path contains LevelDB's marker for an initialized store.
+    /// Opening the store still validates its manifest and records.
+    public static func exists(at url: URL) -> Bool {
+        let marker = url.appendingPathComponent("CURRENT", isDirectory: false)
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: marker.path, isDirectory: &isDirectory)
+            && !isDirectory.boolValue
+    }
+
+    /// Checks for an existing store without opening LevelDB or creating any files.
+    public static func requireExistingStore(at url: URL) throws {
+        guard exists(at: url) else {
+            throw MetaBrainStoreError.storeNotFound(path: url.path)
+        }
+    }
+
     public init(url: URL, options: MetaBrainStoreOptions = .default) throws {
+        if !options.createIfMissing {
+            // LevelDB creates the database directory and lock before checking its manifest.
+            try Self.requireExistingStore(at: url)
+        }
         self.url = url
         self.options = options
 
