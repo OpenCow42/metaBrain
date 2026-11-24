@@ -282,6 +282,7 @@ POST /v1/get-version
 POST /v1/ensure-guide
 POST /v1/put-markdown
 POST /v1/links
+POST /v1/lint
 POST /v1/get-passage
 POST /v1/get-ref
 POST /v1/search-evidence
@@ -318,6 +319,15 @@ document can return `document_not_found`.
   the cited block for incoming links and the source block for outgoing links.
   Each occurrence includes its source revision and character offsets, target
   details when available, and a resolution status.
+- `POST /v1/lint` takes optional `path` and `includeOrphans` fields. The path
+  selects the exact document and its descendants. Omit it to audit the whole
+  store. `includeOrphans` defaults to false. A completed audit returns HTTP 200
+  with `path`, `documentsChecked`, `counts`, and `findings`. Counts use keys
+  `missingTarget`, `ambiguousTarget`, `missingAnchor`, `ambiguousAnchor`, and
+  `orphan`. Findings carry `kind`, `sourceID`, `sourcePath`, and `sourceVersion`.
+  Citation findings add `start`, `end`, and `destination`, plus `targetPath`,
+  `fragment`, and `candidatePaths` where applicable. An explicit scope with no
+  document or descendants returns HTTP 404 with `lint_scope_not_found`.
 - `POST /v1/get-passage` takes a document reference, exactly one of `block` or
   `heading`, and an optional retained `version`. It uses the current revision
   by default.

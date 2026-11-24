@@ -49,6 +49,7 @@ public enum MetaBrainStoreError: Error, Equatable, Sendable, CustomStringConvert
     case openFailed(path: String, message: String)
     case operationFailed(message: String)
     case documentNotFound(String)
+    case lintScopeNotFound(DocumentPath)
     case documentVersionNotFound(reference: String, version: UInt64)
     case invalidDocumentVersion(UInt64)
     case pathAlreadyExists(DocumentPath, existingID: DocumentID)
@@ -69,6 +70,8 @@ public enum MetaBrainStoreError: Error, Equatable, Sendable, CustomStringConvert
             "LevelDB operation failed: \(message)"
         case .documentNotFound(let reference):
             "Document not found: \(reference)."
+        case .lintScopeNotFound(let path):
+            "No document or descendants found at lint path \(path)."
         case .documentVersionNotFound(let reference, let version):
             "Document version \(version) not found for \(reference). Check the document reference and retained versions."
         case .invalidDocumentVersion(let version):
@@ -2731,51 +2734,113 @@ extension MetaBrainStore {
         }
     }
 
-    private func linkOccurrences(_ records: [MarkdownCitation]) async throws -> [DocumentLinkOccurrence] {
-        var paths: [DocumentID: DocumentPath] = [:]
+    /// Audits current Markdown citations within the selected path, resolving against the whole store.
+    public func lint(_ query: DocumentLintQuery = DocumentLintQuery()) async throws -> DocumentLintReport {
+        try await writes.run {
+            let scope = query.path ?? (try! DocumentPath("/"))
+            let ids = try await self.lintSourceIDs(under: scope)
+            if query.path != nil, ids.isEmpty {
+                throw MetaBrainStoreError.lintScopeNotFound(scope)
+            }
+            try await self.ensureCitationIndex()
+            var findings: [DocumentLintFinding] = []
+            var documentsChecked = 0
+            var cache = CitationReadCache()
+            for id in ids {
+                guard let source = try await self.documentRecord(id: id)?.document, source.isMarkdown else { continue }
+                documentsChecked += 1
+                let citations = try await self.outgoingCitationRecords(from: id)
+                for citation in citations.sorted(by: { $0.link.start < $1.link.start }) where citation.status != .external {
+                    let link = try await self.linkOccurrence(citation, cache: &cache)
+                    if let finding = DocumentLintFinding(link) { findings.append(finding) }
+                }
+                if query.includeOrphans, try await self.inboundReferences(to: id).allSatisfy({ $0 == id }) {
+                    findings.append(DocumentLintFinding(orphan: source))
+                }
+            }
+            return DocumentLintReport(path: scope.rawValue, documentsChecked: documentsChecked, findings: findings)
+        }
+    }
+
+    /// Path keys sort in document path order. A non-root scope can also be a document itself.
+    private func lintSourceIDs(under scope: DocumentPath) async throws -> [DocumentID] {
+        let prefix = scope.rawValue == "/"
+            ? MetaBrainKeyspace.documentPath(scope)
+            : MetaBrainKeyspace.documentPathDescendantPrefix(scope)
+        let exact = scope.rawValue == "/" ? nil : try await documentID(forPath: scope)
+        let descendants = try await Self.mapLevelDBErrors(path: url.path) {
+            let records = try await currentRecords()
+            return try await records.scanEncodedPrefix(Data(prefix.utf8), readOptions: Self.bulkReadOptions).map { row in
+                guard let rawID = String(data: row.value, encoding: .utf8) else {
+                    throw MetaBrainStoreError.operationFailed(message: "Invalid ID in document path index.")
+                }
+                return try DocumentID(rawValue: rawID)
+            }
+        }
+        return (exact.map { [$0] } ?? []) + descendants
+    }
+
+    private struct CitationReadCache {
+        var paths: [DocumentID: DocumentPath?] = [:]
         var parsedTargets: [DocumentID: MarkdownDocument] = [:]
         var checkedTargets: Set<DocumentID> = []
+    }
+
+    private func linkOccurrences(_ records: [MarkdownCitation]) async throws -> [DocumentLinkOccurrence] {
+        var cache = CitationReadCache()
         var occurrences: [DocumentLinkOccurrence] = []
         for record in records {
-            var targetPath: DocumentPath?
-            var status = record.status
-            if status == .resolved, let target = record.targetID {
-                if paths[target] == nil { paths[target] = try await citationPath(target) }
-                targetPath = paths[target]
-                if targetPath == nil {
-                    status = .unresolved
-                } else if let fragment = record.destination.fragment, !fragment.isEmpty {
-                    if checkedTargets.insert(target).inserted,
-                       let document = try await documentRecord(id: target)?.document, document.isMarkdown {
-                        parsedTargets[target] = MarkdownDocument(body: document.body, includeLinks: false)
-                    }
-                    let selector: DocumentPassageSelector = fragment.hasPrefix("^") ? .block(fragment) : .heading(fragment)
-                    do {
-                        if try parsedTargets[target]?.anchor(for: selector) == nil {
-                            status = .unresolved
-                        }
-                    } catch DocumentPassageError.ambiguousSelector {
-                        status = .ambiguous
-                    }
-                }
-            }
-            var candidates: [DocumentLinkCandidate] = []
-            for id in record.candidates {
-                if paths[id] == nil { paths[id] = try await citationPath(id) }
-                if let path = paths[id] {
-                    candidates.append(DocumentLinkCandidate(documentID: id, path: path))
-                }
-            }
-            occurrences.append(record.occurrence(
-                targetPath: targetPath,
-                status: status,
-                candidates: candidates.sorted { $0.path < $1.path }
-            ))
+            occurrences.append(try await linkOccurrence(record, cache: &cache))
         }
         return occurrences.sorted {
             if $0.sourcePath != $1.sourcePath { return $0.sourcePath < $1.sourcePath }
             return $0.start < $1.start
         }
+    }
+
+    private func linkOccurrence(
+        _ record: MarkdownCitation,
+        cache: inout CitationReadCache
+    ) async throws -> DocumentLinkOccurrence {
+        var targetPath: DocumentPath?
+        var status = record.status
+        if status == .resolved, let target = record.targetID {
+            targetPath = try await citationPath(target, cache: &cache)
+            if targetPath == nil {
+                status = .unresolved
+            } else if let fragment = record.destination.fragment, !fragment.isEmpty {
+                if cache.checkedTargets.insert(target).inserted,
+                   let document = try await documentRecord(id: target)?.document, document.isMarkdown {
+                    cache.parsedTargets[target] = MarkdownDocument(body: document.body, includeLinks: false)
+                }
+                let selector: DocumentPassageSelector = fragment.hasPrefix("^") ? .block(fragment) : .heading(fragment)
+                do {
+                    if try cache.parsedTargets[target]?.anchor(for: selector) == nil {
+                        status = .unresolved
+                    }
+                } catch DocumentPassageError.ambiguousSelector {
+                    status = .ambiguous
+                }
+            }
+        }
+        var candidates: [DocumentLinkCandidate] = []
+        for id in record.candidates {
+            if let path = try await citationPath(id, cache: &cache) {
+                candidates.append(DocumentLinkCandidate(documentID: id, path: path))
+            }
+        }
+        return record.occurrence(
+            targetPath: targetPath,
+            status: status,
+            candidates: candidates.sorted { $0.path < $1.path }
+        )
+    }
+
+    private func citationPath(_ id: DocumentID, cache: inout CitationReadCache) async throws -> DocumentPath? {
+        if let cached = cache.paths[id] { return cached }
+        let path = try await citationPath(id)
+        cache.paths.updateValue(path, forKey: id)
+        return path
     }
 
     private func citationPath(_ id: DocumentID) async throws -> DocumentPath? {

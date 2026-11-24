@@ -32,6 +32,20 @@ public struct ServerLinksRequest: Codable, Equatable, Sendable {
     }
 }
 
+public struct ServerLintRequest: Codable, Equatable, Sendable {
+    public var path: String?
+    public var includeOrphans: Bool?
+
+    public init(path: String? = nil, includeOrphans: Bool? = nil) {
+        self.path = path
+        self.includeOrphans = includeOrphans
+    }
+
+    public func lintQuery() throws -> DocumentLintQuery {
+        DocumentLintQuery(path: try path.map(DocumentPath.init), includeOrphans: includeOrphans ?? false)
+    }
+}
+
 public struct ServerGetPassageRequest: Codable, Equatable, Sendable {
     public var reference: DocumentReferenceDTO
     public var block: String?

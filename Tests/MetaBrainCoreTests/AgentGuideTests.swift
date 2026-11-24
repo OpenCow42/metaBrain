@@ -15,7 +15,8 @@ import Testing
         #expect(statuses.filter { $0 == .unchanged }.count == 11)
         let initial = try await store.ensureAgentGuide().document
         #expect(initial.body.contains("--view evidence"))
-        #expect(initial.metadata["guide-revision"] == "3")
+        #expect(initial.body.contains("mb lint /decisions"))
+        #expect(initial.metadata["guide-revision"] == "4")
         let custom = try await store.putDocument(DocumentInput(path: initial.path, body: "Project instructions."))
         let preserved = try await store.ensureAgentGuide()
         #expect(preserved.document == custom)

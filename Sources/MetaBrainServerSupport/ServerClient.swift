@@ -136,6 +136,10 @@ public struct MetaBrainServerClient: Sendable {
         try postCitation("/v1/links", request: request, operation: "links")
     }
 
+    public func lint(_ request: ServerLintRequest) throws -> DocumentLintReport {
+        try postCitation("/v1/lint", request: request, operation: "lint")
+    }
+
     public func searchEvidence(_ request: ServerEvidenceSearchRequest) throws -> EvidenceOutput {
         try postCitation("/v1/search-evidence", request: request, operation: "search --view")
     }

@@ -218,6 +218,7 @@ mb help dump
 - `get` reads documents by path or stable ID and supports retained `--version`,
   Markdown `--block` or `--heading`, and exact evidence `--ref` reads.
 - `links` lists outgoing Markdown citations, or incoming citations with `--incoming`.
+- `lint` audits current Markdown citations across the store or under a selected path.
 - `list` lists stored document paths in a virtual folder.
 - `tree` prints the stored document path tree.
 - `search` ranks current documents using their titles, paths, and body passages
@@ -337,6 +338,42 @@ of surviving occurrences, including links whose targets moved or were deleted.
 Upgrade `mb`, `mbd`, and any other writers together before opening that store.
 New CLI commands require a daemon that supports the citation routes. For a
 store you can open directly, use `mb --no-server`.
+
+### Audit citations
+
+Run `mb lint` to audit the whole store or pass a virtual path to select that
+document and its descendants. Links and backlinks can cross the selected path.
+Lint reports each missing or ambiguous document target or heading/block anchor.
+It checks current Markdown, including embeds and documents marked with
+`--markdown`, and skips external URLs.
+
+For example, the following commands in a scratch store create a working citation
+and then remove the block it points to.
+
+```bash
+mb put /policies/Retention.md 'Keep the last seven backups. ^keep-last'
+mb put /decisions/backups.md 'Follow [[/policies/Retention.md#^keep-last]].'
+mb put /policies/Retention.md 'Keep the last seven backups.' --body-only
+mb lint /decisions --format text
+```
+
+The report identifies `/decisions/backups.md` at revision 1 with a
+`missingAnchor` finding for `^keep-last`. Use `mb links /decisions/backups.md`
+to inspect the note's citations.
+
+Use `--orphans` to include Markdown notes with no indexed backlink from another
+document. Explicit references count, as do citations to an existing document
+with a broken anchor. A self-link alone leaves a note orphaned.
+
+JSON is the default. It returns the normalized `path`, `documentsChecked`,
+`counts` by finding kind, and ordered `findings`. Each citation finding
+identifies the source revision with half-open Swift Character offsets. Text
+includes a summary. JSONL prints one finding per line and is empty for a clean
+audit. An explicitly supplied path must match a document or a subtree.
+For CI, `--strict` prints the report and exits 3 on any selected finding.
+
+Lint preserves document bodies, revisions, and access counters. Opening an older
+store may prepare the derived citation index, as with `mb links`.
 
 ### Markdown properties
 

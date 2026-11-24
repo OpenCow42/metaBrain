@@ -28,6 +28,7 @@ struct MetaBrainCommand: AsyncParsableCommand {
           mb help search
           mb help get
           mb help links
+          mb help lint
           mb help recall
           mb help dump
           mb help move
@@ -42,6 +43,7 @@ struct MetaBrainCommand: AsyncParsableCommand {
           mb get --ref "$ref" --context section --max-tokens 1024
           mb put /decisions/backups.md 'Follow [[Retention#^keep-last]].' --if-version 0
           mb links /decisions/backups.md
+          mb lint /decisions
 
         Run mb init to create a store. Set ref to a value returned by search.
 
@@ -69,6 +71,7 @@ struct MetaBrainCommand: AsyncParsableCommand {
             Move.self,
             Get.self,
             Links.self,
+            Lint.self,
             List.self,
             Tree.self,
             Search.self,
@@ -827,6 +830,64 @@ extension MetaBrainCommand {
             case .jsonl:
                 try printJSONLines(links)
             }
+        }
+    }
+
+    struct Lint: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "lint",
+            abstract: "Audit current Markdown citations.",
+            discussion: """
+            Omit the path to audit the whole store. A path selects that document and its descendants.
+            Citations resolve against the whole store. JSONL prints one finding per line.
+            """
+        )
+
+        @OptionGroup var storeOptions: StoreOptions
+        @OptionGroup var output: OutputFormatOptions
+
+        @Argument(help: "Virtual path to audit, including its descendants.")
+        var path: String?
+
+        @Flag(help: "Report Markdown notes with no incoming link from another document.")
+        var orphans = false
+
+        @Flag(help: "Exit with status 3 when any selected check reports a finding.")
+        var strict = false
+
+        func run() async throws {
+            let request = ServerLintRequest(path: path, includeOrphans: orphans)
+            let query = try request.lintQuery()
+            let report: DocumentLintReport
+            if let client = try storeOptions.serverClient() {
+                report = try client.lint(request)
+            } else {
+                report = try await storeOptions.withOpenStore { store in
+                    try await store.lint(query)
+                }
+            }
+            switch output.format {
+            case .text:
+                for finding in report.findings {
+                    var location = "\(finding.sourcePath)@\(finding.sourceVersion)"
+                    if let start = finding.start, let end = finding.end {
+                        location += ":\(start)-\(end)"
+                    }
+                    var details = finding.destination.map { "\t\($0)" } ?? ""
+                    if let target = finding.targetPath { details += "\tresolved document \(target)" }
+                    if let candidates = finding.candidatePaths { details += "\t\(candidates.joined(separator: ", "))" }
+                    print("\(location)\t\(finding.kind.rawValue)\(details)")
+                }
+                let noun = report.documentsChecked == 1 ? "document" : "documents"
+                print("Checked \(report.documentsChecked) Markdown \(noun) under \(report.path).")
+                let counts = DocumentLintKind.allCases.map { "\($0.rawValue)=\(report.counts[$0.rawValue, default: 0])" }
+                print(counts.joined(separator: " "))
+            case .json:
+                try printJSON(report)
+            case .jsonl:
+                try printJSONLines(report.findings)
+            }
+            if strict, !report.findings.isEmpty { throw ExitCode(3) }
         }
     }
 
@@ -1970,6 +2031,7 @@ private let daemonBackedCommands: Set<String> = [
     "move",
     "get",
     "links",
+    "lint",
     "list",
     "tree",
     "search",

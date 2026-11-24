@@ -146,6 +146,12 @@ public struct ServerRouter: Sendable {
             }
         case (_, "/v1/links"):
             return methodNotAllowed(request, allowedMethod: "POST")
+        case (.post, "/v1/lint"):
+            return await routeStoreOperation(request) { storeServer in
+                try await storeServer.lint(decode(ServerLintRequest.self, from: request))
+            }
+        case (_, "/v1/lint"):
+            return methodNotAllowed(request, allowedMethod: "POST")
         case (.post, "/v1/list"):
             return await routeStoreOperation(request) { storeServer in
                 let decoded = try decode(ServerListRequest.self, from: request)
@@ -372,6 +378,11 @@ public struct ServerRouter: Sendable {
                     error: "document_not_found",
                     message: error.description
                 )
+            )
+        case .lintScopeNotFound:
+            return jsonResponse(
+                statusCode: 404,
+                payload: ServerErrorPayload(error: "lint_scope_not_found", message: error.description)
             )
         case .documentVersionNotFound:
             return jsonResponse(

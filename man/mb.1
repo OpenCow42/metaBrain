@@ -47,6 +47,24 @@ Store location when no explicit
 .Fl Fl store
 is supplied.
 .El
+.Sh CITATION AUDIT
+.Cm mb lint
+audits current Markdown links across the selected store.
+An optional virtual path scopes the audit to that document and its descendants.
+Link resolution still uses the whole store.
+The report includes missing or ambiguous targets and heading or block anchors.
+Use
+.Fl Fl orphans
+to check for Markdown notes with no indexed backlink from another document.
+Use
+.Fl Fl strict
+to exit with status 3 after printing any selected findings.
+The default format is JSON.
+Use
+.Fl Fl format Cm text
+for a readable summary or
+.Fl Fl format Cm jsonl
+for one finding per line.
 .Sh FILES
 .Bl -tag -width ".metabrain/store.leveldb"
 .It Pa /AGENTS.md
@@ -63,5 +81,6 @@ mb search "nightly backups" --view evidence --max-tokens 512
 mb get --ref "$ref" --context section --max-tokens 1024
 mb links /decisions/backups.md
 mb links /policies/Retention.md --incoming --block keep-last
+mb lint /decisions --strict
 mb get /policies/Retention.md --block keep-last
 .Ed

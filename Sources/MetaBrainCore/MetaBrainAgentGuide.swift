@@ -54,8 +54,10 @@ enum MetaBrainAgentGuide {
         mb patch /decisions/backups.md --patch-file change.diff
         ```
 
+        After editing linked notes, run `mb lint /decisions --format text` to find missing or ambiguous document targets and anchors. Omit the path to audit the whole store. Use `--orphans` to include Markdown notes with no indexed backlink from another document, or `--strict` to exit with status 3 when the selected checks find a problem.
+
         Use `mb man search` for CLI options. Use `mb ensure-guide` to install this guide in an existing store that lacks it.
         """ + "\n",
-        metadata: ["guide-revision": "3"]
+        metadata: ["guide-revision": "4"]
     )
 }

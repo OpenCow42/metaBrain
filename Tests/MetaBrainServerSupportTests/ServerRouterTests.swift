@@ -214,6 +214,7 @@ import Testing
     let reference = #"{"kind":"path","value":"/note"}"#
     let requests = [
         ("get", #"{"reference":\#(reference)}"#),
+        ("lint", "{}"),
         ("list", "{}"),
         ("tree", #"{"maxDepth":0}"#),
         ("search", #"{"query":"term"}"#),

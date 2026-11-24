@@ -243,6 +243,12 @@ The citation layout upgrade reparses current Markdown and preserves surviving
 bindings. See [Complexity](COMPLEXITY.md#markdown-properties-and-citations) for
 the cost of rebuilding and maintaining these indexes.
 
+The citation audit uses the document path index to enumerate its sources under
+the write coordinator. It shares the link resolver with `links` and caches
+target paths and parsed target anchors across source notes. Optional orphan
+checks use both inbound indexes against the entire store. An audit reads
+current revisions without tracking document access.
+
 Evidence quotes and range references come from the same document revision.
 A compact reference identifies a document ID, retained version and half-open
 Swift Character range or named block. Rendering and budget accounting use the

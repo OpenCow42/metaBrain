@@ -244,6 +244,7 @@ assert_remove_version_json() {
 "${METABRAIN[@]}" help move | rg -q 'document IDs are preserved'
 "${METABRAIN[@]}" help move | rg -q 'Path references are location aliases'
 "${METABRAIN[@]}" help get | rg -q 'Read a document by path or ID'
+"${METABRAIN[@]}" help lint | rg -q 'Audit current Markdown citations'
 "${METABRAIN[@]}" help list | rg -q 'List stored document paths in a folder'
 "${METABRAIN[@]}" help tree | rg -q 'Show the stored document path tree'
 "${METABRAIN[@]}" help search | rg -q 'Search current document content'
@@ -1334,6 +1335,7 @@ check_guarded_put "$TMP_DIR/guarded-daemon/store.leveldb" "${METABRAIN[@]}" --se
 
 check_recall "$TMP_DIR/recall-daemon/store.leveldb" "${METABRAIN[@]}" --server "$SERVER_SOCKET"
 python3 Tests/MetaBrainCLITests/citation-search.py "$TMP_DIR/citations-daemon/store.leveldb" "${METABRAIN[@]}" --server "$SERVER_SOCKET"
+python3 Tests/MetaBrainCLITests/citation-lint.py "$TMP_DIR/lint/store.leveldb" "$SERVER_SOCKET" "${METABRAIN[@]}"
 
 SERVER_INIT_JSON="$(server_mb init)"
 SERVER_EXPECTED_INIT_JSON="{\"operation\":\"init\",\"status\":\"initialized\",\"storePath\":\"$SERVER_STORE\"}"

@@ -94,6 +94,10 @@ public actor MetaBrainStoreServer {
         ).map(DocumentLinkOutput.init)
     }
 
+    public func lint(_ request: ServerLintRequest) async throws -> DocumentLintReport {
+        try await store.lint(request.lintQuery())
+    }
+
     public func list(_ request: ServerListRequest) async throws -> [ListOutput] {
         try await store.listDirectory(
             path: request.documentPath(),

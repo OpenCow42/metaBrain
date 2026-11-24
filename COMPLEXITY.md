@@ -92,6 +92,7 @@ and [LevelDB options](https://github.com/google/leveldb/blob/main/include/leveld
 | `move` | `moveDocument`, `writeDocumentUpdate`, `writeDocumentBatch`, retention helpers | `O(B + B_old + T + T_old + R + R_old + V log V + H + L * seek(S) + X_tree + D)` | Resolves an existing document, preserves its stable ID and content fields, writes a new path alias, removes the old path alias, and updates affected tree branches. |
 | `get` | `getDocument`, `documentID(for:)`, `documentRecord(id:)`, `printDocument` | `O(seek(S) + B)` | Decoding and printing the stored document body dominate once the point lookup succeeds. |
 | `get --version` | `getDocument(_:version:)`, document reference resolution, version lookup | `O(seek(S) + B_version)` | Point-reads one retained version and prints its snapshot. |
+| `lint` | `lint`, path and citation indexes, optional backlink scans | See [Markdown properties and citations](#markdown-properties-and-citations) | Scans scoped source documents and resolves their links against the store. |
 | `list` non-recursive | `listDirectory`, `childTreeEntries`, `formatListEntry` | `O(seek(S) + K log K)` | Scans one tree prefix, decodes child records, sorts by display path, and prints them. |
 | `list --recursive` | `listDirectory`, `flattenedTreeEntries`, `childTreeEntries` | `O(A * seek(S) + A log A)` typical, with extra recursive array-copy overhead | Walks directories with many separate prefix scans and materializes the whole subtree. `--directories-only` filters output but still traverses descendants. |
 | `tree` | `tree`, `flattenedTreeEntries`, `printTree` | `O(A * seek(S) + A log A)` typical for an unbounded tree | `--max-depth 0` is `O(1)`. Larger depths scan and materialize the requested subtree, then group and sort for printing. |
@@ -448,6 +449,17 @@ parses the distinct cited Markdown bodies. The returned occurrences are sorted
 by source path and position. `get --heading` and `get --block` decode and parse
 the selected current or retained body. `ensure-guide` checks a single virtual
 path under the write coordinator. Only a missing guide incurs a document insertion.
+
+`lint` does one path prefix scan and one exact-path lookup for a non-root scope.
+It decodes each selected current document and scans one outbound index prefix
+per Markdown source. For a source with `L` occurrences, sorting offsets costs
+`O(L log L)`. Target-path lookups and target-body parsing are shared across the
+audit. Anchor lookup scans the parsed anchors for each fragment occurrence.
+Ambiguous targets also read and sort their candidate paths. With `--orphans`,
+lint scans both inbound prefixes for each Markdown source and deduplicates
+and sorts backlink IDs. Peak memory includes the selected document IDs,
+cached target paths and anchors, one source's outgoing rows, and the findings.
+The one-time citation layout preparation also applies to lint.
 
 ### Compact evidence views
 

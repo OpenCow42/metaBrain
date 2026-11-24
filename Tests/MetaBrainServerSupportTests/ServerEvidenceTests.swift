@@ -181,6 +181,50 @@ import Testing
     }
 }
 
+@Test func lintRouteReportsFindingsAndScopeErrors() async throws {
+    let root = try temporaryServerDirectory(prefix: "mbd-lint")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let server = try MetaBrainStoreServer(storePath: root.appendingPathComponent("store.leveldb").path)
+    defer { server.closeBlocking() }
+    let router = ServerRouter(storeServer: server)
+    let put = try await citationPost(router, "/v1/put", ServerPutRequest(path: "/notes/note.md", body: "[[Missing]]"))
+    #expect(put.statusCode == 200)
+    let scoped = try await citationPost(router, "/v1/lint", ServerLintRequest(path: "/notes", includeOrphans: true))
+    #expect(scoped.statusCode == 200)
+    let report = try MetaBrainJSON.decoder().decode(DocumentLintReport.self, from: scoped.body)
+    #expect(report.path == "/notes")
+    #expect(report.findings.map(\.kind) == [.missingTarget, .orphan])
+    let defaults = try await citationPost(router, "/v1/lint", ServerLintRequest())
+    #expect(defaults.statusCode == 200)
+    let defaultReport = try MetaBrainJSON.decoder().decode(DocumentLintReport.self, from: defaults.body)
+    #expect(defaultReport.path == "/")
+    #expect(defaultReport.findings.map(\.kind) == [.missingTarget])
+
+    let missing = try await citationPost(router, "/v1/lint", ServerLintRequest(path: "/absent"))
+    #expect(missing.statusCode == 404)
+    #expect(try MetaBrainJSON.decoder().decode(ServerErrorPayload.self, from: missing.body).error == "lint_scope_not_found")
+    let invalid = try await citationPost(router, "/v1/lint", ServerLintRequest(path: "/../invalid"))
+    #expect(invalid.statusCode == 400)
+    let wrongMethod = await router.route(ServerHTTPRequest(method: .get, path: "/v1/lint"))
+    #expect(wrongMethod.statusCode == 405)
+}
+
+@Test func lintClientReportsUnsupportedDaemons() throws {
+    let codec = ServerHTTPCodec()
+    let request = ServerLintRequest(path: "/notes", includeOrphans: true)
+    let client = MetaBrainServerClient { data in
+        let wireRequest = try codec.parseRequest(data)
+        #expect(wireRequest.method == .post)
+        #expect(wireRequest.path == "/v1/lint")
+        #expect(try MetaBrainJSON.decoder().decode(ServerLintRequest.self, from: wireRequest.body) == request)
+        let body = try MetaBrainJSON.encoder().encode(ServerErrorPayload(error: "not_found", message: "Unknown route."))
+        return codec.serializeResponse(ServerHTTPResponse(statusCode: 404, body: body))
+    }
+    #expect(throws: ServerClientError.citationOperationUnsupported("lint")) {
+        try client.lint(request)
+    }
+}
+
 private func citationPost(
     _ router: ServerRouter, _ route: String, _ request: some Encodable
 ) async throws -> ServerHTTPResponse {
