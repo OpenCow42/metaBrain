@@ -187,6 +187,7 @@ for product_name in "${PRODUCT_NAMES[@]}"; do
   strip "$archive_dir/bin/$product_name"
 done
 install -m 0644 README.md "$archive_dir/README.md"
+install -D -m 0644 man/mb.1 "$archive_dir/share/man/man1/mb.1"
 install -m 0644 LICENSE "$archive_dir/LICENSE"
 
 tar -C "$BUILD_ROOT" -czf "$archive_path" "$archive_name"
@@ -197,6 +198,7 @@ for product_name in "${PRODUCT_NAMES[@]}"; do
   install -m 0755 "$archive_dir/bin/$product_name" "$deb_root/usr/bin/$product_name"
 done
 install -m 0644 README.md "$deb_root/usr/share/doc/$PACKAGE_NAME/README.md"
+install -D -m 0644 man/mb.1 "$deb_root/usr/share/man/man1/mb.1"
 install -m 0644 LICENSE "$deb_root/usr/share/doc/$PACKAGE_NAME/LICENSE"
 
 installed_size="$(du -sk "$deb_root/usr" | awk '{print $1}')"

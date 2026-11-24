@@ -222,3 +222,19 @@ Tests should cover:
 In this `metaBrain` repository, `MetaBrainCore` and CLI-facing logic should
 strive for 100% coverage. UI-app coverage expectations belong in the sibling
 app repository that owns that UI.
+
+## Passage citations and evidence retrieval
+
+The Markdown source and author-supplied document fields stay in the versioned
+record. Current-document indexes record link occurrences (including source
+revision and character offsets), bindings to stable target IDs, pending lookup
+names, and derived frontmatter filter postings. Writes update the affected
+indexes with the document in one LevelDB batch. Resolved IDs preserve citation
+identity across path changes. The Markdown block/heading selector is evaluated
+against the target revision requested by the reader.
+
+Evidence quotes and range references come from the same document revision.
+A compact reference identifies a document ID, retained version and half-open
+Swift Character range or named block. Rendering and budget accounting use the
+same compact JSON encoding in direct and daemon-backed clients. Ordinary search
+continues to expose its existing chunk-shaped response.

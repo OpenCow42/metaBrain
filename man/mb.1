@@ -1,0 +1,54 @@
+.Dd November 24, 2026
+.Dt MB 1
+.Os
+.Sh NAME
+.Nm mb
+.Nd store, search, and cite versioned metaBrain documents
+.Sh SYNOPSIS
+.Nm
+.Op Fl Fl store Ar store
+.Op Fl Fl server Ar endpoint | Fl Fl no-server
+.Ar command
+.Op Ar arguments ...
+.Sh DESCRIPTION
+.Nm
+operates on a local metaBrain store directly or through the
+.Nm mbd
+daemon.
+Read the selected store's own agent manual with
+.Cm mb get /AGENTS.md .
+It describes efficient retrieval, citations, and local instructions.
+A newly initialized store includes this document by default.
+Run
+.Cm mb ensure-guide
+to install the bundled guide in an existing store when it is missing.
+An existing guide retains its contents and version.
+.Pp
+Run
+.Cm mb man
+for the command list or
+.Cm mb man search
+for a command's current flags.
+.Sh ENVIRONMENT
+.Bl -tag -width "METABRAIN_STORE"
+.It Ev METABRAIN_STORE
+Store location when no explicit
+.Fl Fl store
+is supplied.
+.El
+.Sh FILES
+.Bl -tag -width ".metabrain/store.leveldb"
+.It Pa /AGENTS.md
+Virtual document inside the selected store.
+Read it with
+.Cm mb get /AGENTS.md .
+.It Pa .metabrain/store.leveldb
+Default store discovered in the working directory or its ancestors.
+.El
+.Sh EXAMPLES
+.Bd -literal -offset indent
+mb search --tag storage --view refs --limit 5
+mb search "nightly backups" --view evidence --max-tokens 512
+mb get --ref "$ref" --context section --max-tokens 1024
+mb links /policies/Retention.md --incoming --block keep-last
+.Ed

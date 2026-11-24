@@ -251,6 +251,8 @@ for product_name in "${PRODUCT_NAMES[@]}"; do
 done
 
 install -m 0644 "${ROOT_DIR}/README.md" "${release_dir}/README.md"
+mkdir -p "${release_dir}/share/man/man1"
+install -m 0644 "${ROOT_DIR}/man/mb.1" "${release_dir}/share/man/man1/mb.1"
 install -m 0644 "${ROOT_DIR}/LICENSE" "${release_dir}/LICENSE"
 
 if [[ "${SKIP_SIGN}" -eq 0 ]]; then

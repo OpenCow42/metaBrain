@@ -416,6 +416,49 @@ passages to avoid double-counting overlapping text. The passage contribution
 uses the local body frequency. Scoring uses no document or passage length
 normalization (`b = 0`).
 
+### Markdown properties and citations
+
+On an older store, the first Markdown citation operation or document mutation
+scans current documents, parses Markdown bodies, and writes the occurrence
+index, path/name lookups, and layout marker in an atomic batch. It uses a
+temporary catalog of document IDs and paths and retains the current occurrences
+during that backfill. Search index layout 2 also backfills YAML filter postings
+once from current documents. Neither migration rewrites document versions.
+
+A subsequent Markdown write parses the source, scans its previous occurrences
+and updates their inbound or pending rows in the document write batch. A new,
+moved, or deleted target revisits pending prefixes for its affected names and
+paths. Bare names can scan multiple matching IDs. Target deletion also visits
+its inbound citations. Cost therefore depends on the changed body, its outgoing
+links, and the affected pending/inbound occurrences. Frontmatter contributes
+work proportional to the YAML header and number of scalar/list values; an
+unclosed opening delimiter can require reading to the end of the body.
+
+`links` scans one outgoing or incoming index prefix, then reads the selected
+occurrences and target paths. Verifying heading/block targets also reads and
+parses the distinct cited Markdown bodies. The returned occurrences are sorted
+by source path and position. `get --heading` and `get --block` decode and parse
+the selected current or retained body. `ensure-guide` checks a single virtual
+path under the write coordinator. Only a missing guide incurs a document insertion.
+
+### Compact evidence views
+
+A text query in `search --view evidence|refs` uses the lexical search indexes
+and ranking. Match selection also scans candidate chunks and sorts their hits
+by term weight. For H matches in a chunk the additional sort is O(H log H).
+It merges overlapping source ranges and keeps a bounded number of candidate
+passages per document. Selection sorts candidate documents and measures the
+serialized items, including escaping, separators, and the final newline.
+The output budget bounds delivery; broad queries can still score many matches.
+
+Filter-only refs intersect indexed tag/metadata postings, or enumerate the
+requested path subtree. Each candidate is checked against its current path and
+version. `get --ref` uses the stable ID and version for a point lookup,
+reads that retained body and selects a character range, named block, or section.
+When a requested expansion exceeds its budget, it first tries the original
+citation. Returning a bounded prefix of an oversized passage can require
+logarithmically many encoded-size checks.
+
 ### `recall`
 
 `recall` uses the search filters, postings, and ranking to score the full

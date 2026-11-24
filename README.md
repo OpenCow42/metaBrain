@@ -111,6 +111,11 @@ an existing store and report the selected location when it is missing.
 guidance on writing, finding, and linking notes. Run `mb init --empty` to start
 with zero documents. Reopening a store preserves its contents. A command such
 as `mb put` that creates a store implicitly only writes the requested document.
+Use `mb ensure-guide` to install the current default in any existing store
+missing `/AGENTS.md`. Concurrent calls create a single version. If the guide
+already exists, the command preserves its ID, body, and history. Read it with
+`mb get /AGENTS.md`; `mb man`, `mb man search`, and the `mb(1)` manual point
+to that store-specific guide.
 
 ## Agent Workflow
 
@@ -189,10 +194,12 @@ mb help dump
 - `version` prints the current release tag, probes the default local daemon, and
   checks GitHub for newer releases.
 - `init` creates a store with `/AGENTS.md` by default or opens an existing store.
-- `put` creates or updates a document at a path.
+- `ensure-guide` installs the default agent manual if the selected store lacks it.
+- `put` creates or updates a document at a path. Use `--markdown` to index an extensionless note as Markdown.
 - `patch` applies a single-file unified diff to an existing document body.
 - `move` relocates an existing document to a new path without changing its ID.
 - `get` reads the current document or a retained `--version` by path or stable document ID.
+- `links` lists outgoing Markdown citations, or incoming citations with `--incoming`.
 - `list` lists stored document paths in a virtual folder.
 - `tree` prints the stored document path tree.
 - `search` ranks current documents using their titles, paths, and body passages
@@ -223,6 +230,60 @@ An older store builds its title and path index on the first search or document
 mutation. When using a daemon, upgrade both `mb` and `mbd` to get the new
 ranking. The daemon version determines the ranking and index used for
 daemon-backed searches.
+
+## Find and reopen evidence
+
+Use `--view refs` to choose documents, and `--view evidence` to read quoted
+passages. Copy a returned `ref` into `mb get` when you need more context.
+
+```sh
+mb search --tag storage --meta status=draft --view refs --limit 5
+mb search "nightly backups" --path-prefix /policies --view evidence --max-tokens 512
+mb get --ref "$ref" --context section --max-tokens 1024
+```
+
+Both views return compact JSON with `items` and `truncated`. Each item has
+a version-bound `ref` and a `path`. Evidence items also have verbatim `text`.
+`--max-tokens` bounds the complete serialized output including its final newline.
+It counts one unit per UTF-8 byte, a conservative upper bound for byte-level
+tokenizers. No model-specific vocabulary is required. Lower the document limit
+or narrow the filters first. If important context is missing, increase the
+budget or request the containing section. Reads by reference require a retained
+revision. Plain text documents also support references using half-open Swift
+Character offsets into that revision.
+
+### Markdown citations
+
+`.md` notes and documents marked with `mb put --markdown` support wikilinks,
+relative Markdown links, heading targets, and explicit block IDs. In the
+following example the decision arrives before the cited rule.
+
+```sh
+mb put /decisions/backups.md 'Follow [[Retention#^keep-last]].'
+mb put /policies/Retention.md 'Keep the last seven backups. ^keep-last'
+mb links /decisions/backups.md
+mb links /policies/Retention.md --incoming --block keep-last
+mb get /policies/Retention.md --block keep-last
+mb move /policies/Retention.md /archive/Retention-2026.md
+mb links /decisions/backups.md
+```
+
+A resolved occurrence records the target's stable ID, so it follows the move.
+Deleting that target leaves the occurrence unresolved. A new document at the
+former path gets its own ID and leaves the original binding intact.
+The author's Markdown stays verbatim. For a specific revision use
+`mb get --id "$document_id" --version 1 --block keep-last`. A reference copied
+from evidence search also selects the exact revision. Use `--ref-id` for explicit
+document-level relationships alongside the citations written in prose.
+
+Flat YAML properties between opening and closing `---` lines participate in
+search. A `tags` scalar or list adds tag postings. Other scalar and flat list
+values support the existing exact, case-insensitive metadata filters. Explicit
+`--meta` wins for the same key. Body edits update these derived indexes, while
+`get` and `dump` preserve the original body and the separately supplied fields.
+On first access the new code backfills these postings on older stores. Upgrade
+the CLI, daemon, and other writers together. A binary using the previous search
+index layout rejects searches and ordinary document writes after migration.
 
 ## Recall and citations
 
@@ -383,7 +444,8 @@ read by older binaries. A future release may add required payload fields or a
 new key layout that old tools cannot decode. Older tools should fail
 gracefully in those cases.
 
-Virtual paths are case-sensitive, so `/Notes/Today` and `/notes/today` can
+Virtual paths compare by their exact UTF-8 spelling, including Unicode normalization.
+They are case-sensitive, so `/Notes/Today` and `/notes/today` can
 both appear in `list`, `tree`, and `dump`. On the first tree read or document
 write, metaBrain rebuilds the tree index of an older store from its current
 documents. Document IDs and retained versions are preserved. Upgrade any older
@@ -442,3 +504,4 @@ the project documents below when you need those paths.
 Third-party dependencies retain their own licenses, including BSD 3-Clause for
 `swift-leveldb` and its vendored LevelDB source. Zstandard, provided by `zstd`,
 is dual-licensed under BSD or GPLv2; this project uses it under the BSD option.
+Yams and its bundled libyaml parser use the MIT license. Their notices are included in [LICENSE](LICENSE).

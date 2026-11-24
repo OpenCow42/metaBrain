@@ -281,6 +281,12 @@ POST /v1/patch
 POST /v1/move
 POST /v1/get
 POST /v1/get-version
+POST /v1/ensure-guide
+POST /v1/put-markdown
+POST /v1/links
+POST /v1/get-passage
+POST /v1/get-ref
+POST /v1/search-evidence
 POST /v1/list
 POST /v1/tree
 POST /v1/search
@@ -299,6 +305,24 @@ base64-encoded UTF-8 path. `/v1/init`, `/v1/put`, and
 operations return HTTP 404 with `store_not_found` and the checked path if the
 selected store is missing. An existing store with a missing
 document can return `document_not_found`.
+
+### Agent retrieval routes
+
+- `POST /v1/ensure-guide` with `{}` installs `/AGENTS.md` in an existing
+  store only when absent. Response fields match a put result, with operation
+  `ensure-guide` and status `created` or `unchanged`.
+- `POST /v1/put-markdown` explicitly enables Markdown on a put, including for
+  extensionless paths. The request wraps ordinary put fields in `document` and
+  optionally accepts a top-level `ifVersion`. Existing `.md` writes use the normal put route.
+- `POST /v1/links` takes a document reference and optional `direction`
+  (`incoming` or `outgoing`) and `block`. It returns one entry per citation.
+- `POST /v1/get-passage` takes a document reference, a `block` or `heading`,
+  and an optional retained `version`.
+- `POST /v1/search-evidence` accepts search filters, a `view` of `refs` or
+  `evidence`, and an optional `maxTokens`. Filter-only requests use `refs`.
+- `POST /v1/get-ref` expands a versioned `ref`, with optional `context`
+  (`section`) and `maxTokens`. Its compact JSON envelope matches search
+  evidence. The budget includes JSON framing and the CLI's final line feed.
 
 ### Request Shapes
 
