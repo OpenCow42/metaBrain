@@ -555,10 +555,7 @@ The CLI and daemon stay thin. Shared behavior belongs in `MetaBrainCore`, while
 server-facing transport DTOs live in the internal `MetaBrainServerSupport`
 target when they are not part of the core storage model.
 
-The native Apple platform GUI lives in the sibling
-[`metaBrainExplorer`](../metaBrainExplorer) repository. It depends on
-`MetaBrainCore` and owns app-specific state, presentation, and Apple UI
-integration.
+MetaBrainExplorer is the first optional viewer. Check it out at `../MetaBrainExplorer` and open its Xcode project. Open a decision note to inspect its cited passage, follow the current source by document ID, or export a retained original. The app can open the store directly or connect through the local daemon. [MetaBrainExplorer](https://github.com/OpenCow42/MetaBrainExplorer)
 
 ## Implemented Store Behavior
 

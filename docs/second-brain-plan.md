@@ -2,6 +2,10 @@
 
 **Proposed release.** Ship 15 independently callable skills for Codex and Claude Code. An agent uses the skills to turn sources into project knowledge, answer questions from that knowledge, and preserve selected conclusions. MetaBrainExplorer is the first optional viewer. A person can open the same store and inspect the evidence behind a decision. The complete workflow also runs through `mb` with Explorer closed.
 
+## Engineering status
+
+The core, CLI, and daemon support reviewed atomic writes, recovery of original file bytes, and claims with evidence pinned to retained revisions. MetaBrainExplorer can show the cited passage, open the source at its current path, and export the captured original. The 15 skill packages and the board and saved-table previews remain planned. [CLI workflows](../README.md#capture-and-recover-an-original-file) · [Worked decision example](claim-evidence.md)
+
 ## The first release scenario
 
 Two design reviews disagree about how a client should store data. The agent ingests both originals, links their arguments to one decision note, and records which evidence supports each conclusion. In a fresh session, a user asks what changed and why. The agent answers from the stored passages and shows the disagreement. The user can choose to save that answer.
