@@ -81,6 +81,19 @@ public struct ServerRouter: Sendable {
             }
         case (_, "/v1/put-conditional"):
             return methodNotAllowed(request, allowedMethod: "POST")
+        case (.post, "/v1/put-markdown"):
+            do {
+                let decoded = try decode(ServerMarkdownPutRequest.self, from: request)
+                let input = try decoded.documentInput()
+                let createIfMissing = decoded.ifVersion == nil || decoded.ifVersion == 0
+                return await routeStoreOperation(request, createIfMissing: createIfMissing) { storeServer in
+                    try await storeServer.put(input, ifVersion: decoded.ifVersion)
+                }
+            } catch {
+                return errorResponse(for: error)
+            }
+        case (_, "/v1/put-markdown"):
+            return methodNotAllowed(request, allowedMethod: "POST")
         case (.post, "/v1/patch"):
             return await routeStoreOperation(request) { storeServer in
                 let decoded = try decode(ServerPatchRequest.self, from: request)
@@ -109,6 +122,24 @@ public struct ServerRouter: Sendable {
             }
         case (_, "/v1/get-version"):
             return methodNotAllowed(request, allowedMethod: "POST")
+        case (.post, "/v1/get-passage"):
+            return await routeStoreOperation(request) { storeServer in
+                try await storeServer.getPassage(decode(ServerGetPassageRequest.self, from: request))
+            }
+        case (_, "/v1/get-passage"):
+            return methodNotAllowed(request, allowedMethod: "POST")
+        case (.post, "/v1/get-ref"):
+            return await routeStoreOperation(request, encoding: { try $0.jsonData() }) { storeServer in
+                try await storeServer.getEvidence(decode(ServerGetEvidenceRequest.self, from: request))
+            }
+        case (_, "/v1/get-ref"):
+            return methodNotAllowed(request, allowedMethod: "POST")
+        case (.post, "/v1/links"):
+            return await routeStoreOperation(request) { storeServer in
+                try await storeServer.links(decode(ServerLinksRequest.self, from: request))
+            }
+        case (_, "/v1/links"):
+            return methodNotAllowed(request, allowedMethod: "POST")
         case (.post, "/v1/list"):
             return await routeStoreOperation(request) { storeServer in
                 let decoded = try decode(ServerListRequest.self, from: request)
@@ -129,6 +160,12 @@ public struct ServerRouter: Sendable {
                 return try await storeServer.search(decoded)
             }
         case (_, "/v1/search"):
+            return methodNotAllowed(request, allowedMethod: "POST")
+        case (.post, "/v1/search-evidence"):
+            return await routeStoreOperation(request, encoding: { try $0.jsonData() }) { storeServer in
+                try await storeServer.searchEvidence(decode(ServerEvidenceSearchRequest.self, from: request))
+            }
+        case (_, "/v1/search-evidence"):
             return methodNotAllowed(request, allowedMethod: "POST")
         case (.post, "/v1/recall"):
             do {
@@ -216,12 +253,13 @@ public struct ServerRouter: Sendable {
         _ request: ServerHTTPRequest,
         createIfMissing: Bool = false,
         initializingEmpty: Bool? = nil,
+        encoding: (T) throws -> Data = { try MetaBrainJSON.encoder().encode($0) },
         _ operation: @escaping @Sendable (MetaBrainStoreServer) async throws -> T
     ) async -> ServerHTTPResponse {
         if let storeServer {
             do {
                 let payload = try await operation(storeServer)
-                return jsonResponse(statusCode: 200, payload: payload)
+                return jsonResponse(statusCode: 200, body: try encoding(payload))
             } catch {
                 return errorResponse(for: error)
             }
@@ -244,7 +282,7 @@ public struct ServerRouter: Sendable {
                 initializingEmpty: initializingEmpty,
                 operation: operation
             )
-            return jsonResponse(statusCode: 200, payload: payload)
+            return jsonResponse(statusCode: 200, body: try encoding(payload))
         } catch {
             return errorResponse(for: error)
         }
@@ -286,6 +324,20 @@ public struct ServerRouter: Sendable {
 
         if let patchError = error as? MetaBrainPatchError {
             return patchErrorResponse(patchError)
+        }
+
+        if error as? ServerPassageError == .passageNotFound {
+            return jsonResponse(
+                statusCode: 404,
+                payload: ServerErrorPayload(error: "passage_not_found", message: String(describing: error))
+            )
+        }
+
+        if let evidenceError = error as? EvidenceError, case .blockNotFound = evidenceError {
+            return jsonResponse(
+                statusCode: 404,
+                payload: ServerErrorPayload(error: "evidence_block_not_found", message: evidenceError.description)
+            )
         }
 
         return jsonResponse(
@@ -376,6 +428,18 @@ public struct ServerRouter: Sendable {
         payload: T,
         additionalHeaders: [String: String] = [:]
     ) -> ServerHTTPResponse {
+        jsonResponse(
+            statusCode: statusCode,
+            body: try! MetaBrainJSON.encoder().encode(payload),
+            additionalHeaders: additionalHeaders
+        )
+    }
+
+    private func jsonResponse(
+        statusCode: Int,
+        body: Data,
+        additionalHeaders: [String: String] = [:]
+    ) -> ServerHTTPResponse {
         var headers = [
             "Cache-Control": "no-store",
             "Content-Type": "application/json; charset=utf-8",
@@ -387,7 +451,7 @@ public struct ServerRouter: Sendable {
         return ServerHTTPResponse(
             statusCode: statusCode,
             headers: headers,
-            body: try! MetaBrainJSON.encoder().encode(payload)
+            body: body
         )
     }
 }

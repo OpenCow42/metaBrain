@@ -150,6 +150,7 @@ public struct GetOutput: Codable, Equatable, Sendable {
     public var body: String
     public var createdAt: Date
     public var documentID: String
+    public var markdown: Bool?
     public var metadata: [String: String]
     public var path: String
     public var references: [DocumentDumpReference]
@@ -168,11 +169,13 @@ public struct GetOutput: Codable, Equatable, Sendable {
         tags: [String],
         title: String?,
         updatedAt: Date,
-        version: UInt64
+        version: UInt64,
+        markdown: Bool? = nil
     ) {
         self.body = body
         self.createdAt = createdAt
         self.documentID = documentID
+        self.markdown = markdown
         self.metadata = metadata
         self.path = path
         self.references = references
@@ -193,7 +196,8 @@ public struct GetOutput: Codable, Equatable, Sendable {
             tags: document.tags,
             title: document.title,
             updatedAt: document.updatedAt,
-            version: document.currentVersion
+            version: document.currentVersion,
+            markdown: document.markdown
         )
     }
 
@@ -201,6 +205,7 @@ public struct GetOutput: Codable, Equatable, Sendable {
         case body
         case createdAt
         case documentID
+        case markdown
         case metadata
         case path
         case references
@@ -215,6 +220,7 @@ public struct GetOutput: Codable, Equatable, Sendable {
         try container.encode(body, forKey: .body)
         try container.encode(createdAt, forKey: .createdAt)
         try container.encode(documentID, forKey: .documentID)
+        try container.encodeIfPresent(markdown, forKey: .markdown)
         try container.encode(metadata, forKey: .metadata)
         try container.encode(path, forKey: .path)
         try container.encode(references, forKey: .references)
@@ -415,6 +421,7 @@ public struct DumpOutput: Codable, Equatable, Sendable {
     public var documentID: String
     public var fileSystemPath: String?
     public var isCurrent: Bool
+    public var markdown: Bool?
     public var metadata: [String: String]
     public var path: String
     public var references: [DocumentDumpReference]
@@ -436,7 +443,8 @@ public struct DumpOutput: Codable, Equatable, Sendable {
         tags: [String],
         title: String?,
         version: UInt64,
-        versionCreatedAt: Date
+        versionCreatedAt: Date,
+        markdown: Bool? = nil
     ) {
         self.body = body
         self.bodyCharacterCount = bodyCharacterCount
@@ -444,6 +452,7 @@ public struct DumpOutput: Codable, Equatable, Sendable {
         self.documentID = documentID
         self.fileSystemPath = fileSystemPath
         self.isCurrent = isCurrent
+        self.markdown = markdown
         self.metadata = metadata
         self.path = path
         self.references = references
@@ -467,7 +476,8 @@ public struct DumpOutput: Codable, Equatable, Sendable {
             tags: entry.tags,
             title: entry.title,
             version: entry.version,
-            versionCreatedAt: entry.versionCreatedAt
+            versionCreatedAt: entry.versionCreatedAt,
+            markdown: entry.markdown
         )
     }
 
@@ -478,6 +488,7 @@ public struct DumpOutput: Codable, Equatable, Sendable {
         case documentID
         case fileSystemPath
         case isCurrent
+        case markdown
         case metadata
         case path
         case references
@@ -495,6 +506,7 @@ public struct DumpOutput: Codable, Equatable, Sendable {
         try container.encode(documentID, forKey: .documentID)
         try container.encodeIfPresent(fileSystemPath, forKey: .fileSystemPath)
         try container.encode(isCurrent, forKey: .isCurrent)
+        try container.encodeIfPresent(markdown, forKey: .markdown)
         try container.encode(metadata, forKey: .metadata)
         try container.encode(path, forKey: .path)
         try container.encode(references, forKey: .references)

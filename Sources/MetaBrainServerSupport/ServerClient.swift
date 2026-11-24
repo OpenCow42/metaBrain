@@ -17,6 +17,7 @@ public enum ServerClientError: Error, Equatable, Sendable, CustomStringConvertib
     case conditionalPutUnsupported
     case recallUnsupported
     case historicalGetUnsupported
+    case citationOperationUnsupported(String)
 
     public var description: String {
         switch self {
@@ -34,6 +35,8 @@ public enum ServerClientError: Error, Equatable, Sendable, CustomStringConvertib
             return "The daemon does not support recall. Upgrade mbd or use mb --no-server recall."
         case .historicalGetUnsupported:
             return "The daemon does not support get --version. Upgrade mbd or use mb get --version with --no-server."
+        case .citationOperationUnsupported(let operation):
+            return "The daemon does not support \(operation). Upgrade mbd or pass --no-server."
         }
     }
 }
@@ -114,6 +117,40 @@ public struct MetaBrainServerClient: Sendable {
             throw ServerClientError.historicalGetUnsupported
         } catch ServerClientError.unexpectedStatusCode(404) {
             throw ServerClientError.historicalGetUnsupported
+        }
+    }
+
+    public func putMarkdown(_ request: ServerMarkdownPutRequest) throws -> PutOutput {
+        try postCitation("/v1/put-markdown", request: request, operation: "put --markdown")
+    }
+
+    public func getPassage(_ request: ServerGetPassageRequest) throws -> DocumentPassageOutput {
+        try postCitation("/v1/get-passage", request: request, operation: "passage reads")
+    }
+
+    public func getEvidence(_ request: ServerGetEvidenceRequest) throws -> EvidenceOutput {
+        try postCitation("/v1/get-ref", request: request, operation: "get --ref")
+    }
+
+    public func links(_ request: ServerLinksRequest) throws -> [DocumentLinkOutput] {
+        try postCitation("/v1/links", request: request, operation: "links")
+    }
+
+    public func searchEvidence(_ request: ServerEvidenceSearchRequest) throws -> EvidenceOutput {
+        try postCitation("/v1/search-evidence", request: request, operation: "search --view")
+    }
+
+    private func postCitation<Request: Encodable & Sendable, Response: Decodable & Sendable>(
+        _ path: String,
+        request: Request,
+        operation: String
+    ) throws -> Response {
+        do {
+            return try post(path, request: request)
+        } catch ServerClientError.serverError(statusCode: 404, error: "not_found", message: _) {
+            throw ServerClientError.citationOperationUnsupported(operation)
+        } catch ServerClientError.unexpectedStatusCode(404) {
+            throw ServerClientError.citationOperationUnsupported(operation)
         }
     }
 

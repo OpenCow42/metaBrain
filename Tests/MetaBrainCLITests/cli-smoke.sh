@@ -228,6 +228,8 @@ assert_remove_version_json() {
 "${METABRAIN[@]}" --help | rg -q 'Common workflow:'
 "${METABRAIN[@]}" help | rg -q 'mb help search'
 "${METABRAIN[@]}" help | rg -q 'mb help recall'
+"${METABRAIN[@]}" man | rg -F -q 'mb get /AGENTS.md'
+"${METABRAIN[@]}" man search | rg -F -q 'mb get /AGENTS.md'
 "${METABRAIN[@]}" help | rg -q 'mb help list'
 "${METABRAIN[@]}" help | rg -q 'mb help tree'
 "${METABRAIN[@]}" help | rg -q 'mb help dump'
@@ -371,8 +373,9 @@ if "${METABRAIN[@]}" search query --limit 0 2>"$TMP_DIR/search-invalid.err"; the
     echo "Expected invalid search limit to fail" >&2
     exit 1
 fi
-rg -F -q 'Usage: mb search [--store <store>]' "$TMP_DIR/search-invalid.err"
-rg -F -q '[--format <format>]' "$TMP_DIR/search-invalid.err"
+rg -F -q 'Usage: mb search [<options>] [<query>]' "$TMP_DIR/search-invalid.err"
+rg -F -q -- '--limit must be greater than zero' "$TMP_DIR/search-invalid.err"
+"${METABRAIN[@]}" help search | rg -F -q -- '--format <format>'
 
 if "${METABRAIN[@]}" tree --max-depth=-1 2>"$TMP_DIR/tree-invalid-depth.err"; then
     echo "Expected invalid tree max depth to fail" >&2
@@ -1132,7 +1135,7 @@ if "${METABRAIN[@]}" get --store "$STORE" --id abc --path /notes/today 2>"$TMP_D
     exit 1
 fi
 rg -q 'Provide exactly one of --id, --path, or a positional path' "$TMP_DIR/double-reference.err"
-rg -F -q 'Usage: mb get [--store <store>] [--server <server>] [--no-server] [--id <id>] [--path <path>] [<path>] [--format <format>] [--version <version>]' "$TMP_DIR/double-reference.err"
+rg -F -q 'Usage: mb get [<options>] [<path>]' "$TMP_DIR/double-reference.err"
 
 if "${METABRAIN[@]}" get --store "$STORE" --path /notes/today /notes/file 2>"$TMP_DIR/path-and-positional-reference.err"; then
     echo "Expected option path plus positional path to fail" >&2
@@ -1277,7 +1280,7 @@ if "${METABRAIN[@]}" get --store "$STORE" 2>"$TMP_DIR/missing-reference.err"; th
     exit 1
 fi
 rg -q 'Provide exactly one of --id, --path, or a positional path' "$TMP_DIR/missing-reference.err"
-rg -F -q 'Usage: mb get [--store <store>] [--server <server>] [--no-server] [--id <id>] [--path <path>] [<path>] [--format <format>] [--version <version>]' "$TMP_DIR/missing-reference.err"
+rg -F -q 'Usage: mb get [<options>] [<path>]' "$TMP_DIR/missing-reference.err"
 
 SERVER_STORE="$TMP_DIR/server-store.leveldb"
 SERVER_SOCKET="$TMP_DIR/mbd.sock"

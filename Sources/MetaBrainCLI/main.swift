@@ -16,6 +16,8 @@ struct MetaBrainCommand: AsyncParsableCommand {
         durable notes, source snippets, task context, metadata, tags, and links in a
         searchable store instead of scattering scratch files across a workspace.
 
+        Store manual: read the selected store's agent guide with mb get /AGENTS.md.
+
         Agent discovery:
           mb
           mb help
@@ -69,6 +71,7 @@ struct MetaBrainCommand: AsyncParsableCommand {
             Patch.self,
             Move.self,
             Get.self,
+            Links.self,
             List.self,
             Tree.self,
             Search.self,
@@ -219,6 +222,10 @@ struct ReferenceOptions: ParsableArguments {
     @Argument(help: "Document path to read.")
     var path: String?
 
+    var hasReference: Bool {
+        id != nil || optionPath != nil || path != nil
+    }
+
     func reference() throws -> DocumentReference {
         let provided = [id != nil, optionPath != nil, path != nil].filter { $0 }.count
         guard provided == 1 else {
@@ -230,10 +237,6 @@ struct ReferenceOptions: ParsableArguments {
         }
 
         return .path(try DocumentPath(optionPath ?? path!))
-    }
-
-    func validate() throws {
-        _ = try reference()
     }
 }
 
@@ -289,27 +292,34 @@ extension MetaBrainCommand {
     struct Help: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "help",
-            abstract: "Show metaBrain CLI help."
+            abstract: "Show the CLI manual and how to read the store guide.",
+            aliases: ["man"]
         )
 
-        @Argument(help: "Optional command to inspect: init, put, patch, move, get, list, tree, search, recall, dump, versions, prune, delete, remove-version, or version.")
+        @Argument(help: "Command to inspect. Read the store guide with mb get /AGENTS.md.")
         var command: String?
 
-        func validate() throws {
-            guard let command else {
-                return
-            }
-
-            switch command {
-            case "init", "put", "patch", "move", "get", "list", "tree", "search", "recall", "dump", "versions", "prune", "delete", "remove-version", "version":
-                return
-            default:
-                throw ValidationError("Unknown help topic '\(command)'. Use one of: init, put, patch, move, get, list, tree, search, recall, dump, versions, prune, delete, remove-version, version.")
+        private var topic: ParsableCommand.Type? {
+            guard let command else { return nil }
+            return MetaBrainCommand.configuration.subcommands.first {
+                $0.configuration.commandName == command || $0.configuration.aliases.contains(command)
             }
         }
 
-        func run() async throws {
-            print(commandHelpMessage(for: command))
+        func validate() throws {
+            if let command, topic == nil {
+                let topics = MetaBrainCommand.configuration.subcommands.compactMap { $0.configuration.commandName }.joined(separator: ", ")
+                throw ValidationError("Unknown help topic '\(command)'. Use one of: \(topics).")
+            }
+        }
+
+        func run() {
+            guard let topic else {
+                print(MetaBrainCommand.helpMessage())
+                return
+            }
+            print(topic.helpMessage())
+            print("\nStore guide: mb get /AGENTS.md")
         }
     }
 
@@ -382,12 +392,18 @@ extension MetaBrainCommand {
         @Flag(name: .customLong("body-only"), help: "Replace only the body of an existing document.")
         var bodyOnly = false
 
+        @Flag(help: "Index Markdown links and anchors even when the path has no .md extension.")
+        var markdown = false
+
         func validate() throws {
             try validateBodyInputs(argument: body, filePath: bodyFile)
             let retentionPolicy = try retention.optionalPolicy()
             if bodyOnly {
                 guard ifVersion != 0 else {
                     throw ValidationError("--body-only requires an existing document and cannot be combined with --if-version 0.")
+                }
+                guard !markdown else {
+                    throw ValidationError("--body-only preserves Markdown opt-in and cannot be combined with --markdown.")
                 }
                 guard title == nil, tags.isEmpty, metadataPairs.isEmpty, referenceIDs.isEmpty,
                       referencePaths.isEmpty, referenceURLs.isEmpty, retentionPolicy == nil else {
@@ -424,7 +440,9 @@ extension MetaBrainCommand {
                     references: documentReferences.map(DocumentReferenceDTO.init),
                     retention: retentionPolicy.map(DocumentRetentionPolicyDTO.init)
                 )
-                if ifVersion != nil || bodyOnly {
+                if markdown {
+                    result = try client.putMarkdown(ServerMarkdownPutRequest(document: request, ifVersion: ifVersion))
+                } else if ifVersion != nil || bodyOnly {
                     result = try client.putConditional(ServerConditionalPutRequest(
                         document: request,
                         ifVersion: ifVersion,
@@ -441,7 +459,8 @@ extension MetaBrainCommand {
                     tags: tags,
                     metadata: metadata,
                     references: documentReferences,
-                    retention: retentionPolicy
+                    retention: retentionPolicy,
+                    markdown: markdown ? true : nil
                 )
                 result = try await storeOptions.withOpenStore(createIfMissing: createIfMissing) { store in
                     PutOutput(try await store.writeDocument(input, ifVersion: ifVersion, bodyOnly: bodyOnly))
@@ -469,7 +488,7 @@ extension MetaBrainCommand {
         var check = false
 
         func validate() throws {
-            try referenceOptions.validate()
+            _ = try referenceOptions.reference()
             _ = try retention.optionalPolicy()
         }
 
@@ -599,7 +618,7 @@ extension MetaBrainCommand {
     struct Get: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "get",
-            abstract: "Read a document by path or ID."
+            abstract: "Read a document by path or ID, a Markdown passage, or an evidence reference."
         )
 
         @OptionGroup var storeOptions: StoreOptions
@@ -609,15 +628,59 @@ extension MetaBrainCommand {
         @Option(help: "Read a retained version sequence instead of the current document.")
         var version: UInt64?
 
+        @Option(help: "Read the Markdown block with this ID.")
+        var block: String?
+
+        @Option(help: "Read the Markdown section with this heading.")
+        var heading: String?
+
+        @Option(help: "Read a version-specific reference from search --view evidence or refs.", transform: { try EvidenceReference($0) })
+        var ref: EvidenceReference?
+
+        @Option(help: "Expand a reference to its enclosing Markdown section.", transform: { raw in
+            guard let context = EvidenceContext(rawValue: raw) else {
+                throw ValidationError("Use --context section.")
+            }
+            return context
+        })
+        var context: EvidenceContext?
+
+        @Option(help: "Limit compact evidence JSON to this many tokens using its UTF-8 byte count.")
+        var maxTokens: Int?
+
         func validate() throws {
-            try referenceOptions.validate()
             if version == 0 {
                 throw ValidationError("--version must be greater than zero.")
+            }
+            if ref != nil {
+                guard !referenceOptions.hasReference, version == nil, block == nil, heading == nil else {
+                    throw ValidationError("--ref cannot be combined with a document path, ID, --version, --block, or --heading.")
+                }
+                guard output.format == .json else {
+                    throw ValidationError("--ref uses compact JSON. Use --format json.")
+                }
+                try validateEvidenceBudget(maxTokens)
+                return
+            }
+            guard context == nil, maxTokens == nil else {
+                throw ValidationError("--context and --max-tokens require --ref.")
+            }
+            let reference = try referenceOptions.reference()
+            if let request = passageRequest(for: reference) {
+                _ = try request.passageSelector()
             }
         }
 
         func run() async throws {
+            if let ref {
+                try await readEvidence(ref)
+                return
+            }
             let reference = try referenceOptions.reference()
+            if let request = passageRequest(for: reference) {
+                try await readPassage(request)
+                return
+            }
             let outputResult: GetOutput
             if let client = try storeOptions.serverClient() {
                 if let version {
@@ -649,6 +712,101 @@ extension MetaBrainCommand {
             }
 
             try printGetOutput(outputResult, format: output.format)
+        }
+
+        private func readEvidence(_ reference: EvidenceReference) async throws {
+            let budget = maxTokens ?? EvidenceOutput.defaultMaxTokens
+            let result: EvidenceOutput
+            if let client = try storeOptions.serverClient() {
+                result = try client.getEvidence(ServerGetEvidenceRequest(ref: reference, context: context, maxTokens: budget))
+            } else {
+                result = try await storeOptions.withOpenStore { store in
+                    try await store.getEvidence(reference, context: context, maxTokens: budget)
+                }
+            }
+            try printEvidenceOutput(result, maxTokens: budget)
+        }
+
+        private func passageRequest(for reference: DocumentReference) -> ServerGetPassageRequest? {
+            guard block != nil || heading != nil else { return nil }
+            return ServerGetPassageRequest(
+                reference: DocumentReferenceDTO(reference), block: block, heading: heading, version: version
+            )
+        }
+
+        private func readPassage(_ request: ServerGetPassageRequest) async throws {
+            let result: DocumentPassageOutput
+            if let client = try storeOptions.serverClient() {
+                result = try client.getPassage(request)
+            } else {
+                result = try await storeOptions.withOpenStore { store in
+                    try await request.read(from: store)
+                }
+            }
+            switch output.format {
+            case .text:
+                print(result.text, terminator: result.text.hasSuffix("\n") ? "" : "\n")
+            case .json, .jsonl:
+                try printJSON(result)
+            }
+        }
+    }
+
+    struct Links: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "links",
+            abstract: "Inspect Markdown link occurrences for a document."
+        )
+
+        @OptionGroup var storeOptions: StoreOptions
+        @OptionGroup var output: OutputFormatOptions
+
+        @Argument(help: "Document path.")
+        var path: String
+
+        @Flag(help: "List links to this document.")
+        var incoming = false
+
+        @Option(help: "Limit links to this source block, or to this target block with --incoming.")
+        var block: String?
+
+        func validate() throws {
+            _ = try DocumentPath(path)
+            if block?.isEmpty == true {
+                throw ValidationError("--block requires a nonempty block ID.")
+            }
+        }
+
+        func run() async throws {
+            let reference = DocumentReference.path(try DocumentPath(path))
+            let direction: DocumentLinkDirection = incoming ? .incoming : .outgoing
+            let links: [DocumentLinkOutput]
+            if let client = try storeOptions.serverClient() {
+                links = try client.links(ServerLinksRequest(
+                    reference: DocumentReferenceDTO(reference), direction: direction, block: block
+                ))
+            } else {
+                links = try await storeOptions.withOpenStore { store in
+                    try await store.links(for: reference, direction: direction, block: block).map(DocumentLinkOutput.init)
+                }
+            }
+            switch output.format {
+            case .text:
+                for link in links {
+                    let target = link.targetPath.map { path in
+                        path + (link.fragment.map { "#" + $0 } ?? "")
+                    } ?? link.destination
+                    print("\(link.sourcePath)@\(link.sourceVersion):\(link.start)-\(link.end)\t\(link.status.rawValue)\t\(target)")
+                    print("  \(link.snippet)")
+                    for candidate in link.candidates ?? [] {
+                        print("  candidate: \(candidate.path)")
+                    }
+                }
+            case .json:
+                try printJSON(links)
+            case .jsonl:
+                try printJSONLines(links)
+            }
         }
     }
 
@@ -769,13 +927,13 @@ extension MetaBrainCommand {
     struct Search: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "search",
-            abstract: "Search current document content."
+            abstract: "Search current document content or find version-specific evidence."
         )
 
         @OptionGroup var storeOptions: StoreOptions
 
-        @Argument(help: "Search text.")
-        var query: String
+        @Argument(help: "Search text. Omit it with --view refs and a filter.")
+        var query: String?
 
         @Option(help: "Limit results to this path prefix.")
         var pathPrefix: String?
@@ -795,7 +953,19 @@ extension MetaBrainCommand {
         @Flag(help: "Include backlink hints.")
         var includeBacklinks = false
 
-        @OptionGroup var output: ListOutputFormatOptions
+        @Option(help: "Compact JSON view: evidence or refs.", transform: { raw in
+            guard let view = EvidenceSearchView(rawValue: raw) else {
+                throw ValidationError("Use --view evidence or --view refs.")
+            }
+            return view
+        })
+        var view: EvidenceSearchView?
+
+        @Option(help: "Limit compact evidence JSON to this many tokens using its UTF-8 byte count.")
+        var maxTokens: Int?
+
+        @Option(help: "Output format: text, json, or jsonl. Defaults to jsonl, or json with --view.")
+        var format: CLIOutputFormat?
 
         func validate() throws {
             if limit <= 0 {
@@ -803,14 +973,36 @@ extension MetaBrainCommand {
             }
             _ = try pathPrefix.map(DocumentPath.init)
             _ = try parseMetadata(metadataPairs)
+            if view != nil {
+                guard format == nil || format == .json else {
+                    throw ValidationError("--view uses compact JSON. Use --format json.")
+                }
+                guard !includeLinkedDocuments, !includeBacklinks else {
+                    throw ValidationError("--include-linked-documents and --include-backlinks are available with regular search.")
+                }
+                try validateEvidenceBudget(maxTokens)
+            } else {
+                guard maxTokens == nil else {
+                    throw ValidationError("--max-tokens requires --view.")
+                }
+                guard query != nil else {
+                    throw ValidationError("Provide search text or use --view refs with a filter.")
+                }
+            }
         }
 
         func run() async throws {
+            let metadata = try parseMetadata(metadataPairs)
+            if let view {
+                try await searchEvidence(view: view, metadata: metadata)
+                return
+            }
+
             let searchQuery = SearchQuery(
-                text: query,
+                text: query ?? "",
                 pathPrefix: try pathPrefix.map(DocumentPath.init),
                 tags: tags,
-                metadata: try parseMetadata(metadataPairs),
+                metadata: metadata,
                 includeLinkedDocuments: includeLinkedDocuments,
                 includeBacklinks: includeBacklinks,
                 limit: limit
@@ -838,7 +1030,24 @@ extension MetaBrainCommand {
                 outputResults = results.map(SearchOutput.init)
             }
 
-            try printSearchOutputs(outputResults, format: output.format)
+            try printSearchOutputs(outputResults, format: format ?? .jsonl)
+        }
+
+        private func searchEvidence(view: EvidenceSearchView, metadata: [String: String]) async throws {
+            let budget = maxTokens ?? EvidenceOutput.defaultMaxTokens
+            let request = ServerEvidenceSearchRequest(
+                query: query, pathPrefix: pathPrefix, tags: tags, metadata: metadata, limit: limit,
+                view: view, maxTokens: budget
+            )
+            let result: EvidenceOutput
+            if let client = try storeOptions.serverClient() {
+                result = try client.searchEvidence(request)
+            } else {
+                result = try await storeOptions.withOpenStore { store in
+                    try await store.searchEvidence(request.searchQuery(), view: view, maxTokens: budget)
+                }
+            }
+            try printEvidenceOutput(result, maxTokens: budget)
         }
     }
 
@@ -967,6 +1176,10 @@ extension MetaBrainCommand {
         @OptionGroup var referenceOptions: ReferenceOptions
         @OptionGroup var output: ListOutputFormatOptions
 
+        func validate() throws {
+            _ = try referenceOptions.reference()
+        }
+
         func run() async throws {
             let outputVersions: [VersionsOutput]
 
@@ -999,7 +1212,7 @@ extension MetaBrainCommand {
         @OptionGroup var output: OutputFormatOptions
 
         func validate() throws {
-            try referenceOptions.validate()
+            _ = try referenceOptions.reference()
             _ = try retention.requiredPolicy()
         }
 
@@ -1040,7 +1253,7 @@ extension MetaBrainCommand {
         @OptionGroup var output: OutputFormatOptions
 
         func validate() throws {
-            try referenceOptions.validate()
+            _ = try referenceOptions.reference()
         }
 
         func run() async throws {
@@ -1079,7 +1292,7 @@ extension MetaBrainCommand {
         var sequence: UInt64
 
         func validate() throws {
-            try referenceOptions.validate()
+            _ = try referenceOptions.reference()
             guard sequence > 0 else {
                 throw ValidationError("--sequence must be greater than zero.")
             }
@@ -1318,6 +1531,21 @@ private func printJSONLines<T: Encodable>(_ entries: [T]) throws {
         let data = try encoder.encode(entry)
         print(String(decoding: data, as: UTF8.self))
     }
+}
+
+private func validateEvidenceBudget(_ maxTokens: Int?) throws {
+    if let maxTokens, maxTokens < EvidenceOutput.minimumMaxTokens {
+        throw ValidationError("--max-tokens must be at least \(EvidenceOutput.minimumMaxTokens).")
+    }
+}
+
+private func printEvidenceOutput(_ result: EvidenceOutput, maxTokens: Int) throws {
+    var output = try result.jsonData()
+    output.append(10)
+    guard output.count <= maxTokens else {
+        throw ValidationError("Evidence output exceeded --max-tokens \(maxTokens).")
+    }
+    try FileHandle.standardOutput.write(contentsOf: output)
 }
 
 private func printInitializeOutput(_ result: InitializeOutput, format: CLIOutputFormat) throws {
@@ -1681,7 +1909,8 @@ private func documentDumpEntry(_ output: DumpOutput) throws -> DocumentDumpEntry
         isCurrent: output.isCurrent,
         tags: output.tags,
         metadata: output.metadata,
-        references: output.references
+        references: output.references,
+        markdown: output.markdown
     )
 }
 
@@ -1709,30 +1938,6 @@ private func formatDumpReference(_ reference: DocumentDumpReference) -> String {
     reference.value
 }
 
-private func commandHelpMessage(for command: String?) -> String {
-    guard let command else {
-        return MetaBrainCommand.helpMessage()
-    }
-
-        return [
-            "init": MetaBrainCommand.Initialize.helpMessage(),
-            "put": MetaBrainCommand.Put.helpMessage(),
-            "patch": MetaBrainCommand.Patch.helpMessage(),
-            "move": MetaBrainCommand.Move.helpMessage(),
-            "get": MetaBrainCommand.Get.helpMessage(),
-            "list": MetaBrainCommand.List.helpMessage(),
-            "tree": MetaBrainCommand.Tree.helpMessage(),
-            "search": MetaBrainCommand.Search.helpMessage(),
-            "recall": MetaBrainCommand.Recall.helpMessage(),
-            "dump": MetaBrainCommand.Dump.helpMessage(),
-            "versions": MetaBrainCommand.Versions.helpMessage(),
-            "prune": MetaBrainCommand.Prune.helpMessage(),
-            "delete": MetaBrainCommand.Delete.helpMessage(),
-            "remove-version": MetaBrainCommand.RemoveVersion.helpMessage(),
-            "version": MetaBrainCommand.Version.helpMessage()
-    ][command]!
-}
-
 private func currentSoftwareTag() -> String {
     MetaBrainVersion.currentSoftwareTag()
 }
@@ -1743,6 +1948,7 @@ private let daemonBackedCommands: Set<String> = [
     "patch",
     "move",
     "get",
+    "links",
     "list",
     "tree",
     "search",

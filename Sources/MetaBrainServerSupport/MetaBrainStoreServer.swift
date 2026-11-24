@@ -70,6 +70,26 @@ public actor MetaBrainStoreServer {
         return GetOutput(document)
     }
 
+    public func getPassage(_ request: ServerGetPassageRequest) async throws -> DocumentPassageOutput {
+        try await request.read(from: store)
+    }
+
+    public func getEvidence(_ request: ServerGetEvidenceRequest) async throws -> EvidenceOutput {
+        try await store.getEvidence(
+            request.ref,
+            context: request.context,
+            maxTokens: request.maxTokens ?? EvidenceOutput.defaultMaxTokens
+        )
+    }
+
+    public func links(_ request: ServerLinksRequest) async throws -> [DocumentLinkOutput] {
+        try await store.links(
+            for: request.reference.documentReference(),
+            direction: request.direction ?? .outgoing,
+            block: request.block
+        ).map(DocumentLinkOutput.init)
+    }
+
     public func list(_ request: ServerListRequest) async throws -> [ListOutput] {
         try await store.listDirectory(
             path: request.documentPath(),
@@ -86,6 +106,14 @@ public actor MetaBrainStoreServer {
 
     public func search(_ request: ServerSearchRequest) async throws -> [SearchOutput] {
         try await store.search(request.searchQuery()).map(SearchOutput.init)
+    }
+
+    public func searchEvidence(_ request: ServerEvidenceSearchRequest) async throws -> EvidenceOutput {
+        try await store.searchEvidence(
+            request.searchQuery(),
+            view: request.view,
+            maxTokens: request.maxTokens ?? EvidenceOutput.defaultMaxTokens
+        )
     }
 
     func recall(_ query: SearchQuery, maxBytes: Int) async throws -> [RecallResult] {
