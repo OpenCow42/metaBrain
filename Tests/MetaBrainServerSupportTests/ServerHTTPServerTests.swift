@@ -423,12 +423,14 @@ import Glibc
         try listenFailure.run(maxRequests: 0)
     }
 
+    let nonSocket = try FileHandle(forReadingFrom: URL(fileURLWithPath: "/dev/null"))
+    defer { try? nonSocket.close() }
     let boundPortFailure = ServerHTTPServer(
         configuration: try ServerServeConfiguration(host: "127.0.0.1", port: 0),
         routeHandler: { _ in ServerHTTPResponse(statusCode: 200) },
         listenSocket: { descriptor, _ in
-            closeTestSocket(descriptor)
-            return 0
+            // Keep the descriptor reserved for the server's cleanup after getsockname fails.
+            dup2(nonSocket.fileDescriptor, descriptor) == -1 ? -1 : 0
         }
     )
     #expect(throws: ServerHTTPServerError.socketOperationFailed("getsockname")) {
