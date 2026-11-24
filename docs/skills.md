@@ -18,7 +18,7 @@
 | `metabrain-markdown` | Verify or edit Markdown properties, links, headings, blocks, embeds, and comments. |
 | `metabrain-bases` | Inspect or edit a saved YAML table and check its filters against project properties. |
 
-See the [delivery plan](second-brain-plan.md) for the remaining workflow.
+See the [local plan](second-brain-plan.md) for the workflow and its acceptance checks.
 
 ## Install into a project
 
@@ -31,7 +31,7 @@ python3 Scripts/install-skills.py --project /path/to/project --apply
 
 The first command previews. The second copies the canonical directories from [skills](../skills/) to the selected project's `.agents/skills/` and `.claude/skills/`. Identical copies are skipped on rerun. A differing package with the same name or a blocked destination stops the install for both hosts. Review a conflicting project copy yourself before trying again. The installer leaves global agent settings and unrelated project skills alone.
 
-Start a session in the selected project with `mb` on your executable search path. In Codex, select a skill by name with a `$` prefix, such as `$metabrain-wiki-query`. In Claude Code, use the corresponding slash command, such as `/metabrain-wiki-query`. Use a new session if skill discovery has yet to refresh. [Codex skill discovery](https://learn.chatgpt.com/docs/build-skills#where-codex-loads-local-skills) · [Claude Code skill discovery](https://code.claude.com/docs/en/skills#where-skills-live)
+Start a session in the selected project with a current `mb` on your executable search path. If building from source, use the checkout’s `.build/debug` directory. In Codex, select a skill by name with a `$` prefix, such as `$metabrain-wiki-query`. In Claude Code, use the corresponding slash command, such as `/metabrain-wiki-query`. Use a new session if skill discovery has yet to refresh. [Codex skill discovery](https://learn.chatgpt.com/docs/build-skills#where-codex-loads-local-skills) · [Claude Code skill discovery](https://code.claude.com/docs/en/skills#where-skills-live)
 
 ## Set up or adopt a wiki
 
@@ -83,11 +83,11 @@ root=/projects/storage-review
 - **Markdown** uses native properties and citation indexing to check links and open headings or blocks. Embedded targets can be indexed, and percent comments are excluded from citation extraction. Use `mb get` for the original source or an exact passage. Review a draft's exact diff and verify changed targets before inspecting the operation, then use `mb links` and `mb lint` after apply. [Markdown skill](../skills/metabrain-markdown/SKILL.md) · [Markdown citations and properties](../README.md#markdown-citations)
 - **Bases** previews table columns and row limits with global and view filters applied together. An unsupported filter anywhere in the definition stops the preview before any rows are returned. Report its source expression and preserve it byte-for-byte when editing another field. [Bases skill](../skills/metabrain-bases/SKILL.md)
 
-For Canvas or Bases drafts, add `--body-file DRAFT` to preview the proposed body before inspecting the reviewed operation. Use the original source when a preview is unavailable. Version history is available through `mb versions PATH`. These commands work in the CLI with direct and daemon connections. Native Explorer board and table previews are a later step. [Reviewed project operations](../README.md#commit-related-notes-together) · [Delivery plan](second-brain-plan.md)
+For Canvas or Bases drafts, add `--body-file DRAFT` to preview the proposed body before inspecting the reviewed operation. These commands work with direct and daemon connections. In the optional MetaBrainExplorer viewer, select the stored board or table in a configured wiki. Click a Canvas file card to open the note. Use **Source** to view its stored JSON or YAML. Version history is available in either the viewer or `mb versions PATH`. [Reviewed project operations](../README.md#commit-related-notes-together) · [Local plan](second-brain-plan.md)
 
 ## Try the disposable fixture
 
-From a source checkout with `swift build` completed:
+Build the checkout with `swift build`, then create and install the disposable fixture.
 
 ```sh
 scratch="$(mktemp -d)"

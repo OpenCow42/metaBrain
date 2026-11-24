@@ -569,7 +569,7 @@ The CLI and daemon stay thin. Shared behavior belongs in `MetaBrainCore`, while
 server-facing transport DTOs live in the internal `MetaBrainServerSupport`
 target when they are not part of the core storage model.
 
-MetaBrainExplorer is the first optional viewer. Check it out at `../MetaBrainExplorer` and open its Xcode project. Open a decision note to inspect its cited passage, follow the current source by document ID, or export a retained original. The app can open the store directly or connect through the local daemon. [MetaBrainExplorer](https://github.com/OpenCow42/MetaBrainExplorer)
+MetaBrainExplorer is the first optional viewer. Check it out at `../MetaBrainExplorer` and open its Xcode project. Inspect a decision's cited passages, follow a moved source by document ID, or export the retained original. In a configured project, open a Canvas file card to navigate to its note or preview a saved table with its filters applied. The app can open the store directly or connect through the local daemon. [MetaBrainExplorer](https://github.com/OpenCow42/MetaBrainExplorer)
 
 ## Implemented Store Behavior
 

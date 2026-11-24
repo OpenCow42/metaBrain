@@ -4,7 +4,7 @@ The project memory workflow includes 15 independently callable skills for Codex 
 
 ## Engineering status
 
-The core, CLI, and daemon support reviewed atomic writes, recovery of original file bytes, and claims with evidence pinned to retained revisions. The installer includes all 15 skills for both hosts. Use `mb preview` to inspect portable Canvas boards and saved tables without applying a change. MetaBrainExplorer can show the cited passage, open the source at its current path, and export the captured original. Native board and saved-table views are the next verification step. [Project wiki skills](skills.md) · [CLI workflows](../README.md#capture-and-recover-an-original-file) · [Worked decision example](claim-evidence.md)
+The core, CLI, and daemon support reviewed atomic writes, recovery of original file bytes, and claims with evidence pinned to retained revisions. The installer includes all 15 skills for both hosts. Use `mb preview` to inspect portable Canvas boards and saved tables without applying a change. MetaBrainExplorer can show the cited passage, open the source at its current path, export the captured original, open notes from Canvas file cards, and preview saved tables beside their source definitions. [Project wiki skills](skills.md) · [CLI workflows](../README.md#capture-and-recover-an-original-file) · [Worked decision example](claim-evidence.md)
 
 ## The first release scenario
 
@@ -49,3 +49,5 @@ Each name below takes the prefix `metabrain-`. Both hosts use the same skill def
 3. Package the 15 skills with tested installation and invocation in both hosts. Add a worked example to the bundled store guide and preserve customized guides during adoption. Keep the shared rules for storage and retrieval in the core.
 4. Deliver source navigation, cited-passage inspection, and board and table previews in the sibling MetaBrainExplorer project. Test direct and daemon-backed connections and preserve ordinary browsing on older stores.
 5. Gate the release on the end-to-end decision scenario, byte-for-byte recovery, restart and retry tests, project isolation, and behavioral checks for every skill. Update command help, manual, API, architecture, and complexity documentation as each interface ships.
+
+Run `MB_TEST_SOCKET=1 python3 Scripts/test-wiki-skills.py` from a built package checkout to exercise the shared fixture and compare direct and daemon behavior. Run the stock `bash Scripts/check-coverage.sh` gate for the four Swift package targets. Explorer owns the native tests and application coverage. Its wiki preview guide describes the two formats and how their source remains accessible.
