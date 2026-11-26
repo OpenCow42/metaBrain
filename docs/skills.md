@@ -63,7 +63,7 @@ For read-only evidence, invoke the CLI skill and specify the same store and proj
 
 ## Maintain a project wiki
 
-- **Lint** runs native link, anchor, orphan, and claim-evidence checks, plus checks for missing wiki properties, empty sections, and unresolved links in known navigation documents. The report is read-only. Request a specific repair to apply it as a separate operation, or ask for a preview. [Lint skill](../skills/metabrain-wiki-lint/SKILL.md)
+- **Lint** runs native link, anchor, orphan, and claim-evidence checks, plus checks for missing wiki properties, empty sections, and unresolved links in known navigation documents. Use `--references` for typed results and request `--check-external` for live public URL checks. The report is read-only. Request a specific repair to apply it as a separate operation, or ask for a preview. [Lint skill](../skills/metabrain-wiki-lint/SKILL.md)
 - **Mode** suggests paths under Generic, LYT, PARA, or Zettelkasten. Generic is the default when config is absent. Review the old and new config and activity entries to change the mode. Existing notes keep their paths. [Mode skill](../skills/metabrain-wiki-mode/SKILL.md)
 - **Fold** defaults to the latest 16 raw operation entries. If fewer are available, it reports the shortfall without drafting a fold. You can specify a shorter inclusive range. The summary cites each source revision and gets a path derived from those revisions. Repeating a completed fold leaves it as-is. The index, recent activity, and a single new log entry accompany the summary in the reviewed operation. [Fold skill](../skills/metabrain-wiki-fold/SKILL.md)
 

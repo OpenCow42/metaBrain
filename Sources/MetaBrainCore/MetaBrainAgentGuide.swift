@@ -60,7 +60,7 @@ enum MetaBrainAgentGuide {
 
         Preserve original bytes with `mb source stage FILE --origin ORIGIN`. Put the returned capture in the source document’s `sourceCapture` field. Recover it with `mb source export PATH --version N --output FILE`.
 
-        For a source and decision that must appear together, inspect their full replacements with `mb operation inspect operation.json > preview.json`, check the target paths, IDs, and versions, then use `mb operation apply preview.json`. Use `--check-citations` on inspection to verify proposed links and their passages. If a requested write conflicts, reread and rebuild against the current versions. Retry the original preview if the response was lost.
+        For a source and decision that must appear together, inspect their full replacements with `mb operation inspect operation.json > preview.json`, check the target paths, IDs, and versions, then use `mb operation apply preview.json`. Use `--check-citations` on inspection to verify proposed links and their passages. Use `mb lint PATH --references` to distinguish live store links, retained evidence, and URL references. Only `--check-external` makes HTTP requests. If a requested write conflicts, reread and rebuild against the current versions. Retry the original preview if the response was lost.
 
         ## 5. Work in a project wiki
 
@@ -74,6 +74,6 @@ enum MetaBrainAgentGuide {
 
         Use `mb man search` for CLI options. Use `mb ensure-guide` to install this guide in an existing store that lacks it.
         """ + "\n",
-        metadata: ["guide-revision": "9"]
+        metadata: ["guide-revision": "10"]
     )
 }
