@@ -5,7 +5,7 @@ import FoundationNetworking
 #endif
 
 public enum MetaBrainVersion {
-    public static let bundledTag = "1.3.0"
+    public static let bundledTag = "1.4.0"
 
     public static func currentSoftwareTag(
         environment: [String: String] = ProcessInfo.processInfo.environment
