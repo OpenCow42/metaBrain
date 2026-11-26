@@ -20,6 +20,8 @@ def main():
 set -eu
 url="${@: -1}"
 [[ "$1" == "--disable" && "$*" == *"--connect-to ::"* && "$*" == *"--noproxy *"* ]]
+# Swift Process on Windows drops empty arguments.
+for arg in "$@"; do [[ -n "$arg" ]]; done
 echo "$url" >> "$MB_PROBE_LOG"
 case "$url" in
   */ok|*/dedupe|*/native) printf '204\\n' ;;

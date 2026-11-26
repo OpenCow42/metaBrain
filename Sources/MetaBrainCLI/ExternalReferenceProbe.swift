@@ -122,7 +122,7 @@ enum ExternalReferenceProbe {
             let port = url.port ?? (url.scheme?.lowercased() == "https" ? 443 : 80)
             let connection = address.contains(":") ? "[\(address)]" : address
             let args = [
-                "--disable", "--silent", "--proxy", "", "--noproxy", "*", "--globoff",
+                "--disable", "--silent", "--noproxy", "*", "--globoff",
                 "--proto", "=http,https", "--connect-timeout", "3", "--max-time", "8",
                 "--connect-to", "::\(connection):\(port)", "--output", FileHandle.nullDevicePath,
                 "--write-out", "%{http_code}\\n%{redirect_url}"
