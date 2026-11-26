@@ -171,3 +171,17 @@ import Testing
         #expect(graph.truncated)
     }
 }
+
+@Test func graphCanShowIndexedMarkdownWhileGraphMetadataIsAbsent() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let source = try await store.putDocument(DocumentInput(path: DocumentPath("/source.md"), body: ""))
+        let note = try await store.putDocument(DocumentInput(path: DocumentPath("/note.md"), body: "[[source.md]]"))
+        try await store.deleteRawValue(forKey: MetaBrainKeyspace.graphDocument(note.id))
+
+        let graph = try await store.graph(DocumentGraphQuery(scope: .note(id: note.id, depth: 1), includeEvidence: true))
+        #expect(graph.nodes.first?.id == note.id)
+        #expect(graph.nodes.first?.title == nil)
+        #expect(graph.connections.first?.id.target == source.id)
+    }
+}
