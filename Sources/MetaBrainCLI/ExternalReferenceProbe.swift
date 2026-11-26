@@ -60,14 +60,16 @@ enum ExternalReferenceProbe {
     }
 
     private static func findCurl() -> URL? {
+        let environment = ProcessInfo.processInfo.environment
         #if os(Windows)
         let separator: Character = ";"
         let name = "curl.exe"
+        let path = environment.first { $0.key.caseInsensitiveCompare("PATH") == .orderedSame }?.value ?? ""
         #else
         let separator: Character = ":"
         let name = "curl"
+        let path = environment["PATH"] ?? ""
         #endif
-        let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
         return path.split(separator: separator).lazy.map {
             URL(fileURLWithPath: String($0), isDirectory: true).appendingPathComponent(name)
         }.first { FileManager.default.isExecutableFile(atPath: $0.path) }
