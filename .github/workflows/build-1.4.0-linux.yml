@@ -1,0 +1,40 @@
+name: Build metaBrain 1.4.0 on Ubuntu
+on:
+  push:
+    branches: [codex/build-1.4.0-linux]
+permissions:
+  contents: read
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    container: swift:6.3.2-noble
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build and verify both package formats
+        run: |
+          set -euo pipefail
+          apt-get update -qq
+          apt-get install -y -qq dpkg-dev python3 ripgrep curl
+          bash .github/scripts/verify-release-linux.sh afa0c5a7da79a6968056501f03603abd1a2b0705 | tee build.log
+          work=$(sed -n 's/^BUILD_DIR=//p' build.log)
+          mkdir -p validated
+          cp "$work"/dist/*.tar.gz* "$work"/dist/*.deb* validated/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verified-metabrain-1.4.0-ubuntu-${{ matrix.arch }}
+          path: validated/
+          if-no-files-found: error
+          retention-days: 3
