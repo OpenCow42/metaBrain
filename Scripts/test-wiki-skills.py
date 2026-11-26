@@ -332,12 +332,12 @@ class SkillsTest(unittest.TestCase):
                 self.assertEqual(sum(entry.get("documentID") is not None for entry in
                                      self.mb(cli, "list", root + "/_wiki/operations", "--format", "json")), 1)
 
-    def inspect_operation(self, cli, project, operation_id, documents):
+    def inspect_operation(self, cli, project, operation_id, documents, *options):
         draft = self.work / "workflow-draft.json"
         draft.write_text(json.dumps({
             "operationID": operation_id, "project": {"rawValue": project}, "documents": documents,
         }), encoding="utf-8")
-        return self.mb(cli, "operation", "inspect", draft)
+        return self.mb(cli, "operation", "inspect", draft, *options)
 
     def assert_observed_targets(self, preview, observations):
         actual = {target["path"]["rawValue"]: (target.get("documentID", {}).get("rawValue"), target["version"])
@@ -587,7 +587,14 @@ class SkillsTest(unittest.TestCase):
             "evidence": [{"relation": relation, "ref": f"{ids[path]}@1#^result"}
                          for (_, _, _, path), relation in zip(inputs, ("supports", "contradicts"))],
         }]
-        final = self.inspect_operation(cli, root, operation_id, documents)
+        final = self.inspect_operation(cli, root, operation_id, documents, "--check-citations")
+        checked = [item for item in final["citationChecks"]
+                   if item["link"]["sourcePath"]["rawValue"] == decision_path and "passage" in item]
+        self.assertEqual(len(checked), len(inputs))
+        for check, (original, _, _, path) in zip(checked, inputs):
+            self.assertEqual(check["link"]["status"], "resolved")
+            self.assertEqual(check["passage"]["path"]["rawValue"], path)
+            self.assertIn(check["passage"]["passage"]["text"], original.read_text(encoding="utf-8"))
         self.assert_observed_targets(final, observed)
         self.assertEqual(first["creations"], final["creations"])
         self.assertEqual(self.project_snapshot(cli, root), initial)
