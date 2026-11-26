@@ -66,6 +66,12 @@ public struct OperationCreation: Codable, Equatable, Sendable {
     public let documentID: DocumentID
 }
 
+/// The proposed resolution of an added, changed, or newly affected citation.
+public struct OperationCitationCheck: Codable, Equatable, Sendable {
+    public let link: DocumentLinkOccurrence
+    public let passage: DocumentPassage?
+}
+
 public struct OperationPreview: Codable, Equatable, Sendable {
     public let operation: ProjectOperation
     public let storePath: String
@@ -74,15 +80,21 @@ public struct OperationPreview: Codable, Equatable, Sendable {
     public let digest: String
     /// Derived from the reviewed operation and absent targets; older previews may omit it.
     public private(set) var creations: [OperationCreation]? = nil
+    /// Read-only diagnostics. Apply verifies the operation and its expected write targets.
+    public internal(set) var citationChecks: [OperationCitationCheck]? = nil
+    public internal(set) var referenceChecks: [ReferenceCheck]? = nil
+    public private(set) var referenceGuard: String? = nil
 
     static func make(
         operation: ProjectOperation,
         storePath: String,
         storeIdentity: UUID,
-        targets: [OperationTarget]
+        targets: [OperationTarget],
+        referenceGuard: String? = nil
     ) throws -> Self {
         let payload = ReviewedOperation(
-            operation: operation, storePath: storePath, storeIdentity: storeIdentity, targets: targets
+            operation: operation, storePath: storePath, storeIdentity: storeIdentity, targets: targets,
+            referenceGuard: referenceGuard
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
@@ -91,6 +103,7 @@ public struct OperationPreview: Codable, Equatable, Sendable {
             operation: operation, storePath: storePath, storeIdentity: storeIdentity, targets: targets,
             digest: digest.hexString
         )
+        preview.referenceGuard = referenceGuard
         preview.creations = targets.compactMap { target in
             guard target.documentID == nil else { return nil }
             return OperationCreation(path: target.path, documentID: operation.creationID(for: target.path))
@@ -105,7 +118,8 @@ public struct OperationPreview: Codable, Equatable, Sendable {
             throw ProjectOperationError.invalid("The inspected targets do not match the proposed writes.")
         }
         let expected = try Self.make(
-            operation: operation, storePath: storePath, storeIdentity: storeIdentity, targets: targets
+            operation: operation, storePath: storePath, storeIdentity: storeIdentity, targets: targets,
+            referenceGuard: referenceGuard
         )
         guard digest == expected.digest, creations == nil || creations == expected.creations else {
             throw ProjectOperationError.invalid("The operation differs from the inspected preview.")
@@ -118,6 +132,7 @@ private struct ReviewedOperation: Encodable {
     let storePath: String
     let storeIdentity: UUID
     let targets: [OperationTarget]
+    let referenceGuard: String?
 }
 
 extension SHA256.Digest {

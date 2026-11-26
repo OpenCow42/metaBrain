@@ -309,18 +309,28 @@ public final class MetaBrainStore: Sendable {
     }
 
     /// Inspects the current document identities and versions without changing the store.
-    public func inspectOperation(_ operation: ProjectOperation) async throws -> OperationPreview {
+    public func inspectOperation(_ operation: ProjectOperation, checkCitations: Bool = false) async throws -> OperationPreview {
         try operation.validate()
         return try await writes.run {
             let current = try await self.operationState(for: operation)
-            if operation.documents.contains(where: { $0.claims?.isEmpty == false }) {
-                let prepared = try await self.prepareProjectOperation(operation, current: current.records)
-                try await self.validateOperationClaims(operation, prepared: prepared)
-            }
-            return try OperationPreview.make(
+            var preview = try OperationPreview.make(
                 operation: operation, storePath: self.canonicalOperationStorePath,
                 storeIdentity: try self.operationStoreIdentity.get(), targets: current.targets
             )
+            if checkCitations || operation.documents.contains(where: { $0.claims?.isEmpty == false }) {
+                let prepared = try await self.prepareProjectOperation(operation, current: current.records)
+                try await self.validateOperationClaims(operation, prepared: prepared)
+                if checkCitations {
+                    let checks = try await self.checkOperationReferences(prepared, project: operation.project)
+                    preview = try OperationPreview.make(
+                        operation: operation, storePath: preview.storePath, storeIdentity: preview.storeIdentity,
+                        targets: current.targets, referenceGuard: checks.fingerprint()
+                    )
+                    preview.citationChecks = checks.citations
+                    preview.referenceChecks = checks.references
+                }
+            }
+            return preview
         }
     }
 
@@ -350,6 +360,15 @@ public final class MetaBrainStore: Sendable {
 
             let prepared = try await self.prepareProjectOperation(operation, current: current.records)
             try await self.validateOperationClaims(operation, prepared: prepared)
+            if let expected = preview.referenceGuard {
+                let checks = try await self.checkOperationReferences(prepared, project: operation.project)
+                guard try checks.fingerprint() == expected else {
+                    throw ProjectOperationError.conflict("A checked reference changed after inspection. Inspect the operation again.")
+                }
+                guard !checks.references.contains(where: { $0.blocksApply == true }) else {
+                    throw ProjectOperationError.invalid("The proposed operation has invalid references. Inspect it with --check-citations for details.")
+                }
+            }
             return try await self.commitOperation(preview, prepared: prepared, receiptKey: receiptKey)
         }
     }
@@ -2988,7 +3007,10 @@ extension MetaBrainStore {
             document = try await getDocument(reference, trackingRead: false)
         }
         guard let document else { return nil }
+        return try Self.passage(in: document, selector: selector)
+    }
 
+    private static func passage(in document: StoredDocument, selector: DocumentPassageSelector) throws -> DocumentPassage? {
         let range: Range<Int>
         switch selector {
         case .range(let start, let end):
@@ -3054,6 +3076,7 @@ extension MetaBrainStore {
             }
             try await self.ensureCitationIndex()
             var findings: [DocumentLintFinding] = []
+            var references: [ReferenceCheck] = []
             var documentsChecked = 0
             var cache = CitationReadCache()
             let asOf = Date()
@@ -3061,13 +3084,27 @@ extension MetaBrainStore {
                 guard let record = try await self.documentRecord(id: id) else { continue }
                 let source = record.document
                 let claims = source.claims ?? []
-                guard source.isMarkdown || !claims.isEmpty else { continue }
+                let fields = query.includeReferences ? Self.fieldReferences(in: source) : []
+                guard source.isMarkdown || !claims.isEmpty || !fields.isEmpty else { continue }
                 documentsChecked += 1
+                for field in fields {
+                    references.append(try await self.checkField(field, in: source))
+                }
                 if source.isMarkdown {
                     let citations = try await self.outgoingCitationRecords(from: id)
-                    for citation in citations.sorted(by: { $0.link.start < $1.link.start }) where citation.status != .external {
-                        let link = try await self.linkOccurrence(citation, cache: &cache)
-                        if let finding = DocumentLintFinding(link) { findings.append(finding) }
+                    for citation in citations.sorted(by: { $0.link.start < $1.link.start }) {
+                        let link: DocumentLinkOccurrence?
+                        if query.includeReferences {
+                            let result = try await self.checkMarkdown(citation, in: source)
+                            references.append(result.reference)
+                            link = result.legacy?.link
+                        } else {
+                            guard citation.status != .external || citation.link.destination.hasPrefix(EvidenceReference.markdownLinkPrefix) else {
+                                continue
+                            }
+                            link = try await self.linkOccurrence(citation, cache: &cache)
+                        }
+                        if let link, let finding = DocumentLintFinding(link) { findings.append(finding) }
                     }
                     if query.includeOrphans, try await self.inboundReferences(to: id).allSatisfy({ $0 == id }) {
                         findings.append(DocumentLintFinding(orphan: source))
@@ -3080,7 +3117,10 @@ extension MetaBrainStore {
                     findings += issues.map { DocumentLintFinding(claim: claim, issue: $0, owner: source) }
                 }
             }
-            return DocumentLintReport(path: scope.rawValue, documentsChecked: documentsChecked, findings: findings)
+            return DocumentLintReport(
+                path: scope.rawValue, documentsChecked: documentsChecked, findings: findings,
+                referenceChecks: query.includeReferences ? references : nil
+            )
         }
     }
 
@@ -3124,18 +3164,20 @@ extension MetaBrainStore {
         _ record: MarkdownCitation,
         cache: inout CitationReadCache
     ) async throws -> DocumentLinkOccurrence {
+        if record.link.destination.hasPrefix(EvidenceReference.markdownLinkPrefix) {
+            return try await checkEvidenceCitation(record, projected: [:], pruned: []).link
+        }
         var targetPath: DocumentPath?
         var status = record.status
         if status == .resolved, let target = record.targetID {
             targetPath = try await citationPath(target, cache: &cache)
             if targetPath == nil {
                 status = .unresolved
-            } else if let fragment = record.destination.fragment, !fragment.isEmpty {
+            } else if let selector = record.destination.selector {
                 if cache.checkedTargets.insert(target).inserted,
                    let document = try await documentRecord(id: target)?.document, document.isMarkdown {
                     cache.parsedTargets[target] = MarkdownDocument(body: document.body, includeLinks: false)
                 }
-                let selector: DocumentPassageSelector = fragment.hasPrefix("^") ? .block(fragment) : .heading(fragment)
                 do {
                     if try cache.parsedTargets[target]?.anchor(for: selector) == nil {
                         status = .unresolved
@@ -3265,6 +3307,323 @@ extension MetaBrainStore {
             }
         }
         return edit
+    }
+
+    private struct CitationSignature: Hashable {
+        let syntax: String
+        let destination: Data
+        let label: Data?
+        let embed: Bool?
+
+        init(_ link: MarkdownLink) {
+            syntax = link.syntax.rawValue
+            destination = Data(link.destination.utf8)
+            label = link.label.map { Data($0.utf8) }
+            embed = link.embed
+        }
+    }
+
+    private struct ReferenceProjection {
+        var documents: [DocumentID: StoredDocument] = [:]
+        var paths: [DocumentPath: DocumentID] = [:]
+        var pruned: Set<String> = []
+
+        func affects(_ reference: EvidenceReference) -> Bool {
+            documents[reference.documentID]?.currentVersion == reference.version ||
+                pruned.contains(MetaBrainKeyspace.version(id: reference.documentID, sequence: reference.version))
+        }
+
+        func affects(_ citation: MarkdownCitation) -> Bool {
+            if let ref = EvidenceReference(markdownDestination: citation.link.destination) { return affects(ref) }
+            guard let id = citation.targetID, citation.destination.selector != nil else { return false }
+            return documents[id] != nil
+        }
+    }
+
+    private struct OperationReferenceChecks {
+        var citations: [OperationCitationCheck] = []
+        var references: [ReferenceCheck] = []
+
+        mutating func append(_ reference: ReferenceCheck, legacy: OperationCitationCheck? = nil, previously: ReferenceCheck? = nil) {
+            var reference = reference
+            if reference.status.isDefect && (previously == nil || previously?.status.isDefect == false) {
+                reference.blocksApply = true
+            }
+            references.append(reference)
+            if let legacy { citations.append(legacy) }
+        }
+
+        func fingerprint() throws -> String {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+            return try SHA256.hash(data: encoder.encode(references)).hexString
+        }
+    }
+
+    private func checkOperationReferences(
+        _ prepared: PreparedProjectOperation, project: DocumentPath
+    ) async throws -> OperationReferenceChecks {
+        let projected = ReferenceProjection(
+            documents: Dictionary(uniqueKeysWithValues: prepared.writes.map { ($0.record.document.id, $0.record.document) }),
+            paths: Dictionary(uniqueKeysWithValues: prepared.writes.map { ($0.record.document.path, $0.record.document.id) }),
+            pruned: Set(prepared.writes.flatMap(\.prunedVersions).map {
+                MetaBrainKeyspace.version(id: $0.documentID, sequence: $0.sequence)
+            })
+        )
+        let created = prepared.writes.filter { $0.previousRecord == nil }.map { $0.record.document }
+        let additions = MarkdownCitationCatalog(created.map { MarkdownCitationHeader(id: $0.id, path: $0.path) })
+        // Legacy stores can be inspected before their first citation-index rebuild.
+        var fallbackPaths: [DocumentID: DocumentPath] = [:]
+        let catalog: MarkdownCitationCatalog?
+        if try await rawValue(forKey: MetaBrainKeyspace.citationLayout) == Data([2]) {
+            catalog = nil
+        } else {
+            let prefix = MetaBrainKeyspace.prefix(.documentID)
+            for key in try await scanKeys(withPrefix: prefix) {
+                let id = try DocumentID(rawValue: String(key.dropFirst(prefix.count)))
+                fallbackPaths[id] = try await documentRecord(id: id)?.document.path
+            }
+            for document in created { fallbackPaths[document.id] = document.path }
+            catalog = MarkdownCitationCatalog(fallbackPaths.map { MarkdownCitationHeader(id: $0.key, path: $0.value) })
+        }
+
+        var checks = OperationReferenceChecks()
+        for write in prepared.writes {
+            let source = write.record.document
+            let previous = write.previousRecord?.document
+            let old = try await previousCitations(for: previous)
+            var existing = Dictionary(grouping: previous.map(Self.markdownCitations) ?? [], by: { CitationSignature($0.link) })
+                .mapValues(\.count)
+            var citations = Self.markdownCitations(from: source)
+            MarkdownCitationBindings.preserve(from: old, in: &citations)
+            for citation in citations {
+                let signature = CitationSignature(citation.link)
+                let count = existing[signature, default: 0]
+                if count > 0 { existing[signature] = count - 1 }
+                let resolved = if citation.targetID == nil {
+                    try await resolveCitation(citation, catalog: catalog, additions: additions)
+                } else { citation }
+                guard count == 0 || projected.affects(resolved) else { continue }
+                let result = try await checkMarkdown(resolved, in: source, projected: projected, fallbackPaths: fallbackPaths)
+                let baseline = if count > 0 {
+                    try await checkMarkdown(resolved, in: source, fallbackPaths: fallbackPaths).reference
+                } else { nil as ReferenceCheck? }
+                checks.append(result.reference, legacy: result.legacy, previously: baseline)
+            }
+            let previousFields = Set(previous.map(Self.fieldReferences) ?? [])
+            for field in Self.fieldReferences(in: source) {
+                let existing = previousFields.contains(field)
+                guard !existing || field.evidence.map(projected.affects) == true else { continue }
+                let reference = try await checkField(field, in: source, projected: projected)
+                let baseline = existing ? try await checkField(field, in: source) : nil
+                checks.append(reference, previously: baseline)
+            }
+        }
+
+        if prepared.writes.contains(where: {
+            guard let previous = $0.previousRecord?.document else { return false }
+            let current = $0.record.document
+            return !previous.body.utf8.elementsEqual(current.body.utf8) ||
+                previous.isMarkdown != current.isMarkdown || !$0.prunedVersions.isEmpty
+        }) {
+            for id in try await lintSourceIDs(under: project) where projected.documents[id] == nil {
+                guard let owner = try await documentRecord(id: id)?.document else { continue }
+                for record in try await previousCitations(for: owner) where projected.affects(record) {
+                    let before = try await checkMarkdown(record, in: owner)
+                    let after = try await checkMarkdown(record, in: owner, projected: projected)
+                    checks.append(after.reference, legacy: after.legacy, previously: before.reference)
+                }
+                for field in Self.fieldReferences(in: owner) where field.evidence.map(projected.affects) == true {
+                    let before = try await checkField(field, in: owner)
+                    checks.append(try await checkField(field, in: owner, projected: projected), previously: before)
+                }
+            }
+        }
+        return checks
+    }
+
+    private struct FieldReference: Hashable {
+        enum Value: Hashable {
+            case document(DocumentReference)
+            case origin(String)
+            case evidence(EvidenceReference)
+        }
+
+        let value: Value
+        var index: Int? = nil
+        var claimID: UUID? = nil
+
+        var evidence: EvidenceReference? {
+            if case .evidence(let ref) = value { return ref }
+            return nil
+        }
+    }
+
+    private static func fieldReferences(in source: StoredDocument) -> [FieldReference] {
+        var fields = source.references.enumerated().map { FieldReference(value: .document($0.element), index: $0.offset) }
+        if let origin = source.sourceCapture?.origin, let separator = origin.firstIndex(of: ":"),
+           ["http", "https"].contains(origin[..<separator].lowercased()) {
+            fields.append(FieldReference(value: .origin(origin)))
+        }
+        for claim in source.claims ?? [] {
+            fields += claim.evidence.enumerated().map {
+                FieldReference(value: .evidence($0.element.ref), index: $0.offset, claimID: claim.id)
+            }
+        }
+        return fields
+    }
+
+    private func checkField(
+        _ field: FieldReference, in source: StoredDocument, projected: ReferenceProjection = ReferenceProjection()
+    ) async throws -> ReferenceCheck {
+        let id: DocumentID?
+        let destination: String
+        switch field.value {
+        case .origin(let url):
+            return Self.externalCheck(url, in: source, location: .captureOrigin)
+        case .evidence(let ref):
+            return try await evidenceCheck(ref, in: source, location: .claimEvidence, index: field.index,
+                                           claimID: field.claimID, projected: projected)
+        case .document(.externalURL(let url)):
+            return Self.externalCheck(url.absoluteString, in: source, location: .documentReference, index: field.index)
+        case .document(.documentID(let value)):
+            id = value
+            destination = value.rawValue
+        case .document(.path(let path)):
+            id = if let staged = projected.paths[path] { staged } else { try await documentID(forPath: path) }
+            destination = path.rawValue
+        }
+        let target = try await referenceTarget(id, projected: projected)
+        return ReferenceCheck(source: source, location: .documentReference, index: field.index, kind: .storeDocument,
+                              destination: destination, status: target == nil ? .missingDocument : .resolved,
+                              target: target, targetID: id)
+    }
+
+    private static func externalCheck(
+        _ url: String, in source: StoredDocument, location: ReferenceLocation, range: Range<Int>? = nil, index: Int? = nil
+    ) -> ReferenceCheck {
+        let (destination, status) = ExternalReference.classify(url)
+        return ReferenceCheck(source: source, location: location, range: range, index: index,
+                              kind: .externalURL, destination: destination, status: status)
+    }
+
+    private func referenceTarget(_ id: DocumentID?, projected: ReferenceProjection) async throws -> StoredDocument? {
+        guard let id else { return nil }
+        if let staged = projected.documents[id] { return staged }
+        return try await documentRecord(id: id)?.document
+    }
+
+    private func checkMarkdown(
+        _ citation: MarkdownCitation, in source: StoredDocument, projected: ReferenceProjection = ReferenceProjection(),
+        fallbackPaths: [DocumentID: DocumentPath] = [:]
+    ) async throws -> (reference: ReferenceCheck, legacy: OperationCitationCheck?) {
+        let destination = citation.link.destination
+        let range = citation.link.start..<citation.link.end
+        if destination.hasPrefix(EvidenceReference.markdownLinkPrefix) {
+            guard let ref = EvidenceReference(markdownDestination: destination) else {
+                let invalid = ReferenceCheck(source: source, location: .markdown, range: range, kind: .retainedEvidence,
+                                             destination: destination, status: .invalidReference)
+                return (invalid, Self.legacyCheck(citation, reference: invalid))
+            }
+            let check = try await evidenceCheck(ref, in: source, location: .markdown, range: range, projected: projected)
+            return (check, Self.legacyCheck(citation, reference: check))
+        }
+        if citation.destination.isExternal {
+            return (Self.externalCheck(destination, in: source, location: .markdown, range: range), nil)
+        }
+        let target = try await referenceTarget(citation.targetID, projected: projected)
+        var candidates: [DocumentLinkCandidate] = []
+        for id in citation.candidates {
+            let path = if let staged = projected.documents[id]?.path ?? fallbackPaths[id] { staged } else { try await citationPath(id) }
+            if let path { candidates.append(DocumentLinkCandidate(documentID: id, path: path)) }
+        }
+        candidates.sort { $0.path < $1.path }
+        let selector = citation.destination.selector
+        let (status, passage) = if let target {
+            Self.passageStatus(target, selector: selector)
+        } else {
+            (candidates.isEmpty ? ReferenceStatus.missingDocument : .ambiguousDocument, nil as DocumentPassage?)
+        }
+        let reference = ReferenceCheck(source: source, location: .markdown, range: range,
+                                       kind: selector == nil ? .storeDocument : .storePassage,
+                                       destination: destination, status: status, target: target, targetID: citation.targetID,
+                                       candidates: candidates, passage: passage)
+        return (reference, Self.legacyCheck(citation, reference: reference))
+    }
+
+    private func evidenceCheck(
+        _ ref: EvidenceReference, in source: StoredDocument, location: ReferenceLocation, range: Range<Int>? = nil,
+        index: Int? = nil, claimID: UUID? = nil, projected: ReferenceProjection
+    ) async throws -> ReferenceCheck {
+        let target = try await claimEvidence(ref, projected: projected.documents, pruned: projected.pruned).retained
+        let (status, passage) = if let target {
+            Self.passageStatus(target, selector: ref.passageSelector)
+        } else {
+            (ReferenceStatus.unavailableRevision, nil as DocumentPassage?)
+        }
+        return ReferenceCheck(source: source, location: location, range: range, index: index, claimID: claimID,
+                              kind: .retainedEvidence, destination: ref.rawValue, status: status, target: target,
+                              targetID: ref.documentID, targetVersion: ref.version, passage: passage)
+    }
+
+    private static func passageStatus(
+        _ target: StoredDocument, selector: DocumentPassageSelector?
+    ) -> (ReferenceStatus, DocumentPassage?) {
+        guard let selector else { return (.resolved, nil) }
+        do {
+            guard let passage = try passage(in: target, selector: selector) else { return (.missingAnchor, nil) }
+            return (.resolved, passage)
+        } catch DocumentPassageError.ambiguousSelector {
+            return (.ambiguousAnchor, nil)
+        } catch {
+            return (.invalidRange, nil)
+        }
+    }
+
+    private static func legacyCheck(_ citation: MarkdownCitation, reference: ReferenceCheck) -> OperationCitationCheck {
+        var citation = citation
+        citation.targetID = reference.targetID
+        let status: DocumentLinkStatus = switch reference.status {
+        case .resolved: .resolved
+        case .ambiguousAnchor, .ambiguousDocument: .ambiguous
+        default: .unresolved
+        }
+        return OperationCitationCheck(
+            link: citation.occurrence(targetPath: reference.targetPath, status: status, candidates: reference.candidates),
+            passage: reference.passage
+        )
+    }
+
+    private func checkEvidenceCitation(
+        _ citation: MarkdownCitation, projected: [DocumentID: StoredDocument], pruned: Set<String>
+    ) async throws -> OperationCitationCheck {
+        guard let reference = EvidenceReference(markdownDestination: citation.link.destination) else {
+            return Self.checkCitation(citation, target: nil, selector: nil)
+        }
+        let target = try await claimEvidence(reference, projected: projected, pruned: pruned).retained
+        let selector = reference.passageSelector
+        var bound = citation
+        bound.targetID = reference.documentID
+        return Self.checkCitation(bound, target: target, selector: selector)
+    }
+
+    private static func checkCitation(
+        _ citation: MarkdownCitation, target: StoredDocument?, selector: DocumentPassageSelector?,
+        candidates: [DocumentLinkCandidate] = []
+    ) -> OperationCitationCheck {
+        let status: DocumentLinkStatus
+        let passage: DocumentPassage?
+        if let target {
+            let result = passageStatus(target, selector: selector)
+            passage = result.1
+            status = result.0 == .resolved ? .resolved : (result.0 == .ambiguousAnchor ? .ambiguous : .unresolved)
+        } else {
+            passage = nil
+            status = candidates.isEmpty ? .unresolved : .ambiguous
+        }
+        return OperationCitationCheck(
+            link: citation.occurrence(targetPath: target?.path, status: status, candidates: candidates), passage: passage
+        )
     }
 
     private func previousCitations(for document: StoredDocument?) async throws -> [MarkdownCitation] {

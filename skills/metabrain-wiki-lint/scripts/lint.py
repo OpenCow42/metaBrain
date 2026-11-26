@@ -94,8 +94,12 @@ def markdown_sections(body):
     return title, sorted(empty)
 
 
-def findings(run, root, properties, additional_indexes):
-    native = run("lint", root, "--orphans")
+def findings(run, root, properties, additional_indexes, check_external=False):
+    flags = ["--check-external"] if check_external else []
+    native = run("lint", root, "--orphans", "--references", *flags)
+    references_by_path = {}
+    for reference in native["referenceChecks"]:
+        references_by_path.setdefault(reference["sourcePath"]["rawValue"], []).append(reference)
     indexes = {f"{root}/index.md", f"{root}/_wiki/recent.md", *additional_indexes}
     supplemental = []
     for note in sorted(run("dump", root), key=lambda note: note["path"]):
@@ -107,10 +111,10 @@ def findings(run, root, properties, additional_indexes):
         location = {"sourcePath": path, "sourceVersion": note["version"], "sourceID": note["documentID"]}
         title, empty = markdown_sections(note["body"])
         if path in indexes:
-            for link in run("links", path):
-                if (link["sourceVersion"], link["sourceID"]) != (note["version"], note["documentID"]):
+            for link in references_by_path.get(path, []):
+                if (link["sourceVersion"], link["sourceID"]["rawValue"]) != (note["version"], note["documentID"]):
                     raise ValueError(f"Navigation changed during audit: {path}")
-                if link["status"] == "unresolved":
+                if link["location"] == "markdown" and link["status"] in ("missingDocument", "missingAnchor", "unavailableRevision"):
                     supplemental.append({"kind": "staleIndexEntry", **location, "link": link})
         if path == f"{root}/AGENTS.md" or path.startswith(f"{root}/_wiki/") or path in indexes:
             continue
@@ -137,6 +141,7 @@ def main():
     properties.add_argument("--require-property", action="append", metavar="NAME")
     properties.add_argument("--no-required-properties", action="store_true")
     parser.add_argument("--index", action="append", default=[], metavar="VIRTUAL_PATH")
+    parser.add_argument("--check-external", action="store_true", help="Probe public HTTP(S) links from this machine")
     args = parser.parse_args()
     if not Path(args.store).is_dir():
         parser.error("select an existing store directory")
@@ -157,7 +162,7 @@ def main():
 
     required = [] if args.no_required_properties else sorted(set(args.require_property or ["title"]))
     try:
-        print(json.dumps(findings(run, args.project, required, args.index), ensure_ascii=False, sort_keys=True))
+        print(json.dumps(findings(run, args.project, required, args.index, args.check_external), ensure_ascii=False, sort_keys=True))
     except (OSError, ValueError) as error:
         parser.exit(1, f"{error}\n")
 

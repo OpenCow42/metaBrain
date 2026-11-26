@@ -35,14 +35,17 @@ public struct ServerLinksRequest: Codable, Equatable, Sendable {
 public struct ServerLintRequest: Codable, Equatable, Sendable {
     public var path: String?
     public var includeOrphans: Bool?
+    public var includeReferences: Bool?
 
-    public init(path: String? = nil, includeOrphans: Bool? = nil) {
+    public init(path: String? = nil, includeOrphans: Bool? = nil, includeReferences: Bool? = nil) {
         self.path = path
         self.includeOrphans = includeOrphans
+        self.includeReferences = includeReferences
     }
 
     public func lintQuery() throws -> DocumentLintQuery {
-        DocumentLintQuery(path: try path.map(DocumentPath.init), includeOrphans: includeOrphans ?? false)
+        DocumentLintQuery(path: try path.map(DocumentPath.init), includeOrphans: includeOrphans ?? false,
+                          includeReferences: includeReferences ?? false)
     }
 }
 

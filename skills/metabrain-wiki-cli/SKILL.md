@@ -7,6 +7,8 @@ description: Inspect a selected metaBrain wiki through mb. Use to list project n
 
 Use an explicitly selected local store path and project root. If the task already chose a daemon, use its explicit Unix socket or loopback HTTP URL. Otherwise use direct access. Include the same store and connection on every command. Report both, plus the normalized absolute virtual project root below `/`. Verify the selected local store already exists before reading. Surface an unavailable store or daemon without initializing a store or falling back to another connection. Avoid `--server auto`.
 
+For reference audits, select a CLI that supports `mb lint --references`. In a source checkout, the matching built executable is `.build/debug/mb`. Keep the selected executable for inspection, apply, and verification.
+
 Examples use a shell array for the common options. Fill in the actual values:
 
 ```bash
@@ -30,8 +32,11 @@ Normalize separators and reject dot segments in the virtual root. Read both virt
 "${MB[@]}" get --id "$document_id" --format json
 "${MB[@]}" links "$path" --format json
 "${MB[@]}" links "$path" --incoming --format json
+"${MB[@]}" lint "$root" --references --format json
 ```
 
 Filter to the exact root's descendants. Check returned paths against the project boundary before using a hit. Use `--view refs` to shortlist documents, and `--view evidence` for passages. Match the ID of an explicit or discovered `ref` to an in-project row from the scoped listing before reopening it. Check the returned path too before quoting. Read section context separately because it can widen the returned reference. A versioned reference reads the retained passage, while `--id` without a version reads the current document after a move. Report unavailable citations and inspect a link's resolved target before reading it. Links can lead outside the project. Ask before expanding scope. Read-only inspection does not update notes, navigation, or the operation log.
+
+Inspect `referenceChecks` for `storeDocument`, `storePassage`, `retainedEvidence`, and `externalURL`. For explicitly requested live checks, run `mb lint ROOT --check-external --format json` with the pinned options. Interpret `externalChecks` as reachability results. Captured origins and recorded evidence remain historical records.
 
 For wiki mutations, use the [reviewed write workflow](references/reviewed-write.md).

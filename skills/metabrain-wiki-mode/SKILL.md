@@ -1,6 +1,6 @@
 ---
 name: metabrain-wiki-mode
-description: Suggest a destination using the selected wiki filing mode or preview a change to that mode.
+description: Suggest a destination using the selected wiki filing mode or change to that mode.
 ---
 
 # Read the mode and suggest a destination
@@ -18,8 +18,8 @@ Choose a lowercase hyphenated slug and a kind from `note`, `source`, `decision`,
 
 Apply any more specific project guidance and explain the suggestion with the selected mode and kind or actionability. Check the proposed path and ancestors for collisions, and show them before filing. A suggestion alone performs no writes.
 
-# Preview a mode change
+# Change the mode
 
 1. Require an initialized wiki. Confirm the current config is usable, retain its document ID and version, and compare the requested mode with the existing one. If unchanged, report that and skip the operation. For an uninitialized project, route to setup before changing mode.
-2. Replace only the `mode` property in the parsed JSON object, preserving other keys and the config document's fields. Use the [reviewed write workflow](../metabrain-wiki-cli/references/reviewed-write.md) for that replacement, a focused recent activity entry, and one new append-only operation record. Record the exact old and new mode values and config path. Show the old and new config, the exact operation preview, and a representative filing suggestion under each mode using the same input. If a representative PARA suggestion needs more context, state the example actionability. A mode change applies to future suggestions and keeps existing paths in place.
-3. Apply the exact inspected preview after authorization. A stale preview needs fresh inspection and review. Repeat planning after a successful change will report that the requested mode is already active.
+2. Replace only the `mode` property in the parsed JSON object, preserving other keys and the config document's fields. Use the [reviewed write workflow](../metabrain-wiki-cli/references/reviewed-write.md) for that replacement, a focused recent activity entry, and one new append-only operation record. Record the exact old and new mode values and config path. Show the old and new config for a preview, with a representative filing suggestion under each mode using the same input. If a representative PARA suggestion needs more context, state the example actionability. A mode change applies to future suggestions and keeps existing paths in place.
+3. Apply the exact inspected preview when asked to change the mode. For a conflict, reread the config and rebuild the operation if the requested mode is still clear. Repeat planning after a successful change will report that the requested mode is already active.

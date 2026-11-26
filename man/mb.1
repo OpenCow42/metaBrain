@@ -65,10 +65,20 @@ Use
 for a readable summary or
 .Fl Fl format Cm jsonl
 for one finding per line.
+A standalone block ID after a closed top-level Markdown fence selects its literal contents.
+Use
+.Fl Fl references
+to include native references, captured HTTP(S) origins, and exact retained evidence results.
+Use
+.Fl Fl check-external
+with an explicit scope to probe public HTTP(S) destinations using curl from this CLI.
 .Sh PROJECT OPERATIONS
 .Cm mb operation inspect Ar operation.json
 prints a JSON preview containing the project, full document replacements, target identities and versions, and a digest.
-Review the preview, then pass that file to
+Use
+.Fl Fl check-citations
+to include reference results and selected passages from the proposed batch. Apply rechecks the guarded results and rejects newly broken references.
+Pass the inspected file to
 .Cm mb operation apply Ar preview.json .
 The operation commits all proposed notes in one batch.
 On a conflict, inspect the changed notes and generate a new preview.

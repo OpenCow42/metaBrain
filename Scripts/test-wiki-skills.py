@@ -332,12 +332,12 @@ class SkillsTest(unittest.TestCase):
                 self.assertEqual(sum(entry.get("documentID") is not None for entry in
                                      self.mb(cli, "list", root + "/_wiki/operations", "--format", "json")), 1)
 
-    def inspect_operation(self, cli, project, operation_id, documents):
+    def inspect_operation(self, cli, project, operation_id, documents, *options):
         draft = self.work / "workflow-draft.json"
         draft.write_text(json.dumps({
             "operationID": operation_id, "project": {"rawValue": project}, "documents": documents,
         }), encoding="utf-8")
-        return self.mb(cli, "operation", "inspect", draft)
+        return self.mb(cli, "operation", "inspect", draft, *options)
 
     def assert_observed_targets(self, preview, observations):
         actual = {target["path"]["rawValue"]: (target.get("documentID", {}).get("rawValue"), target["version"])
@@ -415,7 +415,7 @@ class SkillsTest(unittest.TestCase):
         args = ("--mb", MB, "--store", info["store"], "--no-server", "--project", root)
         report = self.skill_script("wiki-lint", "lint.py", *args)
         self.assertEqual(self.skill_script("wiki-lint", "lint.py", *args), report)
-        self.assertEqual(report["native"], self.mb(cli, "lint", root, "--orphans"))
+        self.assertEqual(report["native"], self.mb(cli, "lint", root, "--orphans", "--references"))
         self.assertEqual({item["link"]["destination"] for item in report["wikiFindings"]
                           if item["kind"] == "staleIndexEntry"}, {missing, path + "#missing"})
         self.assertEqual([(item["heading"], item["line"]) for item in report["wikiFindings"]
@@ -434,7 +434,7 @@ class SkillsTest(unittest.TestCase):
             self.proposed_note(recent, before[recent]["body"] + f"\n- [[{record}]]\n", before[recent]),
             self.proposed_note(record, f"# Repair index reference\n\nCorrected one stale entry in [[{index}]].\n"),
         ]
-        preview = self.inspect_operation(cli, root, operation_id, proposed)
+        preview = self.inspect_operation(cli, root, operation_id, proposed, "--check-citations")
         self.assert_observed_targets(preview, observed)
         self.assertEqual(self.project_snapshot(cli, root), before)
         self.apply_preview(cli, preview)
@@ -442,6 +442,76 @@ class SkillsTest(unittest.TestCase):
         self.assertEqual({item["link"]["destination"] for item in remaining
                           if item["kind"] == "staleIndexEntry"}, {path + "#missing"})
         self.assertEqual(self.mb(cli, "get", path), before[path])
+
+    def test_installed_skills_preview_and_repair_a_verified_fenced_reference(self):
+        self.install("--apply")
+        info, common = self.fixture("initialized")
+        cli = [*common, "--no-server"]
+        root = info["project"]
+        source = root + "/repository.md"
+        note = root + "/citations.md"
+        raw = self.work / "original.md"
+        excerpt = "The retained source.\n[[literal wiki text]]\n"
+        raw.write_bytes(excerpt.encode("utf-8"))
+        capture = self.mb(cli, "source", "stage", raw, "--origin", "https://example.org/original")
+        source_body = "## Lines 17–37\n\n~~~~~markdown\n" + excerpt + "~~~~~\n^original\n"
+        source_draft = self.inspect_operation(cli, root, str(uuid.uuid4()), [
+            self.proposed_note(source, source_body, sourceCapture=capture),
+        ])
+        self.apply_preview(cli, source_draft)
+        recorded_source = self.mb(cli, "get", source)
+        self.mb(cli, "put", note,
+                "🧾 [Excerpt](repository.md#^lines-17-37) [Original](repository.md#^original) [[unrelated]]")
+        original = self.mb(cli, "get", note)
+        original_store = self.project_snapshot(cli, root)
+
+        def installed_audit(host):
+            helper = self.work / host / "skills/metabrain-wiki-lint/scripts/lint.py"
+            result = subprocess.run([sys.executable, str(helper), "--mb", str(MB),
+                                     "--store", info["store"], "--project", root, "--no-server"],
+                                    capture_output=True, text=True, check=True)
+            return json.loads(result.stdout)["native"]["referenceChecks"]
+
+        for host in (".agents", ".claude"):
+            checks = [r for r in installed_audit(host) if r["sourcePath"]["rawValue"] == note]
+            self.assertEqual([r["status"] for r in checks], ["missingAnchor", "resolved", "missingDocument"])
+            self.assertEqual(checks[1]["passage"]["passage"]["text"], excerpt)
+            report = checks[0]
+            ref = f'{original["documentID"]}@{original["version"]}#{report["start"]}-{report["end"]}'
+            occurrence = self.mb(cli, "get", "--ref", ref)
+            self.assertFalse(occurrence.get("truncated"))
+            self.assertEqual(occurrence["items"][0]["ref"], ref)
+            self.assertEqual(occurrence["items"][0]["text"], "[Excerpt](repository.md#^lines-17-37)")
+
+        section = self.mb(cli, "get", source, "--heading", "Lines 17–37")
+        self.assertIn(excerpt, section["text"])
+        operation_id = str(uuid.uuid4())
+        navigation, observed, _ = self.navigation(cli, root, operation_id, note, "Restore the excerpt link")
+        observed[note] = original
+        fixed = original["body"].replace("[Excerpt](repository.md#^lines-17-37)",
+                                        f"[[{source}#Lines 17–37|Excerpt]]")
+        preview = self.inspect_operation(cli, root, operation_id,
+                                         [self.proposed_note(note, fixed, original), *navigation],
+                                         "--check-citations")
+        self.assert_observed_targets(preview, observed)
+        self.assertFalse(any(item.get("blocksApply") for item in preview["referenceChecks"]))
+        proof = next(item for item in preview["referenceChecks"]
+                     if item["sourcePath"]["rawValue"] == note and item["kind"] == "storePassage")
+        self.assertEqual(proof["targetID"]["rawValue"], recorded_source["documentID"])
+        self.assertEqual(proof["passage"]["passage"]["text"], section["text"])
+        self.assertEqual(self.project_snapshot(cli, root), original_store)
+
+        receipt = self.apply_preview(cli, preview)
+        after = self.project_snapshot(cli, root)
+        self.assertEqual(self.apply_preview(cli, preview), receipt)
+        self.assertEqual(self.project_snapshot(cli, root), after)
+        retrieved = self.work / "retrieved.md"
+        subprocess.run([*cli, "source", "export", source, "--output", str(retrieved)], check=True, capture_output=True)
+        self.assertEqual(retrieved.read_bytes(), raw.read_bytes())
+        self.assertEqual(after[source]["sourceCapture"]["blob"]["sha256"], hashlib.sha256(raw.read_bytes()).hexdigest())
+        for host in (".agents", ".claude"):
+            checks = [r for r in installed_audit(host) if r["sourcePath"]["rawValue"] == note]
+            self.assertEqual([r["status"] for r in checks], ["resolved", "resolved", "missingDocument"])
 
     def test_mode_suggestion_and_reviewed_config_change(self):
         info, common = self.fixture("initialized")
@@ -587,7 +657,14 @@ class SkillsTest(unittest.TestCase):
             "evidence": [{"relation": relation, "ref": f"{ids[path]}@1#^result"}
                          for (_, _, _, path), relation in zip(inputs, ("supports", "contradicts"))],
         }]
-        final = self.inspect_operation(cli, root, operation_id, documents)
+        final = self.inspect_operation(cli, root, operation_id, documents, "--check-citations")
+        checked = [item for item in final["citationChecks"]
+                   if item["link"]["sourcePath"]["rawValue"] == decision_path and "passage" in item]
+        self.assertEqual(len(checked), len(inputs))
+        for check, (original, _, _, path) in zip(checked, inputs):
+            self.assertEqual(check["link"]["status"], "resolved")
+            self.assertEqual(check["passage"]["path"]["rawValue"], path)
+            self.assertIn(check["passage"]["passage"]["text"], original.read_text(encoding="utf-8"))
         self.assert_observed_targets(final, observed)
         self.assertEqual(first["creations"], final["creations"])
         self.assertEqual(self.project_snapshot(cli, root), initial)

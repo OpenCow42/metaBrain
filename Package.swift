@@ -90,8 +90,13 @@ let package = Package(
             dependencies: [
                 "MetaBrainCore",
                 "MetaBrainServerSupport",
+                "MetaBrainReferenceDNS",
                 .product(name: "ArgumentParser", package: "swift-argument-parser")
             ]
+        ),
+        .target(
+            name: "MetaBrainReferenceDNS",
+            linkerSettings: [.linkedLibrary("ws2_32", .when(platforms: [.windows]))]
         ),
         .target(
             name: "MetaBrainServerSupport",

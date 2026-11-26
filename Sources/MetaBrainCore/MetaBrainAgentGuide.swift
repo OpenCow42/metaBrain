@@ -39,7 +39,7 @@ enum MetaBrainAgentGuide {
         mb get /policies/Retention.md --block keep-last
         ```
 
-        The wikilink points to a paragraph marked `^keep-last`. A relative Markdown link such as `[Policy](../policies/Retention.md)` points to the policy document. If a link is unresolved, check the target and anchor. If a name is ambiguous, use its full path. A resolved link follows its target when it moves and reads against its current body. Use a versioned evidence `ref` to cite the exact text you verified.
+        The wikilink points to a paragraph marked `^keep-last`. A relative Markdown link such as `[Policy](../policies/Retention.md)` points to the policy document. If a link is unresolved, check the target and anchor. If a name is ambiguous, use its full path. A resolved link follows its target when it moves and reads against its current body. A standalone block ID after a closed top-level fence labels its literal contents. Use the exact verified evidence reference in `[Source](metabrain-ref:REF)` to link to the retained passage in MetaBrainExplorer.
 
         Use `--ref-id` for an explicit relationship to a document, `--ref-path` for a location, and `--ref-url` for an external source.
 
@@ -60,20 +60,20 @@ enum MetaBrainAgentGuide {
 
         Preserve original bytes with `mb source stage FILE --origin ORIGIN`. Put the returned capture in the source document’s `sourceCapture` field. Recover it with `mb source export PATH --version N --output FILE`.
 
-        For a source and decision that must appear together, inspect their full replacements with `mb operation inspect operation.json > preview.json`, review the target paths and versions, then use `mb operation apply preview.json`. Retry the original preview if the response was lost.
+        For a source and decision that must appear together, inspect their full replacements with `mb operation inspect operation.json > preview.json`, check the target paths, IDs, and versions, then use `mb operation apply preview.json`. Use `--check-citations` on inspection to verify proposed links and their passages. Use `mb lint PATH --references` to distinguish live store links, retained evidence, and URL references. Only `--check-external` makes HTTP requests. If a requested write conflicts, reread and rebuild against the current versions. Retry the original preview if the response was lost.
 
         ## 5. Work in a project wiki
 
-        If the metaBrain skills are installed in your agent, start with `$metabrain-wiki` in Codex or `/metabrain-wiki` in Claude Code. Give it the virtual project root, such as `/projects/atlas`. It checks for project configuration, a project index, and a recent-activity note. For an existing project, it previews additions and identifies occupied paths. Read the store and project guidance before proposing changes.
+        If the metaBrain skills are installed in your agent, start with `$metabrain-wiki` in Codex or `/metabrain-wiki` in Claude Code. Give it the virtual project root, such as `/projects/atlas`. It checks for project configuration, a project index, and a recent-activity note. For an existing project, it identifies occupied paths and applies missing setup when requested. A preview request returns proposed changes. Read the store and project guidance before proposing changes.
 
         Use the same store, daemon endpoint or direct connection, and project root for the rest of the task. Keep the wiki's operation entry with the changes it describes in the reviewed operation.
 
-        For example, ask `metabrain-wiki-ingest` to capture two design reviews and prepare a decision that cites both. Review their source captures and the single operation before applying it. In a fresh session, ask `metabrain-wiki-query` for a Deep answer using the same project root. It can reopen both retained passages, connect related notes, and identify unresolved disagreement. Ask `metabrain-save` separately if you want to preserve a specific conclusion.
+        For example, ask `metabrain-wiki-ingest` to capture two design reviews and save a decision that cites both. The skill verifies the proposed citations, applies one versioned operation, and reports the result. In a fresh session, ask `metabrain-wiki-query` for a Deep answer using the same project root. It can reopen both retained passages, connect related notes, and identify unresolved disagreement. Ask `metabrain-save` separately if you want to preserve a specific conclusion.
 
         Use `mb preview /projects/atlas/decisions.base --project /projects/atlas` to preview a saved table. Pass `--body-file` to inspect a local draft before proposing any store changes. The same command checks JSON Canvas boards.
 
         Use `mb man search` for CLI options. Use `mb ensure-guide` to install this guide in an existing store that lacks it.
         """ + "\n",
-        metadata: ["guide-revision": "9"]
+        metadata: ["guide-revision": "10"]
     )
 }

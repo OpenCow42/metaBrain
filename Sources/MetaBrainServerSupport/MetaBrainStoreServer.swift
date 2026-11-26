@@ -147,8 +147,8 @@ public actor MetaBrainStoreServer {
         return .patch(PatchOutput(document))
     }
 
-    public func inspectOperation(_ operation: ProjectOperation) async throws -> OperationPreview {
-        try await store.inspectOperation(operation)
+    public func inspectOperation(_ operation: ProjectOperation, checkCitations: Bool = false) async throws -> OperationPreview {
+        try await store.inspectOperation(operation, checkCitations: checkCitations)
     }
 
     public func applyOperation(_ preview: OperationPreview) async throws -> OperationReceipt {

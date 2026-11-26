@@ -7,4 +7,4 @@ Frame the choice in terms of the user's goal, constraints, and who bears the cos
 
 Weigh realistic alternatives, including failure modes, downstream effects, and the effort or trust expected of the people affected. Use analogies and check for decision bias where they affect the choice. Give a concise recommendation proportionate to the evidence and the cost of being wrong, with the strongest counterargument. Identify a practical verification or falsification step, what outcomes would change the recommendation, and when to revisit it. If evidence is thin, recommend a reversible step or defer the consequential choice.
 
-The review uses read-only project access. Save only on a fresh request identifying what to keep. Use the [save skill](../metabrain-save/SKILL.md) for its preview and apply authorization.
+The review uses read-only project access. Save only on a fresh request identifying what to keep. Use the [save skill](../metabrain-save/SKILL.md) for its versioned write workflow.

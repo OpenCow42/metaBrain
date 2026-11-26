@@ -4,10 +4,12 @@ import Foundation
 public struct DocumentLintQuery: Equatable, Sendable {
     public var path: DocumentPath?
     public var includeOrphans: Bool
+    public var includeReferences: Bool
 
-    public init(path: DocumentPath? = nil, includeOrphans: Bool = false) {
+    public init(path: DocumentPath? = nil, includeOrphans: Bool = false, includeReferences: Bool = false) {
         self.path = path
         self.includeOrphans = includeOrphans
+        self.includeReferences = includeReferences
     }
 }
 
@@ -102,8 +104,9 @@ public struct DocumentLintReport: Codable, Equatable, Sendable {
     /// Counts keyed by `DocumentLintKind.rawValue`. Link and orphan checks include zero counts.
     public let counts: [String: Int]
     public let findings: [DocumentLintFinding]
+    public let referenceChecks: [ReferenceCheck]?
 
-    init(path: String, documentsChecked: Int, findings: [DocumentLintFinding]) {
+    init(path: String, documentsChecked: Int, findings: [DocumentLintFinding], referenceChecks: [ReferenceCheck]? = nil) {
         self.path = path
         self.documentsChecked = documentsChecked
         var counts = Dictionary(uniqueKeysWithValues: DocumentLintKind.allCases
@@ -112,5 +115,6 @@ public struct DocumentLintReport: Codable, Equatable, Sendable {
         for finding in findings { counts[finding.kind.rawValue, default: 0] += 1 }
         self.counts = counts
         self.findings = findings
+        self.referenceChecks = referenceChecks
     }
 }

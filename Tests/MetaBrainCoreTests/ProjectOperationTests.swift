@@ -409,3 +409,255 @@ func projectOperationRejectsStaleTargetWithoutWritingOtherDocuments(change: Stri
         #expect(try await store.applyOperation(preview) == receipt)
     }
 }
+
+@Test func operationCitationCheckUsesTheProposedBatchWithoutWriting() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let project = try DocumentPath("/project")
+        let source = try DocumentPath("/project/source.md")
+        let note = try DocumentPath("/project/note.md")
+        let id = UUID()
+        let sourceInput = DocumentInput(path: source, body: "## Lines 17–37\n\n~~~\nQuoted evidence.\n~~~\n^original")
+        let planned = ProjectOperation(operationID: id, project: project, documents: [sourceInput])
+        let ref = "\(planned.creationID(for: source).rawValue)@1#^original"
+        let draft = ProjectOperation(operationID: id, project: project, documents: [
+            sourceInput,
+            DocumentInput(path: note, body: """
+                [Original](source.md#^original)
+                [[/project/source.md#Lines 17–37]]
+                [Pinned](metabrain-ref:\(ref))
+                [[source.md#^missing]]
+                [Bad ref](metabrain-ref:invalid)
+                """)
+        ])
+        let checked = try await store.inspectOperation(draft, checkCitations: true)
+        let results = try #require(checked.citationChecks)
+        #expect(results.map(\.link.status) == [.resolved, .resolved, .resolved, .unresolved, .unresolved])
+        #expect(results[0].passage?.passage.text == "Quoted evidence.\n")
+        #expect(results[1].passage?.passage.text.contains("Quoted evidence.") == true)
+        #expect(results[2].passage?.passage.text == results[0].passage?.passage.text)
+        #expect(try await store.getDocument(.path(note)) == nil)
+        #expect(try await store.inspectOperation(draft).citationChecks == nil)
+
+        let fixed = ProjectOperation(operationID: id, project: project, documents: [
+            sourceInput, DocumentInput(path: note, body: "[Original](source.md#^original)\n[Cited](metabrain-ref:\(ref))")
+        ])
+        let ready = try await store.inspectOperation(fixed, checkCitations: true)
+        let receipt = try await store.applyOperation(ready)
+        #expect(receipt == (try await store.applyOperation(ready)))
+        #expect(try await store.lint(DocumentLintQuery(path: project)).findings.isEmpty)
+
+        let edited = ProjectOperation(operationID: UUID(), project: project, documents: [
+            DocumentInput(path: note, body: "New introduction.\n[Original](source.md#^original)\n[Cited](metabrain-ref:\(ref))")
+        ])
+        #expect(try await store.inspectOperation(edited, checkCitations: true).citationChecks?.isEmpty == true)
+    }
+}
+
+@Test func citationCheckReportsAmbiguousTargetsAndInvalidRangesOnALegacyLayout() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let first = try DocumentPath("/project/a/shared.md")
+        let second = try DocumentPath("/project/b/shared.md")
+        let stored = try await store.putDocument(DocumentInput(path: first, body: "One ^same\n\nTwo ^same"))
+        _ = try await store.putDocument(DocumentInput(path: second, body: "Other"))
+        try await store.writeRawValue(Data([1]), forKey: MetaBrainKeyspace.citationLayout)
+        let badRange = "\(stored.id.rawValue)@1#0-999"
+        let op = ProjectOperation(operationID: UUID(), project: try DocumentPath("/project"), documents: [
+            DocumentInput(path: try DocumentPath("/project/note.md"), body: """
+                [[shared]]
+                [[/project/a/shared.md#^same]]
+                [Range](metabrain-ref:\(badRange))
+                """)
+        ])
+        let checks = try #require(try await store.inspectOperation(op, checkCitations: true).citationChecks)
+        #expect(checks.map(\.link.status) == [.ambiguous, .ambiguous, .unresolved])
+        #expect(checks.first?.link.candidates.map(\.path) == [first, second])
+        #expect(try await store.rawValue(forKey: MetaBrainKeyspace.citationLayout) == Data([1]))
+    }
+}
+
+@Test func citationCheckAccountsForARevisionPrunedByTheProposedWrite() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let source = try DocumentPath("/project/source.md")
+        let note = try DocumentPath("/project/note.md")
+        let old = try await store.putDocument(DocumentInput(path: source, body: "Before ^result"))
+        let ref = "\(old.id.rawValue)@1#^result"
+        let op = ProjectOperation(operationID: UUID(), project: try DocumentPath("/project"), documents: [
+            DocumentInput(path: source, body: "After ^result", retention: .keepMostRecent(1)),
+            DocumentInput(path: note, body: "[Historical](metabrain-ref:\(ref))")
+        ])
+        let checks = try #require(try await store.inspectOperation(op, checkCitations: true).citationChecks)
+        #expect(checks.count == 1)
+        #expect(checks.first?.link.status == .unresolved)
+        #expect(try await store.getEvidence(EvidenceReference(ref)).items.first?.text == "Before")
+    }
+}
+
+@Test func referenceInventoryDistinguishesStoreEvidenceAndExternalLocations() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let root = try DocumentPath("/project")
+        let evidence = try DocumentPath("/project/evidence.md")
+        let note = try DocumentPath("/project/note.md")
+        let bytes = Data("literal source\n".utf8)
+        let chunk = try await store.stageSourceChunk(bytes)
+        let blob = try await store.finishSourceBlob(chunks: [chunk])
+        let source = try await store.putDocument(DocumentInput(
+            path: evidence, body: "## Lines 17–37\n\n~~~\nliteral source\n~~~\n^original",
+            sourceCapture: SourceCapture(blob: blob, filename: "readme.md", mediaType: "text/markdown",
+                                         origin: "https://example.org/origin")
+        ))
+        let retained = try EvidenceReference("\(source.id.rawValue)@1#^original")
+        let claim = ProjectClaim(id: UUID(), text: "A source has been captured.", state: .provisional, evidence: [
+            ClaimEvidence(relation: .supports, ref: retained)
+        ])
+        let create = ProjectOperation(operationID: UUID(), project: root, documents: [
+            DocumentInput(path: note, body: """
+                🧪 [[evidence.md#^original]] [[evidence.md#Lines 17–37]]
+                [[evidence.md#^missing]] [[missing]]
+                [Retained](metabrain-ref:\(retained.rawValue))
+                [Pruned](metabrain-ref:\(source.id.rawValue)@99#^original)
+                [Malformed](metabrain-ref:invalid)
+                [Web](https://example.org/page#section)
+                [Mail](mailto:owner@example.org)
+                [Malformatted](https://)
+                [Private parameters](https://example.org/?sig=something-private)
+                """, references: [
+                    .documentID(source.id), .path(try DocumentPath("/project/no-file")),
+                    .externalURL(try #require(URL(string: "https://example.org/native")))
+                ], claims: [claim])
+        ])
+        _ = try await store.applyOperation(store.inspectOperation(create))
+        let report = try await store.lint(DocumentLintQuery(path: root, includeReferences: true))
+        let refs = try #require(report.referenceChecks)
+        let markdown = refs.filter { $0.location == .markdown }
+        #expect(markdown.map(\.status) == [
+            .resolved, .resolved, .missingAnchor, .missingDocument, .resolved, .unavailableRevision,
+            .invalidReference, .notChecked, .unsupportedURL, .invalidReference, .blockedURL
+        ])
+        #expect(markdown[0].start == 2)
+        #expect(markdown[0].targetID == source.id)
+        #expect(markdown[0].passage?.passage.text == "literal source\n")
+        #expect(markdown[5].targetID == source.id && markdown[5].targetVersion == 99)
+        #expect(!markdown[10].destination.contains("something-private"))
+        #expect(refs.filter { $0.location == .captureOrigin }.map(\.destination) == ["https://example.org/origin"])
+        #expect(refs.filter { $0.location == .documentReference }.map(\.status) == [.resolved, .missingDocument, .notChecked])
+        #expect(refs.first { $0.claimID == claim.id }?.status == .resolved)
+        #expect(try await store.lint(DocumentLintQuery(path: root)).referenceChecks == nil)
+    }
+}
+
+@Test func checkedOperationRejectsAnAnchorChangedAfterInspection() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let root = try DocumentPath("/project")
+        let source = try DocumentPath("/project/source.md")
+        let note = try DocumentPath("/project/note.md")
+        _ = try await store.putDocument(DocumentInput(path: source, body: "Old evidence. ^result"))
+        let draft = ProjectOperation(operationID: UUID(), project: root, documents: [
+            DocumentInput(path: note, body: "[Evidence](source.md#^result)")
+        ])
+        let preview = try await store.inspectOperation(draft, checkCitations: true)
+        #expect(preview.referenceChecks?.first?.passage?.passage.text == "Old evidence.")
+        _ = try await store.putDocument(DocumentInput(path: source, body: "Concurrent evidence. ^result"))
+        await #expect(throws: ProjectOperationError.conflict("A checked reference changed after inspection. Inspect the operation again.")) {
+            try await store.applyOperation(preview)
+        }
+        #expect(try await store.getDocument(.path(note)) == nil)
+    }
+}
+
+@Test func checkedOperationFindsDependentAnchorsAndPrunedEvidence() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let root = try DocumentPath("/project")
+        let source = try DocumentPath("/project/source.md")
+        let note = try DocumentPath("/project/note.md")
+        let capture = try await store.putDocument(DocumentInput(path: source, body: "Original evidence. ^result"))
+        let rawRef = "\(capture.id.rawValue)@1#^result"
+        let ref = try EvidenceReference(rawRef)
+        _ = try await store.putDocument(DocumentInput(path: note, body: """
+            [[source.md#^result]] [[source.md#^old-missing]]
+            [Retained](metabrain-ref:\(rawRef))
+            """))
+        let owner = try DocumentPath("/project/decision")
+        let setup = ProjectOperation(operationID: UUID(), project: root, documents: [
+            DocumentInput(path: owner, body: "Decision", claims: [
+                ProjectClaim(id: UUID(), text: "Evidence", state: .provisional, evidence: [ClaimEvidence(relation: .supports, ref: ref)])
+            ])
+        ])
+        _ = try await store.applyOperation(store.inspectOperation(setup))
+        let draft = ProjectOperation(operationID: UUID(), project: root, documents: [
+            DocumentInput(path: source, body: "Revised evidence.", retention: .keepMostRecent(1))
+        ])
+        let preview = try await store.inspectOperation(draft, checkCitations: true)
+        let refs = try #require(preview.referenceChecks)
+        #expect(refs.filter { $0.blocksApply == true }.map(\.status) == [.unavailableRevision, .missingAnchor, .unavailableRevision])
+        #expect(refs.contains { $0.status == .missingAnchor && $0.blocksApply == nil })
+        await #expect(throws: ProjectOperationError.invalid("The proposed operation has invalid references. Inspect it with --check-citations for details.")) {
+            try await store.applyOperation(preview)
+        }
+        #expect(try await store.getEvidence(ref).items.first?.text == "Original evidence.")
+    }
+}
+
+@Test func checkedWritesValidateNativeFieldsAndExistingCitationsInTheBatch() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let root = try DocumentPath("/project")
+        let source = try DocumentPath("/project/source.md")
+        let owner = try DocumentPath("/project/owner.md")
+        let extra = try DocumentPath("/project/new.md")
+        let initial = try await store.putDocument(DocumentInput(path: source, body: "Evidence. ^result"))
+        let retained = try EvidenceReference("\(initial.id.rawValue)@1#^result")
+        let oldLink = "[[source.md#^result]]"
+        let body = oldLink + "\n[Web](https://example.org/site)"
+        let claim = ProjectClaim(id: UUID(), text: "Evidence", state: .provisional, evidence: [
+            ClaimEvidence(relation: .supports, ref: retained)
+        ])
+        let setup = ProjectOperation(operationID: UUID(), project: root, documents: [
+            DocumentInput(path: owner, body: body, references: [.documentID(initial.id)], claims: [claim])
+        ])
+        _ = try await store.applyOperation(store.inspectOperation(setup))
+        let draft = ProjectOperation(operationID: UUID(), project: root, documents: [
+            DocumentInput(path: source, body: "Changed evidence. ^result", retention: .keepMostRecent(1)),
+            DocumentInput(path: owner, body: "New text.\n\(body)", references: [.documentID(initial.id), .path(extra)]),
+            DocumentInput(path: extra, body: "In the batch.")
+        ])
+        let checks = try #require(try await store.inspectOperation(draft, checkCitations: true).referenceChecks)
+        #expect(checks.map(\.location) == [.markdown, .documentReference, .claimEvidence])
+        #expect(checks[0].passage?.passage.text == "Changed evidence.")
+        #expect(checks[1].targetID == draft.creationID(for: extra))
+        #expect(checks[2].blocksApply == true)
+        #expect(checks[2].status == .unavailableRevision)
+    }
+}
+
+@Test func checkedOperationsDetectMarkdownOptInButSkipMetadataOnlyDependents() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let root = try DocumentPath("/project")
+        let source = try DocumentPath("/project/source")
+        let owner = try DocumentPath("/project/owner.md")
+        let body = "Example. ^result"
+        _ = try await store.putDocument(DocumentInput(path: source, body: body))
+        _ = try await store.putDocument(DocumentInput(path: owner, body: "[[source#^result]]"))
+
+        let enable = ProjectOperation(operationID: UUID(), project: root, documents: [
+            DocumentInput(path: source, body: body, markdown: true)
+        ])
+        let checked = try await store.inspectOperation(enable, checkCitations: true)
+        #expect(checked.referenceChecks?.first?.passage?.passage.text == "Example.")
+        #expect(checked.referenceChecks?.first?.sourcePath == owner)
+        _ = try await store.applyOperation(checked)
+
+        let metadata = ProjectOperation(operationID: UUID(), project: root, documents: [
+            DocumentInput(path: source, body: body, tags: ["provenance"])
+        ])
+        let unchangedAnchor = try await store.inspectOperation(metadata, checkCitations: true)
+        #expect(unchangedAnchor.referenceChecks == [])
+        _ = try await store.applyOperation(unchangedAnchor)
+    }
+}

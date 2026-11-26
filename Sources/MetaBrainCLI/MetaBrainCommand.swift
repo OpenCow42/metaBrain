@@ -596,17 +596,23 @@ extension MetaBrainCommand {
             @OptionGroup var storeOptions: StoreOptions
             @Argument(help: "JSON file describing the project operation.")
             var file: String
+            @Flag(help: "Check proposed citations and include their resolved passages in the preview.")
+            var checkCitations = false
 
             func run() async throws {
                 let data = try Data(contentsOf: URL.expandingShellPath(file, isDirectory: false))
                 let operation = try MetaBrainJSON.decoder().decode(ProjectOperation.self, from: data)
                 let preview: OperationPreview
                 if let client = try storeOptions.serverClient() {
-                    preview = try client.post("/v1/operation-inspect", request: operation)
+                    let route = checkCitations ? "/v1/operation-check-citations" : "/v1/operation-inspect"
+                    preview = try client.post(route, request: operation)
                 } else {
                     preview = try await storeOptions.withOpenStore { store in
-                        try await store.inspectOperation(operation)
+                        try await store.inspectOperation(operation, checkCitations: checkCitations)
                     }
+                }
+                if checkCitations, preview.referenceGuard == nil {
+                    throw ValidationError("This daemon does not support guarded citation checks. Upgrade mbd or use --no-server.")
                 }
                 try printJSON(preview)
             }
@@ -1020,11 +1026,24 @@ extension MetaBrainCommand {
         @Flag(help: "Report Markdown notes with no incoming link from another document.")
         var orphans = false
 
+        @Flag(help: "List and validate Markdown links, stored references, retained citations, and URL capture origins.")
+        var references = false
+
+        @Flag(help: "Probe public HTTP and HTTPS URLs from this CLI. Requires an explicit path and curl.")
+        var checkExternal = false
+
         @Flag(help: "Exit with status 3 when any selected check reports a finding.")
         var strict = false
 
+        func validate() throws {
+            if checkExternal, path == nil {
+                throw ValidationError("--check-external requires an explicit document or subtree path.")
+            }
+        }
+
         func run() async throws {
-            let request = ServerLintRequest(path: path, includeOrphans: orphans)
+            let request = ServerLintRequest(path: path, includeOrphans: orphans,
+                                            includeReferences: references || checkExternal ? true : nil)
             let query = try request.lintQuery()
             let report: DocumentLintReport
             if let client = try storeOptions.serverClient() {
@@ -1034,6 +1053,12 @@ extension MetaBrainCommand {
                     try await store.lint(query)
                 }
             }
+            if request.includeReferences == true, report.referenceChecks == nil {
+                throw ValidationError("This daemon does not support reference inventories. Upgrade mbd or use --no-server.")
+            }
+            let external = if checkExternal, let checks = report.referenceChecks {
+                ExternalReferenceProbe.run(checks)
+            } else { nil as [ExternalURLCheck]? }
             switch output.format {
             case .text:
                 for finding in report.findings {
@@ -1057,12 +1082,30 @@ extension MetaBrainCommand {
                     report.counts[kind.rawValue].map { "\(kind.rawValue)=\($0)" }
                 }
                 print(counts.joined(separator: " "))
+                for reference in report.referenceChecks ?? [] {
+                    let field = if let start = reference.start, let end = reference.end {
+                        ":\(start)-\(end)"
+                    } else { "." + reference.location.rawValue }
+                    print("\(reference.sourcePath.rawValue)@\(reference.sourceVersion)\(field)\t\(reference.kind.rawValue)\t\(reference.status.rawValue)\t\(reference.destination)")
+                }
+                for check in external ?? [] {
+                    let details = [check.httpStatus.map(String.init), check.reason].compactMap { $0 }.joined(separator: " ")
+                    print("\(check.status.rawValue)\t\(details)\t\(check.url)\t\(check.finalURL ?? "")")
+                }
             case .json:
-                try printJSON(report)
+                if let external {
+                    try printJSON(ExternalLintOutput(report: report, externalChecks: external))
+                } else {
+                    try printJSON(report)
+                }
             case .jsonl:
                 try printJSONLines(report.findings)
+                try printJSONLines(report.referenceChecks ?? [])
+                try printJSONLines(external ?? [])
             }
-            if strict, !report.findings.isEmpty { throw ExitCode(3) }
+            let referenceFailure = report.referenceChecks?.contains { $0.status.isDefect } ?? false
+            let externalFailure = external?.contains(where: { !$0.verified }) ?? false
+            if strict, !report.findings.isEmpty || referenceFailure || externalFailure { throw ExitCode(3) }
         }
     }
 
