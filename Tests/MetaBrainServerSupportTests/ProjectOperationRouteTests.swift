@@ -20,7 +20,8 @@ import Testing
 
     let inspect = "/v1/operation-inspect"
     let apply = "/v1/operation-apply"
-    for path in [inspect, apply] {
+    let check = "/v1/operation-check-citations"
+    for path in [inspect, check, apply] {
         let response = await router.route(ServerHTTPRequest(method: .get, path: path))
         #expect(response.statusCode == 405)
     }
@@ -32,11 +33,12 @@ import Testing
     #expect(invalid.statusCode == 400)
     #expect(try MetaBrainJSON.decoder().decode(ServerErrorPayload.self, from: invalid.body).error == "invalid_request")
 
-    let preview = try await postOperation(router, inspect, operation)
+    let preview = try await postOperation(router, check, operation)
     #expect(preview.statusCode == 200)
     let decodedPreview = try MetaBrainJSON.decoder().decode(OperationPreview.self, from: preview.body)
     #expect(decodedPreview.operation == operation)
     #expect(decodedPreview.targets.map(\.version) == [0, 0])
+    #expect(decodedPreview.citationChecks?.map(\.link.status) == [.resolved])
     let reference = DocumentReferenceDTO(kind: .path, value: operation.documents[1].path.rawValue)
     let getRequest = ServerGetRequest(reference: reference, trackingRead: false)
     let before = try await postOperation(router, "/v1/get", getRequest)

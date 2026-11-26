@@ -409,3 +409,70 @@ func projectOperationRejectsStaleTargetWithoutWritingOtherDocuments(change: Stri
         #expect(try await store.applyOperation(preview) == receipt)
     }
 }
+
+@Test func operationCitationCheckUsesTheProposedBatchWithoutWriting() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let project = try DocumentPath("/project")
+        let source = try DocumentPath("/project/source.md")
+        let note = try DocumentPath("/project/note.md")
+        let id = UUID()
+        let sourceInput = DocumentInput(path: source, body: "## Lines 17–37\n\n~~~\nQuoted evidence.\n~~~\n^original")
+        let planned = ProjectOperation(operationID: id, project: project, documents: [sourceInput])
+        let ref = "\(planned.creationID(for: source).rawValue)@1#^original"
+        let draft = ProjectOperation(operationID: id, project: project, documents: [
+            sourceInput,
+            DocumentInput(path: note, body: """
+                [Original](source.md#^original)
+                [[/project/source.md#Lines 17–37]]
+                [Pinned](metabrain-ref:\(ref))
+                [[source.md#^missing]]
+                [Bad ref](metabrain-ref:invalid)
+                """)
+        ])
+        let checked = try await store.inspectOperation(draft, checkCitations: true)
+        let results = try #require(checked.citationChecks)
+        #expect(results.map(\.link.status) == [.resolved, .resolved, .resolved, .unresolved, .unresolved])
+        #expect(results[0].passage?.passage.text == "Quoted evidence.\n")
+        #expect(results[1].passage?.passage.text.contains("Quoted evidence.") == true)
+        #expect(results[2].passage?.passage.text == results[0].passage?.passage.text)
+        #expect(try await store.getDocument(.path(note)) == nil)
+        #expect(try await store.inspectOperation(draft).citationChecks == nil)
+
+        let fixed = ProjectOperation(operationID: id, project: project, documents: [
+            sourceInput, DocumentInput(path: note, body: "[Original](source.md#^original)\n[Cited](metabrain-ref:\(ref))")
+        ])
+        let ready = try await store.inspectOperation(fixed, checkCitations: true)
+        let receipt = try await store.applyOperation(ready)
+        #expect(receipt == (try await store.applyOperation(ready)))
+        #expect(try await store.lint(DocumentLintQuery(path: project)).findings.isEmpty)
+
+        let edited = ProjectOperation(operationID: UUID(), project: project, documents: [
+            DocumentInput(path: note, body: "New introduction.\n[Original](source.md#^original)\n[Cited](metabrain-ref:\(ref))")
+        ])
+        #expect(try await store.inspectOperation(edited, checkCitations: true).citationChecks?.isEmpty == true)
+    }
+}
+
+@Test func citationCheckReportsAmbiguousTargetsAndInvalidRangesOnALegacyLayout() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let first = try DocumentPath("/project/a/shared.md")
+        let second = try DocumentPath("/project/b/shared.md")
+        let stored = try await store.putDocument(DocumentInput(path: first, body: "One ^same\n\nTwo ^same"))
+        _ = try await store.putDocument(DocumentInput(path: second, body: "Other"))
+        try await store.writeRawValue(Data([1]), forKey: MetaBrainKeyspace.citationLayout)
+        let badRange = "\(stored.id.rawValue)@1#0-999"
+        let op = ProjectOperation(operationID: UUID(), project: try DocumentPath("/project"), documents: [
+            DocumentInput(path: try DocumentPath("/project/note.md"), body: """
+                [[shared]]
+                [[/project/a/shared.md#^same]]
+                [Range](metabrain-ref:\(badRange))
+                """)
+        ])
+        let checks = try #require(try await store.inspectOperation(op, checkCitations: true).citationChecks)
+        #expect(checks.map(\.link.status) == [.ambiguous, .ambiguous, .unresolved])
+        #expect(checks.first?.link.candidates.map(\.path) == [first, second])
+        #expect(try await store.rawValue(forKey: MetaBrainKeyspace.citationLayout) == Data([1]))
+    }
+}

@@ -21,6 +21,16 @@ public struct EvidenceReference: Codable, Hashable, Sendable, CustomStringConver
     public let version: UInt64
     public let location: Location
 
+    public static let markdownLinkPrefix = "metabrain-ref:"
+
+    /// Decodes a store-local Markdown evidence link using the existing retained reference syntax.
+    public init?(markdownDestination: String) {
+        guard markdownDestination.hasPrefix(Self.markdownLinkPrefix),
+              let raw = String(markdownDestination.dropFirst(Self.markdownLinkPrefix.count)).removingPercentEncoding,
+              let reference = try? Self(raw) else { return nil }
+        self = reference
+    }
+
     /// Parses `DOCUMENTID@VERSION#START-END` or `DOCUMENTID@VERSION#^BLOCK`.
     public init(_ rawValue: String) throws {
         let components = rawValue.split(separator: "#", omittingEmptySubsequences: false)

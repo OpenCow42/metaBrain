@@ -66,6 +66,12 @@ public struct OperationCreation: Codable, Equatable, Sendable {
     public let documentID: DocumentID
 }
 
+/// The proposed resolution of an added, changed, or newly affected citation.
+public struct OperationCitationCheck: Codable, Equatable, Sendable {
+    public let link: DocumentLinkOccurrence
+    public let passage: DocumentPassage?
+}
+
 public struct OperationPreview: Codable, Equatable, Sendable {
     public let operation: ProjectOperation
     public let storePath: String
@@ -74,6 +80,8 @@ public struct OperationPreview: Codable, Equatable, Sendable {
     public let digest: String
     /// Derived from the reviewed operation and absent targets; older previews may omit it.
     public private(set) var creations: [OperationCreation]? = nil
+    /// Read-only diagnostics. Apply verifies the operation and its expected write targets.
+    public internal(set) var citationChecks: [OperationCitationCheck]? = nil
 
     static func make(
         operation: ProjectOperation,

@@ -378,9 +378,11 @@ the citation unresolved even if a different document later occupies its path.
 New occurrences resolve against the current store.
 Distinct link labels help preserve each binding when reordering citations.
 Repeated occurrences with identical syntax and labels are matched in source order.
-The author's Markdown stays verbatim. For an exact quote use the versioned
-evidence `ref` or select a retained revision explicitly, for example with
-`mb get --id "$document_id" --version 1 --block keep-last`.
+The author's Markdown stays verbatim. To make an exact citation clickable in
+MetaBrainExplorer, put the verified value returned by `mb get --ref` or evidence
+search in a store-local link, for example `[Quoted passage](metabrain-ref:REF)`.
+That link opens the retained version. An ordinary heading or block link opens
+the current source. Versioned links can also be checked with `mb lint`.
 
 Use `--ref-id` for an explicit document relationship that follows its target,
 `--ref-path` for a location, or `--ref-url` to record an external source.
@@ -390,6 +392,10 @@ Keep each citation on one line. Inline Markdown links, reference-style links
 with a single-line definition, wikilinks, and their image/embed forms are
 indexed. Separate a reference definition from the preceding paragraph with a
 blank line. Code examples and comments can contain literal link syntax.
+A standalone `^original` after a closed top-level fence, with optional blank
+lines between, names the exact fenced contents, including any final newline.
+Use `mb get PATH --block original` to reopen that text. An ID inside the fence
+remains literal. Duplicate IDs make the citation ambiguous.
 
 The first citation lookup or document edit upgrades a store with the original
 citation index. It checks current Markdown bodies again and preserves the IDs
@@ -404,7 +410,7 @@ Run `mb lint` to audit the whole store or pass a virtual path to select that
 document and its descendants. Links and backlinks can cross the selected path.
 Lint reports each missing or ambiguous document target or heading/block anchor.
 It checks current Markdown, including embeds and documents marked with
-`--markdown`, and skips external URLs.
+`--markdown`, and recognizes store-local retained citations separately from external URLs.
 
 For example, the following commands in a scratch store create a working citation
 and then remove the block it points to.
@@ -569,7 +575,7 @@ The CLI and daemon stay thin. Shared behavior belongs in `MetaBrainCore`, while
 server-facing transport DTOs live in the internal `MetaBrainServerSupport`
 target when they are not part of the core storage model.
 
-MetaBrainExplorer is the first optional viewer. Check it out at `../MetaBrainExplorer` and open its Xcode project. Inspect a decision's cited passages, follow a moved source by document ID, or export the retained original. In a configured project, open a Canvas file card to navigate to its note or preview a saved table with its filters applied. The app can open the store directly or connect through the local daemon. [MetaBrainExplorer](https://github.com/OpenCow42/MetaBrainExplorer)
+MetaBrainExplorer is the first optional viewer. Check it out at `../MetaBrainExplorer` and open its Xcode project. Follow internal links to documents, headings, and blocks and use Back or Forward to return to a reading position. Open a retained citation from a rendered note or a decision claim, follow a moved source by document ID, or export the retained original. In a configured project, open a Canvas file card to navigate to its note or preview a saved table with its filters applied. The app can open the store directly or connect through the local daemon. [MetaBrainExplorer](https://github.com/OpenCow42/MetaBrainExplorer)
 
 ## Implemented Store Behavior
 

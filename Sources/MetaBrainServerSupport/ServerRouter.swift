@@ -111,11 +111,15 @@ public struct ServerRouter: Sendable {
             return await routeStoreOperation(request) { storeServer in
                 try await storeServer.inspectOperation(decode(ProjectOperation.self, from: request))
             }
+        case (.post, "/v1/operation-check-citations"):
+            return await routeStoreOperation(request) { storeServer in
+                try await storeServer.inspectOperation(decode(ProjectOperation.self, from: request), checkCitations: true)
+            }
         case (.post, "/v1/operation-apply"):
             return await routeStoreOperation(request) { storeServer in
                 try await storeServer.applyOperation(decode(OperationPreview.self, from: request))
             }
-        case (_, "/v1/operation-inspect"), (_, "/v1/operation-apply"):
+        case (_, "/v1/operation-inspect"), (_, "/v1/operation-check-citations"), (_, "/v1/operation-apply"):
             return methodNotAllowed(request, allowedMethod: "POST")
         case (.post, "/v1/source-stage-chunk"):
             return await routeStoreOperation(request) { storeServer in

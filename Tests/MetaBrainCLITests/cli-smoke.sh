@@ -570,9 +570,10 @@ check_project_operation() {
 {"operationID":"c44983b2-46c5-44a7-9877-227ce5b412ca","project":{"rawValue":"/projects/demo"},"documents":[{"path":{"rawValue":"/projects/demo/source.md"},"body":"Source text","metadata":{},"references":[],"tags":[]},{"path":{"rawValue":"/projects/demo/decision.md"},"body":"[[source]]","metadata":{},"references":[],"tags":[]}]}
 JSON
     "${METABRAIN[@]}" --store "$store" --no-server init --empty >/dev/null
-    "${METABRAIN[@]}" operation --store "$store" --no-server inspect "$operation" >"$direct_preview"
-    "${command[@]}" operation inspect "$operation" >"$preview"
+    "${METABRAIN[@]}" operation --store "$store" --no-server inspect "$operation" --check-citations >"$direct_preview"
+    "${command[@]}" operation inspect "$operation" --check-citations >"$preview"
     cmp "$direct_preview" "$preview"
+    python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["citationChecks"][0]["link"]["status"] == "resolved"' "$preview"
     if "${command[@]}" get /projects/demo/decision.md >"$output" 2>"$error"; then
         echo "Operation inspect wrote the decision before apply" >&2
         exit 1

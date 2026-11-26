@@ -70,6 +70,7 @@ private struct MarkdownScanner {
     let lines: [Range<Int>]
     var activeLines: [Bool]
     var visible: [Bool]
+    var closedFences: [Int: Range<Int>] = [:]
 
     init(_ body: String) {
         let characters = Array(body)
@@ -94,7 +95,7 @@ private struct MarkdownScanner {
                 return line == "---" || line == "..."
             }
         }
-        var fence: (character: Character, length: Int, quoteDepth: Int)?
+        var fence: (character: Character, length: Int, quoteDepth: Int, contentStart: Int)?
         var literalBlockEnd = 0
         var paragraphOpen = false
         var previousQuoteDepth = 0
@@ -115,6 +116,9 @@ private struct MarkdownScanner {
                    characters[quote.contents.lowerBound] == open.character {
                     let end = run(of: open.character, since: quote.contents.lowerBound, until: quote.contents.upperBound)
                     if end - quote.contents.lowerBound >= open.length, trimmed(end..<quote.contents.upperBound).isEmpty {
+                        if open.quoteDepth == 0 {
+                            closedFences[number] = open.contentStart..<line.lowerBound
+                        }
                         fence = nil
                     }
                 }
@@ -135,7 +139,7 @@ private struct MarkdownScanner {
                     maskLine(number)
                 } else {
                     if !indented, let marker = fenceMarker(block) {
-                        fence = (marker.character, marker.length, quote.depth)
+                        fence = (marker.character, marker.length, quote.depth, min(line.upperBound + 1, characters.count))
                         paragraphOpen = false
                         maskLine(number)
                         continue
@@ -245,10 +249,12 @@ private struct MarkdownScanner {
         var blocks: [MarkdownAnchor] = []
         var paragraph: Range<Int>?
         var precedingParagraph: Range<Int>?
+        var precedingFence: Range<Int>?
         for (number, line) in lines.enumerated() {
             guard activeLines[number], !definitions.contains(number) else {
                 paragraph = nil
                 precedingParagraph = nil
+                precedingFence = closedFences[number]
                 continue
             }
             let contents = trimmed(line)
@@ -257,6 +263,8 @@ private struct MarkdownScanner {
                 paragraph = nil
                 continue
             }
+            let fence = precedingFence
+            precedingFence = nil
             if let heading = atxHeading(contents, start: line.lowerBound) {
                 headings.append(heading)
                 paragraph = nil
@@ -277,7 +285,7 @@ private struct MarkdownScanner {
                 let prefix = trimmed(contents.lowerBound..<suffix.start)
                 let bodyRange: Range<Int>?
                 if prefix.isEmpty {
-                    bodyRange = paragraph ?? precedingParagraph
+                    bodyRange = paragraph ?? precedingParagraph ?? fence
                 } else {
                     bodyRange = (paragraph?.lowerBound ?? prefix.lowerBound)..<prefix.upperBound
                 }

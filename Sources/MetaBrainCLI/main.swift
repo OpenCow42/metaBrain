@@ -596,16 +596,19 @@ extension MetaBrainCommand {
             @OptionGroup var storeOptions: StoreOptions
             @Argument(help: "JSON file describing the project operation.")
             var file: String
+            @Flag(help: "Check proposed citations and include their resolved passages in the preview.")
+            var checkCitations = false
 
             func run() async throws {
                 let data = try Data(contentsOf: URL.expandingShellPath(file, isDirectory: false))
                 let operation = try MetaBrainJSON.decoder().decode(ProjectOperation.self, from: data)
                 let preview: OperationPreview
                 if let client = try storeOptions.serverClient() {
-                    preview = try client.post("/v1/operation-inspect", request: operation)
+                    let route = checkCitations ? "/v1/operation-check-citations" : "/v1/operation-inspect"
+                    preview = try client.post(route, request: operation)
                 } else {
                     preview = try await storeOptions.withOpenStore { store in
-                        try await store.inspectOperation(operation)
+                        try await store.inspectOperation(operation, checkCitations: checkCitations)
                     }
                 }
                 try printJSON(preview)

@@ -61,6 +61,8 @@ struct MarkdownDestination {
 
     var isSelfLink: Bool { !isExternal && rawTarget.isEmpty && fragment != nil }
 
+    var selector: DocumentPassageSelector? { fragment.flatMap(DocumentPassageSelector.init(markdownFragment:)) }
+
     var bindableTarget: Data? {
         guard !isExternal, !rawTarget.isEmpty else { return nil }
         return Data(rawTarget.utf8)
