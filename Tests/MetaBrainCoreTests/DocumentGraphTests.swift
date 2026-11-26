@@ -16,7 +16,7 @@ import Testing
         ))
         let decision = try await store.putDocument(DocumentInput(
             path: DocumentPath("/project/decision.md"),
-            body: "[[reviews/source.md#^result]] and [[reviews/source.md#^result]]\n\n[[missing]] [[reviews/source.md#^gone]] [Site](https://example.test/)",
+            body: "[[reviews/source.md#^result]] and [[reviews/source.md#^result]]\n\n[Review]\n\n[[missing]] [[reviews/source.md#^gone]] [Site](https://example.test/)\n\n[Review]: reviews/source.md#^result",
             references: [.documentID(source.id)]
         ))
 
@@ -26,8 +26,8 @@ import Testing
         let edge = try #require(local.connections.first {
             $0.id.source == decision.id && $0.id.relationship == .markdown
         })
-        #expect(edge.count == 2)
-        #expect(edge.occurrences.count == 2)
+        #expect(edge.count == 3)
+        #expect(edge.occurrences.count == 3)
         #expect(local.diagnostics.map(\.destination) == ["missing", "reviews/source.md#^gone"])
 
         let deeper = try await store.graph(DocumentGraphQuery(scope: .note(id: decision.id, depth: 2)))

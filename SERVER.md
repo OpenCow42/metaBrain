@@ -284,6 +284,7 @@ POST /v1/get-version
 POST /v1/ensure-guide
 POST /v1/put-markdown
 POST /v1/links
+POST /v1/graph
 POST /v1/lint
 POST /v1/get-passage
 POST /v1/get-ref
