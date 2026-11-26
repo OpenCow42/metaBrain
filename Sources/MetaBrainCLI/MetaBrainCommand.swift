@@ -611,6 +611,9 @@ extension MetaBrainCommand {
                         try await store.inspectOperation(operation, checkCitations: checkCitations)
                     }
                 }
+                if checkCitations, preview.referenceGuard == nil {
+                    throw ValidationError("This daemon does not support guarded citation checks. Upgrade mbd or use --no-server.")
+                }
                 try printJSON(preview)
             }
         }
@@ -1023,11 +1026,24 @@ extension MetaBrainCommand {
         @Flag(help: "Report Markdown notes with no incoming link from another document.")
         var orphans = false
 
+        @Flag(help: "List and validate Markdown links, stored references, retained citations, and URL capture origins.")
+        var references = false
+
+        @Flag(help: "Probe public HTTP and HTTPS URLs from this CLI. Requires an explicit path and curl.")
+        var checkExternal = false
+
         @Flag(help: "Exit with status 3 when any selected check reports a finding.")
         var strict = false
 
+        func validate() throws {
+            if checkExternal, path == nil {
+                throw ValidationError("--check-external requires an explicit document or subtree path.")
+            }
+        }
+
         func run() async throws {
-            let request = ServerLintRequest(path: path, includeOrphans: orphans)
+            let request = ServerLintRequest(path: path, includeOrphans: orphans,
+                                            includeReferences: references || checkExternal ? true : nil)
             let query = try request.lintQuery()
             let report: DocumentLintReport
             if let client = try storeOptions.serverClient() {
@@ -1037,6 +1053,10 @@ extension MetaBrainCommand {
                     try await store.lint(query)
                 }
             }
+            if request.includeReferences == true, report.referenceChecks == nil {
+                throw ValidationError("This daemon does not support reference inventories. Upgrade mbd or use --no-server.")
+            }
+            let external = checkExternal ? ExternalReferenceProbe.run(report.referenceChecks ?? []) : nil
             switch output.format {
             case .text:
                 for finding in report.findings {
@@ -1060,12 +1080,27 @@ extension MetaBrainCommand {
                     report.counts[kind.rawValue].map { "\(kind.rawValue)=\($0)" }
                 }
                 print(counts.joined(separator: " "))
+                for reference in report.referenceChecks ?? [] {
+                    let field = reference.start.map { ":\($0)-\(reference.end ?? $0)" } ?? "." + reference.location.rawValue
+                    print("\(reference.sourcePath.rawValue)@\(reference.sourceVersion)\(field)\t\(reference.kind.rawValue)\t\(reference.status.rawValue)\t\(reference.destination)")
+                }
+                for check in external ?? [] {
+                    print("\(check.status.rawValue)\t\(check.httpStatus.map(String.init) ?? check.reason ?? "")\t\(check.url)\t\(check.finalURL ?? "")")
+                }
             case .json:
-                try printJSON(report)
+                if let external {
+                    try printJSON(ExternalLintOutput(report: report, externalChecks: external))
+                } else {
+                    try printJSON(report)
+                }
             case .jsonl:
                 try printJSONLines(report.findings)
+                try printJSONLines(report.referenceChecks ?? [])
+                try printJSONLines(external ?? [])
             }
-            if strict, !report.findings.isEmpty { throw ExitCode(3) }
+            let referenceFailure = report.referenceChecks?.contains { $0.status.isDefect } ?? false
+            let externalFailure = external?.contains(where: { !$0.verified }) ?? false
+            if strict, !report.findings.isEmpty || referenceFailure || externalFailure { throw ExitCode(3) }
         }
     }
 

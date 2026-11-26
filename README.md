@@ -410,7 +410,37 @@ Run `mb lint` to audit the whole store or pass a virtual path to select that
 document and its descendants. Links and backlinks can cross the selected path.
 Lint reports each missing or ambiguous document target or heading/block anchor.
 It checks current Markdown, including embeds and documents marked with
-`--markdown`, and recognizes store-local retained citations separately from external URLs.
+`--markdown`. Use `--references` for a machine-readable inventory that also
+covers native document references, claim evidence, and HTTP(S) capture origins.
+
+```sh
+mb lint /projects/demo --references --format json
+mb lint /projects/demo --check-external --format json
+mb operation inspect draft.json --check-citations > preview.json
+```
+
+The inventory returns a source revision and Markdown character range or stored
+field, a kind, a status, and any resolved target ID, revision, or exact passage.
+A retained citation with an unavailable revision is distinct from a missing
+live document. With `--references`, JSON includes `referenceChecks`. JSONL
+prints findings followed by reference entries and any live URL checks.
+
+`--check-external` includes the inventory and requires an explicit scope and
+`curl` on the calling machine. It makes bounded, deduplicated HTTP(S)
+requests and reports reachability independently in `externalChecks`. A run
+checks up to 100 distinct URLs and follows up to five redirects per URL. It
+uses HEAD and falls back to a bounded ranged GET if HEAD is unsupported. URL
+fragments are omitted from HTTP requests. Public redirects are checked one hop
+at a time. Private destinations and credential-bearing URLs are skipped.
+An HTTP response speaks to reachability. It cannot verify evidence, page
+contents, or an HTML anchor. Under `--strict`, store defects and unsuccessful
+requested probes return exit status 3. Unsupported schemes and credential-bearing
+URLs appear as inventory skips.
+
+Checked operation previews include new and affected references and their exact
+store passages. Apply blocks newly broken references and rechecks the inspected
+store results under the write lock. External reachability checks are separate
+from operation inspection and apply.
 
 For example, the following commands in a scratch store create a working citation
 and then remove the block it points to.

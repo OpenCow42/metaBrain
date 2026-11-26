@@ -322,7 +322,7 @@ Use 1 MiB chunks, with a possibly shorter final chunk. An empty file has an empt
 
 The `/v1/get` and `/v1/get-version` results can include `claims`, `sourceProfile`, and `sourceCapture`. Claims use the same stable document IDs and retained references as passage retrieval. Project inspection returns an ordered `creations` array with the proposed path and document ID for each new note. Lint findings of kind `claimEvidence` include `claimID`, `evidenceIssue`, `message`, and the specific `evidenceRef` when applicable. [Claim request example](docs/claim-evidence.md)
 
-For project writes, `POST /v1/operation-inspect` accepts a `ProjectOperation` and returns the full `OperationPreview`. Send the same payload to `POST /v1/operation-check-citations` to include `citationChecks`, each with a link occurrence and its resolved passage when applicable. Inspection resolves changes against the proposed batch and current store. Ordinary inspections omit this field. `POST /v1/operation-apply` takes that exact preview and returns an `OperationReceipt` with ordered document IDs, versions, and statuses. A malformed operation returns HTTP 400. A stale preview, wrong store, or reused operation ID with different contents returns HTTP 409. The client selects the store on both calls. See the [complete request example](README.md#commit-related-notes-together).
+For project writes, `POST /v1/operation-inspect` accepts a `ProjectOperation` and returns the full `OperationPreview`. Send the same payload to `POST /v1/operation-check-citations` to include `citationChecks`, each with a link occurrence and its resolved passage when applicable. Checked inspection also returns `referenceChecks` and a `referenceGuard` covering new references and links affected by changed targets. Apply checks that the reference results still match and rejects newly broken references. Ordinary inspections omit those fields, and older previews remain readable. The daemon never sends HTTP probes. `POST /v1/operation-apply` takes that exact preview and returns an `OperationReceipt` with ordered document IDs, versions, and statuses. A malformed operation returns HTTP 400. A stale preview, wrong store, or reused operation ID with different contents returns HTTP 409. The client selects the store on both calls. See the [complete request example](README.md#commit-related-notes-together).
 
 - `POST /v1/ensure-guide` with `{}` installs `/AGENTS.md` in an existing
   store only when absent. Response fields match a put result, with operation
@@ -336,7 +336,7 @@ For project writes, `POST /v1/operation-inspect` accepts a `ProjectOperation` an
   the cited block for incoming links and the source block for outgoing links.
   Each occurrence includes its source revision and character offsets, target
   details when available, and a resolution status.
-- `POST /v1/lint` takes optional `path` and `includeOrphans` fields. The path
+- `POST /v1/lint` takes optional `path`, `includeOrphans`, and `includeReferences` fields. With `includeReferences` it returns a `referenceChecks` array. Draft inspection uses the same reference kinds and statuses. The path
   selects the exact document and its descendants. Omit it to audit the whole
   store. `includeOrphans` defaults to false. A completed audit returns HTTP 200
   with `path`, `documentsChecked`, `counts`, and `findings`. Counts use keys

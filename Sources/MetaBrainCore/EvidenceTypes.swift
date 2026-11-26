@@ -21,6 +21,13 @@ public struct EvidenceReference: Codable, Hashable, Sendable, CustomStringConver
     public let version: UInt64
     public let location: Location
 
+    var passageSelector: DocumentPassageSelector {
+        switch location {
+        case .block(let block): .block(block)
+        case .range(let range): .range(start: range.lowerBound, end: range.upperBound)
+        }
+    }
+
     public static let markdownLinkPrefix = "metabrain-ref:"
 
     /// Decodes a store-local Markdown evidence link using the existing retained reference syntax.

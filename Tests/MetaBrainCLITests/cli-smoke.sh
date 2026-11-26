@@ -607,6 +607,7 @@ PYOPERATION
 }
 
 check_project_operation "$TMP_DIR/operations-direct/store.leveldb" "${METABRAIN[@]}" --no-server
+python3 Tests/MetaBrainCLITests/reference-validation.py "$TMP_DIR/references-direct/store.leveldb" "${METABRAIN[@]}" --no-server
 
 check_wiki_preview() {
     local store="$1"
@@ -1482,6 +1483,7 @@ server_mb() {
 
 check_guarded_put "$TMP_DIR/guarded-daemon/store.leveldb" "${METABRAIN[@]}" --server "$SERVER_SOCKET"
 check_project_operation "$TMP_DIR/operations-daemon/store.leveldb" "${METABRAIN[@]}" --server "$SERVER_SOCKET"
+python3 Tests/MetaBrainCLITests/reference-validation.py "$TMP_DIR/references-daemon/store.leveldb" "${METABRAIN[@]}" --server "$SERVER_SOCKET"
 check_wiki_preview "$TMP_DIR/wiki-preview-daemon/store.leveldb" "${METABRAIN[@]}" --server "$SERVER_SOCKET"
 python3 Tests/MetaBrainCLITests/source-capture.py "$TMP_DIR/capture-daemon/store.leveldb" "${METABRAIN[@]}" --server "$SERVER_SOCKET"
 python3 Tests/MetaBrainCLITests/claim-evidence.py "$TMP_DIR/claims-daemon/store.leveldb" "${METABRAIN[@]}" --server "$SERVER_SOCKET"
