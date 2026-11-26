@@ -1056,7 +1056,9 @@ extension MetaBrainCommand {
             if request.includeReferences == true, report.referenceChecks == nil {
                 throw ValidationError("This daemon does not support reference inventories. Upgrade mbd or use --no-server.")
             }
-            let external = checkExternal ? ExternalReferenceProbe.run(report.referenceChecks ?? []) : nil
+            let external = if checkExternal, let checks = report.referenceChecks {
+                ExternalReferenceProbe.run(checks)
+            } else { nil as [ExternalURLCheck]? }
             switch output.format {
             case .text:
                 for finding in report.findings {
@@ -1081,11 +1083,14 @@ extension MetaBrainCommand {
                 }
                 print(counts.joined(separator: " "))
                 for reference in report.referenceChecks ?? [] {
-                    let field = reference.start.map { ":\($0)-\(reference.end ?? $0)" } ?? "." + reference.location.rawValue
+                    let field = if let start = reference.start, let end = reference.end {
+                        ":\(start)-\(end)"
+                    } else { "." + reference.location.rawValue }
                     print("\(reference.sourcePath.rawValue)@\(reference.sourceVersion)\(field)\t\(reference.kind.rawValue)\t\(reference.status.rawValue)\t\(reference.destination)")
                 }
                 for check in external ?? [] {
-                    print("\(check.status.rawValue)\t\(check.httpStatus.map(String.init) ?? check.reason ?? "")\t\(check.url)\t\(check.finalURL ?? "")")
+                    let details = [check.httpStatus.map(String.init), check.reason].compactMap { $0 }.joined(separator: " ")
+                    print("\(check.status.rawValue)\t\(details)\t\(check.url)\t\(check.finalURL ?? "")")
                 }
             case .json:
                 if let external {

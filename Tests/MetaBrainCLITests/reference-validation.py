@@ -82,7 +82,8 @@ esac
     assert "storePassage\tresolved" in text and "redirected\t204" in text
     lines = run("lint", source, "--check-external", "--format", "jsonl", as_json=False)
     assert {"location", "url"} <= {key for line in lines.splitlines() for key in json.loads(line)}
-    missing_executable = run("lint", source, "--check-external", environment=dict(env, PATH=str(base / "empty")))
+    without_path = {key: value for key, value in env.items() if key != "PATH"}
+    missing_executable = run("lint", source, "--check-external", environment=without_path)
     assert all(c.get("reason") == "curlUnavailable" for c in missing_executable["externalChecks"])
     assert "explicit document or subtree" in run("lint", "--check-external", expected=64, as_json=False)
 

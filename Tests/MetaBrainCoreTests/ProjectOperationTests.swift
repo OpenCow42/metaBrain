@@ -634,3 +634,30 @@ func projectOperationRejectsStaleTargetWithoutWritingOtherDocuments(change: Stri
         #expect(checks[2].status == .unavailableRevision)
     }
 }
+
+@Test func checkedOperationsDetectMarkdownOptInButSkipMetadataOnlyDependents() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let root = try DocumentPath("/project")
+        let source = try DocumentPath("/project/source")
+        let owner = try DocumentPath("/project/owner.md")
+        let body = "Example. ^result"
+        _ = try await store.putDocument(DocumentInput(path: source, body: body))
+        _ = try await store.putDocument(DocumentInput(path: owner, body: "[[source#^result]]"))
+
+        let enable = ProjectOperation(operationID: UUID(), project: root, documents: [
+            DocumentInput(path: source, body: body, markdown: true)
+        ])
+        let checked = try await store.inspectOperation(enable, checkCitations: true)
+        #expect(checked.referenceChecks?.first?.passage?.passage.text == "Example.")
+        #expect(checked.referenceChecks?.first?.sourcePath == owner)
+        _ = try await store.applyOperation(checked)
+
+        let metadata = ProjectOperation(operationID: UUID(), project: root, documents: [
+            DocumentInput(path: source, body: body, tags: ["provenance"])
+        ])
+        let unchangedAnchor = try await store.inspectOperation(metadata, checkCitations: true)
+        #expect(unchangedAnchor.referenceChecks == [])
+        _ = try await store.applyOperation(unchangedAnchor)
+    }
+}
