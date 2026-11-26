@@ -476,3 +476,21 @@ func projectOperationRejectsStaleTargetWithoutWritingOtherDocuments(change: Stri
         #expect(try await store.rawValue(forKey: MetaBrainKeyspace.citationLayout) == Data([1]))
     }
 }
+
+@Test func citationCheckAccountsForARevisionPrunedByTheProposedWrite() async throws {
+    try await withTemporaryStoreFixture { fixture in
+        let store = try MetaBrainStore(url: fixture.storeURL)
+        let source = try DocumentPath("/project/source.md")
+        let note = try DocumentPath("/project/note.md")
+        let old = try await store.putDocument(DocumentInput(path: source, body: "Before ^result"))
+        let ref = "\(old.id.rawValue)@1#^result"
+        let op = ProjectOperation(operationID: UUID(), project: try DocumentPath("/project"), documents: [
+            DocumentInput(path: source, body: "After ^result", retention: .keepMostRecent(1)),
+            DocumentInput(path: note, body: "[Historical](metabrain-ref:\(ref))")
+        ])
+        let checks = try #require(try await store.inspectOperation(op, checkCitations: true).citationChecks)
+        #expect(checks.count == 1)
+        #expect(checks.first?.link.status == .unresolved)
+        #expect(try await store.getEvidence(EvidenceReference(ref)).items.first?.text == "Before")
+    }
+}
