@@ -110,6 +110,18 @@ enum MetaBrainKeyspace {
         "idx/cite/in/\(target.rawValue)/"
     }
 
+    static func retainedCitationInPrefix(_ target: DocumentID) -> String {
+        "idx/cite/retained/\(target.rawValue)/"
+    }
+
+    static func graphDocument(_ id: DocumentID) -> String {
+        "idx/graph/document/\(id.rawValue)"
+    }
+
+    static func graphClaimInPrefix(_ target: DocumentID) -> String {
+        "idx/graph/claim/in/\(target.rawValue)/"
+    }
+
     static func citationPendingPrefix(_ lookup: String) -> String {
         "idx/cite/pending/\(escapedComponent(lookup))/"
     }

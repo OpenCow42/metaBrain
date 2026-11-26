@@ -54,7 +54,7 @@ import Testing
         #expect(try await upgraded.rawValue(forKey: stale.key) == nil)
         for key in stale.secondaryKeys { #expect(try await upgraded.rawValue(forKey: key) == nil) }
         #expect(try await upgraded.listVersions(of: ref) == versions)
-        #expect(try await upgraded.rawValue(forKey: MetaBrainKeyspace.citationLayout) == Data([2]))
+        #expect(try await upgraded.rawValue(forKey: MetaBrainKeyspace.citationLayout) == Data([3]))
         await upgraded.close()
 
         let reopened = try MetaBrainStore(url: fixture.storeURL)
@@ -102,6 +102,6 @@ import Testing
         #expect(try await reopened.rawValue(forKey: secondary) == Data())
         try await reopened.writeRawValue(original, forKey: primary)
         #expect(try await reopened.links(for: .documentID(target.id), direction: .incoming) == [occurrence])
-        #expect(try await reopened.rawValue(forKey: MetaBrainKeyspace.citationLayout) == Data([2]))
+        #expect(try await reopened.rawValue(forKey: MetaBrainKeyspace.citationLayout) == Data([3]))
     }
 }

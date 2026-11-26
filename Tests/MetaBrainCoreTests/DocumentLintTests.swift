@@ -133,7 +133,7 @@ func lintPreparesLegacyCitationsWithoutTrackingReadsOrChangingVersions(hasOldLay
         let report = try await reopened.lint()
         #expect(report.findings.map(\.kind) == [.missingTarget])
         #expect(try await reopened.rawValue(forKey: MetaBrainKeyspace.citationPath(source.id)) == Data("/source.md".utf8))
-        #expect(try await reopened.rawValue(forKey: MetaBrainKeyspace.citationLayout) == Data([2]))
+        #expect(try await reopened.rawValue(forKey: MetaBrainKeyspace.citationLayout) == Data([3]))
         #expect(try await reopened.entryMetadata(for: reference) == beforeMetadata)
         #expect(try await reopened.listVersions(of: reference) == beforeVersions)
     }

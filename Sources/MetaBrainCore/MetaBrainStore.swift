@@ -117,6 +117,7 @@ public final class MetaBrainStore: Sendable {
     private static let bulkReadOptions = Database.ReadOptions(fillCache: false)
     private static let caseSensitiveTreeLayout = Data([1])
     private static let currentSearchFieldLayout = Data([2])
+    private static let currentCitationLayout = Data([3])
 
     public convenience init(path: String, options: MetaBrainStoreOptions = .default) throws {
         try self.init(url: URL(fileURLWithPath: path, isDirectory: true), options: options)
@@ -1452,6 +1453,7 @@ public final class MetaBrainStore: Sendable {
         )
         let staleReferences = try await staleReferenceKeys(sourceID: id)
         var edit = MetaBrainRecordEdit()
+        try updateGraphIndex(from: write.previousRecord?.document, to: document, in: &edit)
         for key in staleChunks.map(\.key) + staleTerms + staleReferences { edit.remove(key) }
 
         edit.put(try compressedData(write.record), for: MetaBrainKeyspace.document(id: id))
@@ -1504,7 +1506,9 @@ public final class MetaBrainStore: Sendable {
         )
         let staleReferenceKeys = try await staleReferenceKeys(sourceID: document.id)
         let staleBacklinkKeys = try await staleBacklinkKeys(targetID: document.id)
-        let citationEdit = try await citationEdit(replacing: document, with: nil)
+        var citationEdit = try await citationEdit(replacing: document, with: nil)
+        try updateGraphIndex(from: document, to: nil, in: &citationEdit)
+        let graphAndCitationEdit = citationEdit
         let versionRecords = try await versionRecordEntries(for: document.id)
         try versionRecords.requireCurrentSchemaVersions(operation: "delete document versions")
         let versionKeys = versionRecords.map(\.key)
@@ -1525,8 +1529,8 @@ public final class MetaBrainStore: Sendable {
                     + versionKeys {
                     try batch.deleteValue(forKey: key)
                 }
-                for key in citationEdit.removals { try batch.deleteValue(forKey: key) }
-                for (key, value) in citationEdit.puts { try batch.put(value, forKey: key) }
+                for key in graphAndCitationEdit.removals { try batch.deleteValue(forKey: key) }
+                for (key, value) in graphAndCitationEdit.puts { try batch.put(value, forKey: key) }
 
                 try batch.deleteValue(forKey: MetaBrainKeyspace.document(id: document.id))
                 try batch.deleteValue(forKey: MetaBrainKeyspace.documentMetadata(id: document.id))
@@ -3218,10 +3222,10 @@ extension MetaBrainStore {
     }
 
     private func prepareCitationIndex() async throws {
-        let layout = Data([2])
+        let layout = Self.currentCitationLayout
         let current = try await rawValue(forKey: MetaBrainKeyspace.citationLayout)
         if current == layout { return }
-        guard current == nil || current == Data([1]) else {
+        guard current == nil || current == Data([1]) || current == Data([2]) else {
             throw MetaBrainStoreError.operationFailed(message: "Unrecognized Markdown citation index layout.")
         }
 
@@ -3232,6 +3236,15 @@ extension MetaBrainStore {
         for key in try await scanKeys(withPrefix: prefix) {
             let id = try DocumentID(rawValue: String(key.dropFirst(prefix.count)))
             guard let document = try await documentRecord(id: id)?.document else { continue }
+            try updateGraphIndex(from: nil, to: document, in: &edit)
+            if current == Data([2]) {
+                for citation in try await outgoingCitationRecords(from: id, operation: "upgrade graph index") {
+                    if EvidenceReference(markdownDestination: citation.link.destination) != nil {
+                        for secondaryKey in citation.secondaryKeys { edit.put(for: secondaryKey) }
+                    }
+                }
+                continue
+            }
             let header = MarkdownCitationHeader(id: id, path: document.path)
             catalog.append(header)
             Self.insertCitationHeader(header, in: &edit)
@@ -3375,7 +3388,8 @@ extension MetaBrainStore {
         // Legacy stores can be inspected before their first citation-index rebuild.
         var fallbackPaths: [DocumentID: DocumentPath] = [:]
         let catalog: MarkdownCitationCatalog?
-        if try await rawValue(forKey: MetaBrainKeyspace.citationLayout) == Data([2]) {
+        let layout = try await rawValue(forKey: MetaBrainKeyspace.citationLayout)
+        if layout == Self.currentCitationLayout || layout == Data([2]) {
             catalog = nil
         } else {
             let prefix = MetaBrainKeyspace.prefix(.documentID)
@@ -3978,5 +3992,177 @@ extension MetaBrainStore {
             throw MetaBrainStoreError.operationFailed(message: "Stored source chunk differs from its digest.")
         }
         return bytes
+    }
+}
+
+extension MetaBrainStore {
+    /// Reads a bounded view of current document relationships without counting document reads.
+    /// Older stores prepare the derived graph index on their first citation operation.
+    public func graph(_ query: DocumentGraphQuery) async throws -> DocumentGraph {
+        try await writes.run {
+            try await self.ensureCitationIndex()
+            return try await self.buildGraph(query)
+        }
+    }
+
+    private func updateGraphIndex(
+        from previous: StoredDocument?, to document: StoredDocument?, in edit: inout MetaBrainRecordEdit
+    ) throws {
+        if let previous {
+            for target in DocumentGraphRecord(previous).evidenceSources {
+                edit.remove(MetaBrainKeyspace.graphClaimInPrefix(target) + previous.id.rawValue)
+            }
+            edit.remove(MetaBrainKeyspace.graphDocument(previous.id))
+        }
+        if let document {
+            let record = DocumentGraphRecord(document)
+            edit.put(try compressedData(record), for: MetaBrainKeyspace.graphDocument(document.id))
+            for target in record.evidenceSources {
+                edit.put(for: MetaBrainKeyspace.graphClaimInPrefix(target) + document.id.rawValue)
+            }
+        }
+    }
+
+    private func graphRecord(_ id: DocumentID) async throws -> DocumentGraphRecord? {
+        try await compressedStoredRecord(forKey: MetaBrainKeyspace.graphDocument(id), as: DocumentGraphRecord.self)?.payload
+    }
+
+    private func graphNode(_ id: DocumentID) async throws -> DocumentGraphNode? {
+        guard let path = try await citationPath(id) else { return nil }
+        return DocumentGraphNode(id: id, path: path, title: try await graphRecord(id)?.title)
+    }
+
+    private func graphIDs(at prefix: String) async throws -> [DocumentID] {
+        try await scanKeys(withPrefix: prefix).map {
+            try DocumentID(rawValue: String($0.dropFirst(prefix.count)))
+        }
+    }
+
+    private func graphCitation(
+        _ record: MarkdownCitation, cache: inout CitationReadCache
+    ) async throws -> (DocumentLinkOccurrence, DocumentID?) {
+        if record.link.destination.hasPrefix(EvidenceReference.markdownLinkPrefix) {
+            // The relationship survives pruning. Inspect the retained passage only on demand.
+            let target = EvidenceReference(markdownDestination: record.link.destination)?.documentID
+            let path: DocumentPath?
+            if let target {
+                path = try await citationPath(target, cache: &cache)
+            } else {
+                path = nil
+            }
+            var occurrence = record
+            occurrence.targetID = target
+            let link = occurrence.occurrence(targetPath: path, status: path == nil ? .unresolved : .resolved, candidates: [])
+            return (link, path == nil ? nil : target)
+        }
+        let link = try await linkOccurrence(record, cache: &cache)
+        return (link, link.status == .resolved ? link.targetID : nil)
+    }
+
+    private func graphNeighbors(
+        _ id: DocumentID, includeEvidence: Bool, cache: inout CitationReadCache
+    ) async throws -> Set<DocumentID> {
+        var ids = Set(try await nativeOutboundReferences(from: id))
+        ids.formUnion(try await graphIDs(at: MetaBrainKeyspace.inboundReferencePrefix(targetID: id)))
+        for citation in try await outgoingCitationRecords(from: id) {
+            if let target = try await graphCitation(citation, cache: &cache).1 { ids.insert(target) }
+        }
+        let incoming = try await citationRecords(at: MetaBrainKeyspace.citationInPrefix(id))
+        for citation in incoming {
+            if try await graphCitation(citation, cache: &cache).1 != nil { ids.insert(citation.sourceID) }
+        }
+        let retained = MetaBrainKeyspace.retainedCitationInPrefix(id)
+        for key in try await scanKeys(withPrefix: retained) {
+            ids.insert(try Self.citationOccurrenceKey(key, prefix: retained).source)
+        }
+        if includeEvidence {
+            ids.formUnion(try await graphRecord(id)?.evidenceSources ?? [])
+            ids.formUnion(try await graphIDs(at: MetaBrainKeyspace.graphClaimInPrefix(id)))
+        }
+        ids.remove(id)
+        return ids
+    }
+
+    private func buildGraph(_ query: DocumentGraphQuery) async throws -> DocumentGraph {
+        var graph = DocumentGraphBuilder()
+        var cache = CitationReadCache()
+        switch query.scope {
+        case .note(let id, let depth):
+            guard (1...2).contains(depth) else {
+                throw ProjectOperationError.invalid("Graph depth must be 1 or 2.")
+            }
+            guard let center = try await graphNode(id) else {
+                throw MetaBrainStoreError.documentNotFound(id.rawValue)
+            }
+            _ = graph.add(center)
+            var level = [id]
+            for _ in 0..<depth {
+                var next: [DocumentID] = []
+                for id in level {
+                    try Task.checkCancellation()
+                    let neighbors = try await graphNeighbors(id, includeEvidence: query.includeEvidence, cache: &cache)
+                    for neighbor in neighbors.sorted() where !graph.nodeIDs.contains(neighbor) {
+                        guard let node = try await graphNode(neighbor) else { continue }
+                        guard graph.add(node) else { break }
+                        next.append(neighbor)
+                    }
+                    if graph.truncated { break }
+                }
+                if graph.truncated || next.isEmpty { break }
+                level = next
+            }
+        case .folder(let path):
+            let ids = try await lintSourceIDs(under: path)
+            let filter = query.filter.trimmingCharacters(in: .whitespacesAndNewlines)
+            var matches = Set(ids)
+            if !filter.isEmpty {
+                for id in ids {
+                    try Task.checkCancellation()
+                    guard let node = try await graphNode(id),
+                          node.path.rawValue.localizedCaseInsensitiveContains(filter)
+                          || node.title?.localizedCaseInsensitiveContains(filter) == true else {
+                        matches.remove(id)
+                        continue
+                    }
+                }
+            }
+            for id in ids where matches.contains(id) {
+                try Task.checkCancellation()
+                if !query.includeUnlinked {
+                    let neighbors = try await graphNeighbors(id, includeEvidence: query.includeEvidence, cache: &cache)
+                    if neighbors.isDisjoint(with: matches) { continue }
+                }
+                if let node = try await graphNode(id), !graph.add(node) { break }
+            }
+        }
+
+        for node in graph.nodes {
+            try Task.checkCancellation()
+            for target in try await nativeOutboundReferences(from: node.id) where graph.nodeIDs.contains(target) {
+                graph.connect(.init(source: node.id, target: target, relationship: .reference))
+            }
+            for citation in try await outgoingCitationRecords(from: node.id) {
+                guard citation.status != .external
+                        || citation.link.destination.hasPrefix(EvidenceReference.markdownLinkPrefix) else { continue }
+                let (link, target) = try await graphCitation(citation, cache: &cache)
+                if let target {
+                    if graph.nodeIDs.contains(target) {
+                        graph.connect(.init(source: node.id, target: target, relationship: .markdown), occurrence: .markdown(link))
+                    }
+                } else {
+                    graph.diagnose(link)
+                }
+            }
+            if query.includeEvidence {
+                for claim in try await graphRecord(node.id)?.claims ?? [] {
+                    for evidence in claim.evidence where graph.nodeIDs.contains(evidence.sourceID) {
+                        let kind: DocumentGraphRelationship = evidence.relation == .supports ? .supports : .contradicts
+                        let occurrence = DocumentGraphEvidence(claimID: claim.id, claim: claim.text, state: claim.state, ref: evidence.ref)
+                        graph.connect(.init(source: node.id, target: evidence.sourceID, relationship: kind), occurrence: .evidence(occurrence))
+                    }
+                }
+            }
+        }
+        return graph.result
     }
 }

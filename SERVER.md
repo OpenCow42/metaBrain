@@ -357,6 +357,23 @@ For project writes, `POST /v1/operation-inspect` accepts a `ProjectOperation` an
   item has `path` and `ref`, plus `text` when returning passages. The budget
   counts UTF-8 bytes including JSON framing and the CLI's final line feed.
 
+### Document graph
+
+`POST /v1/graph` reads a graph using the same store selection as other document routes. For a two-hop note graph with claim evidence, send the stable document ID returned by a document read.
+
+```json
+{
+  "scope": { "note": { "id": { "rawValue": "document-id" }, "depth": 2 } },
+  "includeEvidence": true,
+  "includeUnlinked": false,
+  "filter": ""
+}
+```
+
+For a folder graph, use `"scope": {"folder": {"path": {"rawValue": "/projects/atlas"}}}`. The folder filter matches titles and paths case-insensitively. Both endpoints of a folder connection must match. Set `includeUnlinked` to include matching documents without a connection.
+
+The response includes `nodes`, directed `connections`, unresolved and ambiguous Markdown `diagnostics`, and `truncated`. A connection identifies its source and target document IDs and its relationship kind. It groups occurrences and returns their count plus up to 32 details per connection and 1,000 across the graph. Supporting and contradicting connections point from the decision document to the source document and carry the exact retained evidence reference. Use the passage and retained evidence routes when opening an occurrence. A missing note returns `document_not_found`.
+
 ### Request Shapes
 
 `POST /v1/init`

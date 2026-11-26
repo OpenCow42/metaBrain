@@ -404,6 +404,12 @@ Upgrade `mb`, `mbd`, and any other writers together before opening that store.
 New CLI commands require a daemon that supports the citation routes. For a
 store you can open directly, use `mb --no-server`.
 
+### Explore links as a graph
+
+In MetaBrainExplorer, select a note or folder and choose **Show Graph**. A note graph follows incoming and outgoing links one or two hops. A folder graph shows connections within the selected subtree and supports a title or path filter. Select a connection to inspect its citations. Turn on **Claim Evidence** to find decisions that cite a source and open the exact retained quotation.
+
+Explorer uses `MetaBrainStore.graph(_:)` in direct mode and [the graph route](SERVER.md#document-graph) in daemon mode. The first citation operation on an older store prepares the derived reverse lookups. Upgrade `mb`, `mbd`, and other writers together before opening a store with the new graph index.
+
 ### Audit citations
 
 Run `mb lint` to audit the whole store or pass a virtual path to select that

@@ -41,6 +41,9 @@ struct MarkdownCitation: Codable, Sendable {
 
     var secondaryKeys: [String] {
         let suffix = sourceID.rawValue + "/" + String(link.start)
+        if let ref = EvidenceReference(markdownDestination: link.destination) {
+            return [MetaBrainKeyspace.retainedCitationInPrefix(ref.documentID) + suffix]
+        }
         if let targetID {
             return status == .resolved ? [MetaBrainKeyspace.citationInPrefix(targetID) + suffix] : []
         }

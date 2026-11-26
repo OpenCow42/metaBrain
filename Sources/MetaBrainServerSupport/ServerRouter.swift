@@ -179,6 +179,12 @@ public struct ServerRouter: Sendable {
             }
         case (_, "/v1/links"):
             return methodNotAllowed(request, allowedMethod: "POST")
+        case (.post, "/v1/graph"):
+            return await routeStoreOperation(request) { storeServer in
+                try await storeServer.graph(decode(DocumentGraphQuery.self, from: request))
+            }
+        case (_, "/v1/graph"):
+            return methodNotAllowed(request, allowedMethod: "POST")
         case (.post, "/v1/lint"):
             return await routeStoreOperation(request) { storeServer in
                 try await storeServer.lint(decode(ServerLintRequest.self, from: request))

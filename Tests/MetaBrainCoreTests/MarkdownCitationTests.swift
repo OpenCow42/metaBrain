@@ -238,7 +238,7 @@ import Testing
         #expect(outgoing.targetID == target.id)
         #expect(outgoing.status == .resolved)
         #expect(try await store.links(for: .documentID(target.id), direction: .incoming) == [outgoing])
-        #expect(try await store.rawValue(forKey: MetaBrainKeyspace.citationLayout) == Data([2]))
+        #expect(try await store.rawValue(forKey: MetaBrainKeyspace.citationLayout) == Data([3]))
         #expect(try await store.rawValue(forKey: sourceKey) == saved)
 
         await store.close()

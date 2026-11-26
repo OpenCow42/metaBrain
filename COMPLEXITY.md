@@ -568,3 +568,8 @@ Good candidates to revisit next are streaming prefix scans with early result
 limits, version-summary indexes for prune/list operations, and an explicit
 approximate search mode that can apply `--limit` before scoring every
 common-term candidate.
+
+
+### Document graph reads
+
+A note graph scans indexed adjacency prefixes for the center and the visited first-hop neighbors, then gathers connections among the selected nodes. A folder graph scans document path aliases under one prefix. Title filtering reads lightweight graph records for the scoped IDs. Hiding unlinked notes also checks adjacency against the filtered set before admitting a node. These scans can inspect more candidates than the 200-node and 500-connection response limits. Ordinary anchors may require parsing the current target body once per query. Retained passages are loaded on demand. The first citation layout upgrade scans current document records and writes the derived graph records and reverse keys.

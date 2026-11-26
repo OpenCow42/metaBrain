@@ -263,3 +263,10 @@ A compact reference identifies a document ID, retained version and half-open
 Swift Character range or named block. Rendering and budget accounting use the
 same compact JSON encoding in direct and daemon-backed clients. Ordinary search
 continues to expose its existing chunk-shaped response.
+
+
+### Document graphs
+
+The graph query runs under the write coordinator. It uses the current citation and explicit reference indexes, plus a lightweight graph record per document for titles and claims. Reverse keys connect a retained Markdown occurrence to its cited document ID and a claim source to its owning document. The citation layout upgrade backfills these keys while preserving established Markdown bindings. Ordinary writes, moves, reviewed operations, and deletions update the derived records in their existing write batches. Pruning a revision preserves its reference on a surviving edge so readers can report that the quotation is unavailable.
+
+Explorer receives stable IDs, occurrence counts, snippets, and version-bound references. It loads retained quotations when the user opens them.
